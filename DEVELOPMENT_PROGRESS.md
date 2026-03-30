@@ -1,0 +1,818 @@
+# CloudDoc Development Progress
+
+## Workflow
+
+- Continue feature development without waiting for manual confirmation.
+- Run automated tests after each completed feature.
+- Record the feature scope, changed areas, and test results in this file.
+
+## Progress Log
+
+### 2026-03-26 18:58 CST
+
+- Established the local canonical workspace at `/Users/yys235/projects/clouddoc`.
+- Resolved the SMB-mounted drive Node.js dependency issue by moving active development to local disk.
+- Brought up the real development servers:
+  - Frontend: `http://127.0.0.1:3000`
+  - Backend: `http://127.0.0.1:8000`
+- Completed the first interactive frontend pass:
+  - Sidebar navigation is clickable.
+  - `+ 新建文档` creates a real document through the API.
+  - Home document cards open real detail pages.
+  - Document page supports edit, save, share, and local favorite feedback.
+- Automated verification:
+  - `npm run build` in `apps/web`
+  - API create/update integration check against FastAPI + PostgreSQL
+
+### 2026-03-26 19:08 CST
+
+- Completed recycle bin v1:
+  - `DELETE /api/documents/{doc_id}` now performs soft delete.
+  - `POST /api/documents/{doc_id}/restore` restores soft-deleted documents.
+  - `GET /api/documents?state=active|trash|all` supports active/trash filtering.
+  - Home page now loads real trash data.
+  - Trash section supports one-click restore.
+  - Document detail page supports moving a document to trash.
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `1 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+
+### 2026-03-26 19:18 CST
+
+- Completed favorites v1:
+  - Added persistent `document_favorites` storage.
+  - `POST /api/documents/{doc_id}/favorite` favorites a document.
+  - `DELETE /api/documents/{doc_id}/favorite` removes a favorite.
+  - Document list/detail responses now expose `is_favorited`.
+  - Home page favorites section now renders real favorite documents.
+  - Document detail page favorite button now uses the real backend state.
+- Test baseline improvement:
+  - Added `apps/api/tests/conftest.py` so API tests always initialize schema before running.
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `2 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+
+### 2026-03-27 09:24 CST
+
+- QA subagent `qa_browser` completed browser validation and reported two confirmed issues.
+- Fix in progress:
+  - Extended API CORS allowlist to include `http://127.0.0.1:3000`.
+  - Added app icon asset to eliminate `/favicon.ico` 404 noise in the browser.
+
+### 2026-03-27 09:26 CST
+
+- Fixed browser-blocking issues from QA round 1:
+  - Confirmed and fixed CORS preflight rejection for `http://127.0.0.1:3000`.
+  - Added explicit favicon handling so the browser no longer receives a 404 at `/favicon.ico`.
+  - Repaired corrupted Next.js dev cache by restarting the dev server and rebuilding `.next`.
+- Automated verification:
+  - CORS preflight to `POST /api/documents/{id}/favorite`
+    - Result: `200 OK` with `access-control-allow-origin: http://127.0.0.1:3000`
+  - API regression script for create/save/favorite/delete/restore
+    - Result: all requests succeeded
+  - `cd apps/web && npm run build`
+    - Result: success
+
+### 2026-03-27 09:33 CST
+
+- Completed search v1:
+  - Added `GET /api/documents/search?q=` for title + latest-content search.
+  - Search results now return excerpt text and favorite state.
+  - Added homepage search entry.
+  - Added dedicated `/search` results page.
+  - Deleted documents are excluded from search results.
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `3 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+
+### 2026-03-27 09:46 CST
+
+- Completed templates v1:
+  - Added `GET /api/templates`.
+  - Added `POST /api/templates/{template_id}/instantiate`.
+  - Seeded built-in templates: `需求文档`, `会议纪要`.
+  - Added `/templates` page and connected the home/template navigation entry.
+  - Template instantiation now creates a real document and opens the editor page.
+  - Fixed template title rule so instantiated documents keep the template title instead of appending `- 新建`.
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+- QA verification:
+  - `qa_browser` confirmed template instantiation works and the title rule issue is resolved.
+
+### 2026-03-27 10:16 CST
+
+- Completed Feishu-style block editor research and implementation round 1:
+  - Added the detailed research and requirement split report:
+    - `/Users/yys235/projects/clouddoc/feishu-doc-block-research-report.md`
+  - Refined the document editor toward a Feishu-like block model:
+    - kept continuous document presentation
+    - added slash command menu triggered by `/`
+    - added lighter row-level controls with left-gutter insertion
+    - expanded block types to include `检查项` and `引用`
+    - preserved structured block persistence for the new block types
+  - Fixed a persistence regression reported by QA:
+    - empty checklist blocks now survive save + refresh instead of being dropped
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+- QA verification:
+  - `qa_browser` validated:
+    - edit mode is block-based rather than a single large textarea
+    - `/` command menu opens and converts block types
+    - quote block works
+    - checklist block survives save + refresh
+    - no new console errors were observed
+
+### 2026-03-27 10:30 CST
+
+- Completed a document-page UI density and style review round against the Feishu-style target.
+- Implemented two visual reduction passes:
+  - reduced the document page from a heavy three-column management layout toward a content-first layout
+  - removed the bottom block action wall
+  - reduced block-row chrome and moved actions into lighter hover menus
+  - hid the outline column in edit mode to increase content focus
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+- QA verification:
+  - `qa_browser` confirmed the page is lighter than before
+  - remaining high-priority issue:
+    - block controls are still visually too strong, so edit mode still feels closer to a block-editing panel than Feishu's content-first document canvas
+- Next focus:
+  - replace explicit per-block controls with a more implicit interaction model based on cursor context, lighter left-gutter affordances, and fewer always-discoverable actions
+
+### 2026-03-27 10:48 CST
+
+- Completed keyboard behavior for block editing:
+  - `Enter` now splits the current block and creates a new block below it
+  - `Shift+Enter` keeps the newline inside the current block
+  - slash-command handling now has higher priority than block splitting
+  - slash-command parsing now also works in checklist blocks whose default content starts with `[ ]`
+- Debugging notes:
+  - used terminal-driven browser automation to reproduce the exact failure path in checklist blocks
+  - confirmed the root cause was slash parsing on values like `[ ] /`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+- QA verification:
+  - `qa_browser` confirmed:
+    - `Enter` creates a new block
+    - `Shift+Enter` inserts an in-block newline
+    - slash command opens and `Enter` executes the command instead of splitting the block
+
+### 2026-03-27 10:52 CST
+
+- Completed document navigation interaction improvements:
+  - made the document-page breadcrumb clickable
+  - added keyboard navigation across blocks at block boundaries
+  - supported cross-block caret movement with:
+    - `ArrowUp` / `ArrowDown`
+    - `ArrowLeft` / `ArrowRight` at start/end boundaries
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+- QA verification:
+  - `qa_browser` confirmed:
+    - breadcrumb navigation works
+    - block-boundary arrow navigation works in edit mode
+
+### 2026-03-27 11:31 CST
+
+- Fixed the checklist new-block default marker bug:
+  - root cause: checklist blocks were initialized with a hard-coded default text of `[ ] `
+  - removed the hard-coded default marker from block creation and block splitting
+  - updated checklist serialization so empty checklist blocks can still persist without injecting `[ ]` into the editor text
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+- QA verification:
+  - `qa_browser` confirmed new checklist blocks no longer auto-insert `[ ]`
+
+### 2026-03-27 11:42 CST
+
+- Reworked the block command menu to be closer to the provided reference style:
+  - top quick-switch strip for block type conversion
+  - grouped lower actions instead of a flat command list
+  - preserved real implemented actions only:
+    - duplicate
+    - delete
+    - move up / move down
+    - add below
+  - kept slash-command entry working through the same visual container
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+- Verification note:
+  - browser QA for this visual round timed out, so only code/build verification is confirmed in this entry
+
+### 2026-03-27 11:51 CST
+
+- Refined the left block control to better match the Feishu-style reference:
+  - replaced the isolated left-side `+` affordance with a compact block handle panel
+  - moved the main action entry onto the left block handle
+  - kept the add-below affordance under the handle
+- Implemented drag-and-drop block reordering through the left block handle
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+- QA verification:
+  - `qa_browser` confirmed:
+    - the left block control now looks closer to the requested reference
+    - blocks can be reordered by dragging the left handle
+
+### 2026-03-27 12:08 CST
+
+- Completed the next block-type implementation batch based on the analyzed video:
+  - added `有序列表`
+  - added `分割线`
+  - added `链接`
+  - added `图片`
+- Connected the full chain for the new blocks:
+  - slash/menu creation
+  - structured content serialization
+  - read-mode rendering
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+- QA verification:
+  - `qa_browser` confirmed:
+    - slash menu can create the new block types
+    - save works
+    - read mode renders the new block types correctly
+
+### 2026-03-27 12:17 CST
+
+- Refined the left block handle again to match the video reference more closely:
+  - collapsed the left control into a single circular icon
+  - removed the separate secondary `+` icon
+  - kept add-below available through the action menu instead of a second visible control
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+- QA verification:
+  - `qa_browser` confirmed the left side now keeps only one icon entry
+
+### 2026-03-27 12:24 CST
+
+- Refined the left block handle icon states further:
+  - content blocks now show a `T + single vertical menu icon` style closer to the reference image
+  - empty blocks keep the `+` icon state
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+- QA verification:
+  - `qa_browser` confirmed the populated-block icon is now closer to the provided reference
+
+### 2026-03-27 12:55 CST
+
+- Fixed two editor interaction issues in the block toolbar flow:
+  - changing block type from the action menu now preserves the current block text instead of resetting it
+  - toolbar visibility is now driven only by the left handle and menu hover state, with a `1.5s` delayed hide after pointer leave
+- Implementation details:
+  - removed textarea `focus/change` paths that were forcing the toolbar visible
+  - switched toolbar hover handling from mouse events to pointer events for more stable browser behavior
+  - delayed menu close now also starts the hide timer
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - Playwright CLI direct regression:
+    - opened `/docs/11111111-1111-1111-1111-111111111111`
+    - entered edit mode
+    - hovered the left toolbar handle, then moved to the text area
+    - waited `2.2s`
+    - evaluated the handle DOM style
+    - Result: `opacity = 0`, `hovered = false`
+- QA verification:
+  - `qa_browser` confirmed block-type switching no longer loses block text
+  - `qa_browser` reported an inconsistent result on the delayed-hide check; direct Playwright DOM verification on the latest restarted dev server passed
+
+### 2026-03-27 13:05 CST
+
+- Fixed malformed link-card navigation in read mode:
+  - root cause: plain text stored in `href` was treated by the browser as a relative path such as `/docs/测试文档内容块1`
+  - renderer now only makes link cards clickable when the target is a valid external URL
+  - domain-like inputs such as `openai.com` are normalized to `https://openai.com`
+  - invalid or empty href values now render as static cards instead of navigable links
+  - save pipeline now normalizes link block URLs before persisting them
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+
+### 2026-03-27 13:45 CST
+
+- Fixed a homepage/dev-server runtime failure caused by corrupted Next.js dev cache:
+  - symptom: `/` returned `500`
+  - root cause: `.next/server` referenced a missing chunk for `app/icon.svg` (`Cannot find module './447.js'`)
+  - action taken: stopped the dev server, removed `apps/web/.next`, and restarted `next dev`
+- Verification:
+  - `curl -I http://127.0.0.1:3000/`
+    - Result: `200 OK`
+  - `curl -I http://127.0.0.1:3000/docs/11111111-1111-1111-1111-111111111111`
+    - Result: `200 OK`
+
+### 2026-03-27 13:57 CST
+
+- Switched the default PostgreSQL database name from `postgres` to `clouddoc`
+- Created the `clouddoc` database and migrated the current CloudDoc application data from `postgres`
+- Updated default connection references in:
+  - `apps/api/app/core/config.py`
+  - `apps/api/.env`
+  - `README.md`
+  - `apps/api/README.md`
+  - `cloud-doc-prd.md`
+  - `cloud-doc-content-model.md`
+- Migrated data summary in `clouddoc.public`:
+  - `documents = 8`
+  - `document_contents = 18`
+  - `document_versions = 18`
+  - `document_favorites = 2`
+  - `templates = 2`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - runtime verification:
+    - backend `settings.database_url` resolved to `postgresql+psycopg://<redacted>@localhost:5432/clouddoc`
+    - `curl http://127.0.0.1:8000/health`
+      - Result: `{"status":"ok"}`
+    - `curl -I http://127.0.0.1:3000/`
+      - Result: `200 OK`
+    - `curl -I http://127.0.0.1:3000/docs/11111111-1111-1111-1111-111111111111`
+      - Result: `200 OK`
+
+### 2026-03-27 14:05 CST
+
+- Refined the editor block presentation to read as a continuous document instead of stacked cards
+- Styling changes in edit mode:
+  - removed visible card styling from block containers
+  - removed box-like input styling from `link`, `image`, `quote`, and `code_block` editors
+  - reduced inter-block gap and wrapper emphasis
+  - only the active block now shows a light blue background highlight
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser verification:
+    - entered edit mode on `/docs/11111111-1111-1111-1111-111111111111`
+    - confirmed the editor renders as a continuous document with only the focused block highlighted
+
+### 2026-03-27 14:18 CST
+
+- Added a dedicated full test plan for the document editor page:
+  - file: `document-editor-test-plan.md`
+  - covers page-level actions, block editor behaviors, block types, keyboard interactions, persistence, exceptions, UI regression, and regression pack strategy
+- Output structure includes:
+  - scope
+  - environment
+  - coverage matrix
+  - detailed test cases
+  - automation recommendations
+  - entry/exit criteria
+
+### 2026-03-27 14:41 CST
+
+- Started an automated test run for the current editor build
+- Executed automated checks:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - health and route checks:
+    - `GET /health` -> `200`
+    - `GET /` -> `200`
+    - `GET /docs/11111111-1111-1111-1111-111111111111` -> `200`
+- Browser automation smoke tests executed against production-mode frontend on `http://127.0.0.1:3100`
+  - verified document page load
+  - verified enter-edit-mode
+  - verified save action success
+  - verified favorite / unfavorite success
+  - verified homepage load success
+- Found and fixed one real issue during automated testing:
+  - production-mode browser writes from `3100` were blocked by CORS
+  - added `http://127.0.0.1:3100` to backend CORS allowlist in:
+    - `apps/api/app/core/config.py`
+    - `apps/api/.env`
+
+### 2026-03-27 15:15 CST
+
+- Fixed empty block persistence in document edit mode
+- Root cause:
+  - `contentFromBlocks()` skipped empty blocks during serialization
+  - newly inserted empty blocks were lost after save/reload
+- Fix:
+  - empty blocks are now serialized with `preservedEmpty` markers
+  - editor reconstructs them after save and re-entering edit mode
+  - read mode hides preserved-empty placeholders so the rendered document stays clean
+- Files updated:
+  - `apps/web/components/editor/document-page.tsx`
+  - `apps/web/components/editor/document-renderer.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser automation on `http://127.0.0.1:3100`
+    - before insert: `5` blocks
+    - after `Enter` on the last block: `6` blocks
+    - after save and re-enter edit mode: `6` blocks
+    - Result: empty block persisted successfully
+  - test document state restored after verification
+
+### 2026-03-27 15:32 CST
+
+- Refactored the workspace left navigation and content routing
+- Sidebar updates:
+  - converted the left sidebar to a fixed `aside`
+  - main content now reserves left space instead of scrolling the sidebar away
+  - improved active-item styling for route-based selection
+- Navigation routes changed from same-page anchors to standalone pages:
+  - `/` 工作台
+  - `/recent`
+  - `/documents`
+  - `/spaces`
+  - `/favorites`
+  - `/templates`
+  - `/trash`
+- Refactored dashboard content:
+  - home page now only shows workspace overview and recent documents
+  - added dedicated pages for recent documents, all documents, spaces, favorites, and trash
+  - added reusable dashboard section components
+  - moved trash restore UI into its own component
+- Files added:
+  - `apps/web/components/dashboard/dashboard-sections.tsx`
+  - `apps/web/components/dashboard/trash-list.tsx`
+  - `apps/web/app/recent/page.tsx`
+  - `apps/web/app/documents/page.tsx`
+  - `apps/web/app/spaces/page.tsx`
+  - `apps/web/app/favorites/page.tsx`
+  - `apps/web/app/trash/page.tsx`
+- Files updated:
+  - `apps/web/components/layout/app-shell.tsx`
+  - `apps/web/components/layout/sidebar-nav.tsx`
+  - `apps/web/components/dashboard/workspace-overview.tsx`
+  - `apps/web/app/page.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - production route checks on `http://127.0.0.1:3100`
+    - `/` -> `200`
+    - `/recent` -> `200`
+    - `/documents` -> `200`
+    - `/spaces` -> `200`
+    - `/favorites` -> `200`
+    - `/templates` -> `200`
+    - `/trash` -> `200`
+
+### 2026-03-27 15:38 CST
+
+- Fixed duplicate title rendering on the document detail page
+- Root cause:
+  - the page header rendered the document title
+  - the document body also rendered the first `H1` node from content
+  - this produced two identical titles in read mode
+- Fix:
+  - in read mode, when the first content node is an `H1` matching the page title, it is omitted from the body renderer
+- File updated:
+  - `apps/web/components/editor/document-page.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser verification on `http://127.0.0.1:3100`
+    - page header kept the single document title
+    - body no longer rendered the duplicate title node
+
+### 2026-03-27 15:45 CST
+
+- Fixed the document detail page layout jump when toggling into edit mode
+- Root cause:
+  - the outer page grid switched layout based on `isEditing`
+  - the left page-directory aside was hidden in edit mode
+  - clicking `编辑` changed the whole page structure instead of only switching the content area from read mode to edit mode
+- Fix:
+  - keep the same two-column document layout in both read and edit mode
+  - keep the left page-directory aside mounted and visible on `xl` screens
+  - only switch the title/body region between readonly renderer and block editor
+- File updated:
+  - `apps/web/components/editor/document-page.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser verification on `http://127.0.0.1:3100`
+    - before clicking `编辑`, the left page-directory column was visible
+    - after clicking `编辑`, the left page-directory column stayed visible
+    - only the title/body region changed into editable controls
+
+### 2026-03-27 15:52 CST
+
+- Fixed block size inflation after entering edit mode on the document page
+- Root cause:
+  - editable blocks used larger minimum heights than the readonly renderer
+  - non-code blocks also forced a minimum of `2` textarea rows
+  - switching to edit mode made single-line blocks expand into visibly taller controls
+- Fix:
+  - aligned editable block font size and line height with readonly rendering
+  - removed inflated minimum heights from normal block types
+  - changed non-code blocks to default to `1` row instead of `2`
+- File updated:
+  - `apps/web/components/editor/block-editor.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser verification on `http://127.0.0.1:3100`
+    - first paragraph block in edit mode now reports `rows = 1`
+    - computed `line-height = 32px`
+    - computed `font-size = 16px`
+    - single-line block no longer expands into a two-line-high control
+
+### 2026-03-27 16:02 CST
+
+- Refined the document editor so edit mode keeps the same body layout as readonly mode
+- Root cause:
+  - block action controls occupied a real layout column inside the editor
+  - the editor rendered an extra footer hint line
+  - entering edit mode therefore changed the document body's width, indentation, and trailing content
+- Fix:
+  - moved block controls to an overlay outside the text flow
+  - kept the document body aligned to the same text column as readonly mode
+  - removed the footer hint row from the article body
+  - limited the visual difference to the active block highlight and editable controls themselves
+- File updated:
+  - `apps/web/components/editor/block-editor.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser verification on `http://127.0.0.1:3100`
+    - readonly mode body stayed left-aligned to the normal document text column
+    - edit mode body kept the same text column without an extra toolbar column
+    - footer hint text was removed
+
+### 2026-03-27 16:12 CST
+
+- Reduced vertical spacing between document blocks to about one-fifth of the previous value
+- Fix:
+  - changed the main block stack spacing from `space-y-5` to `space-y-1` in both readonly and edit renderers
+  - reduced horizontal-rule outer spacing to match the denser block rhythm
+- Files updated:
+  - `apps/web/components/editor/block-editor.tsx`
+  - `apps/web/components/editor/document-renderer.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `4 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser verification on `http://127.0.0.1:3100`
+    - readonly and edit mode both render with tighter block spacing
+
+### 2026-03-27 16:30 CST
+
+- Added a new `pdf` document type with upload-only workflow
+- Backend changes:
+  - added `pdf` to supported document types
+  - mounted `/uploads` static file serving for uploaded PDF assets
+  - added `POST /api/documents/upload-pdf` multipart upload endpoint
+  - stored PDF file metadata in `document_contents.content_json.file`
+  - returned `file_url`, `file_name`, `mime_type`, and `file_size` in document detail
+  - restricted normal `POST /api/documents` creation to `doc` documents only
+- Frontend changes:
+  - `+ 新建文档` now opens a type chooser
+  - users can create a normal document or upload a PDF
+  - document detail page now renders a read-only PDF preview and disables edit for PDF documents
+  - frontend resolves relative upload URLs to the API origin for preview
+- Files updated:
+  - `apps/api/pyproject.toml`
+  - `apps/api/app/core/config.py`
+  - `apps/api/app/main.py`
+  - `apps/api/app/api/routes/documents.py`
+  - `apps/api/app/schemas/document.py`
+  - `apps/api/app/services/document_service.py`
+  - `apps/api/app/sql/001_init.sql`
+  - `apps/api/tests/test_documents_api.py`
+  - `apps/web/lib/api.ts`
+  - `apps/web/lib/mock-document.ts`
+  - `apps/web/components/layout/sidebar-nav.tsx`
+  - `apps/web/components/editor/document-page.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `5 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser verification on `http://127.0.0.1:3100`
+    - new document panel showed `普通文档` and `PDF 文档`
+    - PDF file upload completed successfully
+    - uploaded PDF navigated to a read-only preview page with `pdf` type badge and disabled edit state
+
+### 2026-03-27 16:32 CST
+
+- Changed the new-document type selector from an inline sidebar panel to a modal dialog
+- Fix:
+  - sidebar now only triggers the create flow
+  - document type selection is shown in a centered modal overlay
+  - closing the modal also clears staged PDF title/file state
+- File updated:
+  - `apps/web/components/layout/sidebar-nav.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `5 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser verification on `http://127.0.0.1:3100`
+    - clicking `+ 新建文档` opened a modal dialog
+    - sidebar navigation remained unchanged and did not expand inline
+
+### 2026-03-27 16:36 CST
+
+- Fixed the create-document modal positioning so it renders at the viewport center instead of being constrained by the left sidebar
+- Root cause:
+  - the modal DOM was still rendered inside the sidebar component tree
+  - this kept the overlay grouped with the left navigation container in accessibility/layout snapshots
+- Fix:
+  - moved the modal layer out of the sidebar `aside`
+  - rendered the modal as a sibling overlay with its own page-level stacking context
+- File updated:
+  - `apps/web/components/layout/sidebar-nav.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `5 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser verification on `http://127.0.0.1:3100`
+    - the `dialog` node now renders outside the sidebar tree
+    - modal content appears as a centered page overlay
+
+### 2026-03-27 17:30 CST
+
+- Widened the document detail page content area
+- Fix:
+  - increased the shared max width for the document header and article body from `840px` to `980px`
+  - kept readonly and edit mode on the same wider content column
+- File updated:
+  - `apps/web/components/editor/document-page.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `5 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser verification on `http://127.0.0.1:3100`
+    - document detail page renders with the updated wider content container
+
+### 2026-03-27 17:36 CST
+
+- Changed PDF document viewing from embedded iframe preview to opening the original PDF in a new browser tab
+- Fix:
+  - removed the in-page embedded PDF viewer
+  - replaced it with explicit actions for `新标签打开 PDF` and `打开原始文件`
+  - kept the PDF detail page as a lightweight metadata and launch surface
+- File updated:
+  - `apps/web/components/editor/document-page.tsx`
+- Automated verification:
+  - `cd apps/api && .venv/bin/pytest -q`
+    - Result: `5 passed`
+  - `cd apps/web && npm run build`
+    - Result: success
+  - browser verification on `http://127.0.0.1:3100`
+    - PDF detail page no longer renders an iframe
+    - page shows links that open the uploaded PDF in a new tab
+
+### 2026-03-30 10:30 CST
+
+- Investigated team-space related functionality with focus on the `/spaces` page
+- Findings:
+  - `/spaces` returned `500 Internal Server Error` when the backend spaces API was unavailable
+  - root cause was missing fallback/error handling in `fetchSpaces()` on the frontend
+- Fix:
+  - added frontend fallback data for spaces
+  - added `try/catch` handling in `fetchSpaces()`
+  - normalized `updatedAt` formatting for successful space API responses to match other dashboard pages
+- File updated:
+  - `apps/web/lib/api.ts`
+- Verification:
+  - `cd apps/web && npm run build`
+    - Result: success
+  - route check
+    - `GET http://127.0.0.1:3100/spaces` -> `200 OK`
+  - browser/content verification
+    - `/spaces` now renders the team page shell correctly
+    - fallback spaces `产品团队` and `我的空间` are visible when backend data is unavailable
+- Note:
+  - backend pytest in the current environment did not complete because the backend startup path is hanging on external dependencies; frontend route verification was completed against the running `3100` service
+
+### 2026-03-30 10:45 CST
+
+- Audited remaining SSR data-fetch interfaces for graceful degradation when the backend API is unavailable
+- Findings:
+  - `/templates` could return `500` because `fetchTemplates()` threw on failed API responses
+  - `/search` could return `500` because `searchDocuments()` threw on failed API responses
+  - backend `8000` is currently not listening, which provided a direct failure scenario to verify frontend fallback behavior
+- Fix:
+  - added `try/catch` and fallback data to `fetchTemplates()`
+  - added `try/catch` and fallback search results to `searchDocuments()`
+  - kept client-side write actions unchanged; those already surface local error messages instead of crashing the page shell
+- File updated:
+  - `apps/web/lib/api.ts`
+- Verification:
+  - `cd apps/web && npm run build`
+    - Result: success
+  - backend availability check
+    - `GET :8000` listener check -> not running
+  - route checks on `http://127.0.0.1:3100`
+    - `GET /` -> `200 OK`
+    - `GET /spaces` -> `200 OK`
+    - `GET /templates` -> `200 OK`
+    - `GET /search?q=文档` -> `200 OK`
+  - content verification
+    - `/templates` renders fallback templates `需求文档` and `会议纪要`
+    - `/search?q=文档` renders fallback results instead of failing
+    - `/search?q=nomatch-keyword` renders the no-results state instead of failing
+
+### 2026-03-30 14:10 CST
+
+- Removed frontend fallback/mock business data and switched page rendering to use only real backend responses
+- Changes:
+  - deleted fake fallback behavior in `apps/web/lib/api.ts`
+  - `fetchDocument()` now returns `null` when the backend is unavailable instead of returning a mock document
+  - list/search/template/space fetchers now return empty arrays on backend failure instead of fake records
+  - document detail route now renders an explicit unavailable state when backend data cannot be loaded
+  - workspace overview metrics now derive from real document data instead of hard-coded demo counts
+  - template center now renders an empty state instead of demo templates when backend data is unavailable
+  - document view model defaults were cleaned so no mock document content is injected on successful responses with sparse payloads
+- Files updated:
+  - `apps/web/lib/api.ts`
+  - `apps/web/lib/mock-document.ts`
+  - `apps/web/app/docs/[docId]/page.tsx`
+  - `apps/web/components/dashboard/workspace-overview.tsx`
+  - `apps/web/components/templates/template-gallery.tsx`
+- Verification:
+  - `cd apps/web && npm run build`
+    - Result: success
+  - restarted the single frontend server on `http://127.0.0.1:3100`
+  - with backend `8000` unavailable:
+    - `/` renders zero-count real-data cards and no fake documents
+    - `/templates` renders empty state and no demo templates
+    - `/spaces` renders empty state and no fake spaces
+    - `/search?q=文档` renders no-results state and no fake search hits
+    - `/docs/11111111-1111-1111-1111-111111111111` renders explicit unavailable state instead of fake document content
+
+### 2026-03-30 14:25 CST
+
+- Restored the backend API service on `127.0.0.1:8000`
+- Findings:
+  - PostgreSQL `clouddoc` contained real data (`documents=15`, `document_contents=58`, `document_versions=58`, `templates=2`, `spaces=1`)
+  - frontend `3100` was empty because the API service was not listening on `8000`, not because the database lacked data
+- Verification:
+  - `GET http://127.0.0.1:8000/health` -> `{"status":"ok"}`
+  - `GET /api/documents` returned real document rows
+  - `GET /api/templates` returned real template rows
+  - `GET /api/spaces` returned real space rows
+  - `GET http://127.0.0.1:3100/` now shows real document records such as `我的测试文档` and `CloudDoc V1 产品简介`
+  - `GET http://127.0.0.1:3100/templates` now shows real templates `需求文档` and `会议纪要`
+- 2026-03-30 17:46 CST: 统一文档阅读态与编辑态界面结构。标题和正文块改为同一套 input/textarea 与 BlockEditor DOM，阅读态通过 readOnly + caret-transparent 禁止编辑并保持排版一致；重建前端并重启 3100，后端 pytest 5 passed，前端 build 通过，Playwright 回归确认只读态与编辑态正文容器一致，仅编辑态显示块工具按钮与保存/取消按钮。
+- 2026-03-30 17:58 CST: 修复文档阅读态行尾多余 `|`。原因是历史 `link_card/image_block` 空地址仍按 `标题 | 地址` 文本格式展示；在阅读态显示层对空地址分隔符做清洗，并同步清洗顶部摘要标签中的旧 `plain_text` 残留。前端重新 build 并重启 3100 验证通过。
+- 2026-03-30 18:09 CST: 文档模式切换改为下拉选择（只读/编辑），移除手动保存/取消按钮。编辑态引入 1.2s 自动保存；切回只读时如果存在未提交变更，会等待自动提交完成后再切换。前端 build 通过，后端 pytest 5 passed，Playwright 回归验证了两条链路：1) 编辑后自动触发 PUT /content 并保存；2) 编辑后立即切回只读，后端仍会收到并保存最新修改。示例文档已恢复原内容。
+- 2026-03-30 18:12 CST: 文档页顶部“回收站”按钮改为“删除”，并新增删除确认弹窗。用户点击删除后不会立即执行，需在弹窗中二次确认才会移入回收站。前端 build 通过，后端 pytest 5 passed，Playwright 回归确认按钮文案和确认弹窗均生效。
+- 2026-03-30 18:18 CST: 重做文档模式切换控件，对齐参考视频样式。原生 select 替换为胶囊按钮 + 自定义浮层菜单，加入图标、当前项高亮、右侧勾选、箭头旋转以及菜单淡入下滑动画；同时补了点击外部与 Esc 关闭。前端 build 通过，后端 pytest 5 passed，Playwright 截图回归确认新样式已生效。
+- 2026-03-30 18:26 CST: 统一把前端按钮、模式菜单、弹窗和相关矩形状态块的圆角从 `rounded-xl` 再收小一档到 `rounded-lg`，整体更接近矩形按钮风格。前端 build 通过，后端 pytest 5 passed，Playwright 截图回归确认 3100 上圆角已变小。

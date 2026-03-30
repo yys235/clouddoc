@@ -1,0 +1,29 @@
+import { AppShell } from "@/components/layout/app-shell";
+import { SearchForm } from "@/components/search/search-form";
+import { SearchResults } from "@/components/search/search-results";
+import { searchDocuments } from "@/lib/api";
+
+export default async function SearchPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string }>;
+}) {
+  const params = await searchParams;
+  const query = params.q?.trim() ?? "";
+  const results = query ? await searchDocuments(query) : [];
+
+  return (
+    <AppShell>
+      <div className="mx-auto max-w-6xl px-5 pt-5">
+        <section className="rounded-3xl bg-white p-6 shadow-panel">
+          <div className="max-w-2xl">
+            <div className="text-sm font-medium text-accent">Search Workspace</div>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight">搜索 CloudDoc 文档</h1>
+            <SearchForm initialQuery={query} />
+          </div>
+        </section>
+      </div>
+      <SearchResults query={query} results={results} />
+    </AppShell>
+  );
+}
