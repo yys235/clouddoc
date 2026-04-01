@@ -2,6 +2,19 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+export type LinkCardView = "link" | "title" | "card" | "preview";
+
+export type LinkCardMeta = {
+  href?: string;
+  title?: string;
+  description?: string;
+  siteName?: string;
+  image?: string;
+  icon?: string;
+  view?: LinkCardView;
+  status?: "idle" | "loading" | "ready" | "error";
+};
+
 export type EditableBlockType =
   | "paragraph"
   | "heading"
@@ -18,6 +31,8 @@ export type EditableBlock = {
   id: string;
   type: EditableBlockType;
   text: string;
+  headingLevel?: number;
+  meta?: LinkCardMeta;
 };
 
 type BlockCommand = {
@@ -27,6 +42,10 @@ type BlockCommand = {
   description: string;
   keywords: string[];
 };
+
+type QuickCommand =
+  | { kind: "type"; type: EditableBlockType; label: string; title: string }
+  | { kind: "heading"; level: number; label: string; title: string };
 
 const BLOCK_COMMANDS: BlockCommand[] = [
   {
@@ -41,7 +60,7 @@ const BLOCK_COMMANDS: BlockCommand[] = [
     label: "标题",
     shortLabel: "H1",
     description: "章节标题和大纲节点",
-    keywords: ["heading", "title", "h1", "h2"],
+    keywords: ["heading", "title", "h1", "h2", "h3", "h4", "h5", "h6"],
   },
   {
     type: "bullet_list",
@@ -82,7 +101,7 @@ const BLOCK_COMMANDS: BlockCommand[] = [
     type: "link",
     label: "链接",
     shortLabel: "↗",
-    description: "链接标题和地址",
+    description: "粘贴链接并生成链接卡片",
     keywords: ["link", "url", "href"],
   },
   {
@@ -101,84 +120,187 @@ const BLOCK_COMMANDS: BlockCommand[] = [
   },
 ];
 
-function textAreaClassName(type: EditableBlockType) {
-  if (type === "heading") {
-    return "min-h-0 text-2xl font-semibold leading-tight tracking-tight text-slate-900";
+const LINK_VIEW_OPTIONS: Array<{ value: LinkCardView; label: string }> = [
+  { value: "link", label: "链接视图" },
+  { value: "title", label: "标题视图" },
+  { value: "card", label: "卡片视图" },
+  { value: "preview", label: "预览视图" },
+];
+
+function normalizeExternalHref(rawHref: string) {
+  const href = rawHref.trim();
+  if (!href) {
+    return "";
   }
 
-  if (type === "divider") {
+  if (/^https?:\/\//i.test(href)) {
+    return href;
+  }
+
+  if (/^[\w.-]+\.[a-z]{2,}(\/.*)?$/i.test(href)) {
+    return `https://${href}`;
+  }
+
+  return "";
+}
+
+function parseLinkSource(text: string) {
+  const parts = text
+    .split("|")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length >= 2) {
+    return {
+      title: parts[0],
+      href: normalizeExternalHref(parts[1]),
+    };
+  }
+
+  const value = text.trim();
+  const href = normalizeExternalHref(value);
+  return {
+    title: href ? "" : value,
+    href,
+  };
+}
+
+function inferSiteNameFromHref(href: string) {
+  try {
+    return new URL(href).hostname.replace(/^www\./, "");
+  } catch {
+    return href;
+  }
+}
+
+function linkPreviewData(block: EditableBlock) {
+  const parsed = parseLinkSource(block.text);
+  const href = block.meta?.href?.trim() || parsed.href || "";
+  const title = block.meta?.title?.trim() || parsed.title || href || "未命名链接";
+  const description = block.meta?.description?.trim() || "";
+  const siteName = block.meta?.siteName?.trim() || (href ? inferSiteNameFromHref(href) : "");
+  const image = block.meta?.image?.trim() || "";
+  const icon = block.meta?.icon?.trim() || "";
+  const view = block.meta?.view || "link";
+  const status = block.meta?.status || (href ? "ready" : "idle");
+  return { href, title, description, siteName, image, icon, view, status };
+}
+
+function sanitizeHeadingLevel(level: number | undefined) {
+  const value = Number(level ?? 1);
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.max(1, Math.min(6, Math.trunc(value)));
+}
+
+function headingTextClassName(level: number | undefined) {
+  const currentLevel = sanitizeHeadingLevel(level);
+  if (currentLevel === 1) {
+    return "text-3xl font-semibold leading-tight tracking-tight text-slate-900";
+  }
+  if (currentLevel === 2) {
+    return "text-[1.75rem] font-semibold leading-tight tracking-tight text-slate-900";
+  }
+  if (currentLevel === 3) {
+    return "text-[1.45rem] font-semibold leading-tight tracking-tight text-slate-900";
+  }
+  if (currentLevel === 4) {
+    return "text-[1.2rem] font-semibold leading-8 tracking-tight text-slate-900";
+  }
+  if (currentLevel === 5) {
+    return "text-[1.05rem] font-semibold leading-8 text-slate-800";
+  }
+  return "text-base font-semibold leading-8 text-slate-800";
+}
+
+function textAreaClassName(block: EditableBlock) {
+  if (block.type === "heading") {
+    return `min-h-0 ${headingTextClassName(block.headingLevel)}`;
+  }
+
+  if (block.type === "divider") {
     return "min-h-0 text-sm leading-6 text-slate-400";
   }
 
-  if (type === "link") {
+  if (block.type === "link") {
+    return "min-h-0 px-0 py-0 text-sm leading-6 text-slate-500";
+  }
+
+  if (block.type === "image") {
     return "min-h-0 px-0 py-0 text-base leading-8 text-slate-700";
   }
 
-  if (type === "image") {
-    return "min-h-0 px-0 py-0 text-base leading-8 text-slate-700";
-  }
-
-  if (type === "code_block") {
+  if (block.type === "code_block") {
     return "min-h-0 px-0 py-0 font-mono text-sm leading-7 text-slate-700";
   }
 
-  if (type === "quote") {
+  if (block.type === "quote") {
     return "min-h-0 px-0 py-0 text-base leading-8 text-slate-600";
   }
 
-  if (type === "check_list") {
+  if (block.type === "check_list") {
     return "min-h-0 text-base leading-8 text-slate-700";
   }
 
   return "min-h-0 text-base leading-8 text-slate-700";
 }
 
-function placeholderByType(type: EditableBlockType) {
-  if (type === "heading") {
-    return "输入标题块";
+function placeholderByType(block: EditableBlock) {
+  if (block.type === "heading") {
+    return `输入 H${sanitizeHeadingLevel(block.headingLevel)} 标题块`;
   }
 
-  if (type === "bullet_list") {
+  if (block.type === "bullet_list") {
     return "每行一个列表项";
   }
 
-  if (type === "ordered_list") {
+  if (block.type === "ordered_list") {
     return "每行一个条目，自动按顺序渲染";
   }
 
-  if (type === "check_list") {
+  if (block.type === "check_list") {
     return "每行一个检查项，支持 [ ] 和 [x]";
   }
 
-  if (type === "quote") {
+  if (block.type === "quote") {
     return "输入引用内容";
   }
 
-  if (type === "divider") {
+  if (block.type === "divider") {
     return "输入 --- 或直接保留为空";
   }
 
-  if (type === "link") {
-    return "标题 | https://example.com";
+  if (block.type === "link") {
+    return "粘贴链接，或输入 标题 | URL";
   }
 
-  if (type === "image") {
+  if (block.type === "image") {
     return "图片说明 | https://example.com/image.png";
   }
 
-  if (type === "code_block") {
+  if (block.type === "code_block") {
     return "输入代码块";
   }
 
   return "输入正文，或输入 / 打开命令";
 }
 
-function labelByType(type: EditableBlockType) {
-  return BLOCK_COMMANDS.find((item) => item.type === type)?.label ?? "正文";
+function defaultTextByType(type: EditableBlockType) {
+  if (type === "link") {
+    return "";
+  }
+  return "";
 }
 
-function defaultTextByType(type: EditableBlockType) {
-  return "";
+function defaultMetaByType(type: EditableBlockType): LinkCardMeta | undefined {
+  if (type === "link") {
+    return {
+      view: "link",
+      status: "idle",
+    };
+  }
+  return undefined;
 }
 
 function commandQuery(text: string) {
@@ -210,7 +332,7 @@ function filterCommands(query: string) {
   });
 }
 
-function fallbackSplitText(type: EditableBlockType) {
+function fallbackSplitText() {
   return "";
 }
 
@@ -219,7 +341,33 @@ function rowsByType(type: EditableBlockType, text: string) {
     return 1;
   }
 
+  if (type === "link") {
+    return 1;
+  }
+
   return Math.max(text.split("\n").length, type === "code_block" ? 4 : 1);
+}
+
+function quickCommandsForBlock(block: EditableBlock): QuickCommand[] {
+  const headingLevels = [1, 2, 3, 4, 5, 6];
+
+  return [
+    { kind: "type", type: "paragraph", label: "T", title: "正文" },
+    ...headingLevels.map((level) => ({
+      kind: "heading" as const,
+      level,
+      label: `H${level}`,
+      title: `标题 ${level}`,
+    })),
+    { kind: "type", type: "ordered_list", label: "1.", title: "有序列表" },
+    { kind: "type", type: "bullet_list", label: "≡", title: "列表" },
+    { kind: "type", type: "check_list", label: "☑", title: "检查项" },
+    { kind: "type", type: "code_block", label: "{}", title: "代码" },
+    { kind: "type", type: "quote", label: "❝", title: "引用" },
+    { kind: "type", type: "divider", label: "▭", title: "分割线" },
+    { kind: "type", type: "link", label: "↗", title: "链接" },
+    { kind: "type", type: "image", label: "⧉", title: "图片" },
+  ];
 }
 
 function isEmptyBlock(block: EditableBlock) {
@@ -231,21 +379,156 @@ function displayTextForBlock(block: EditableBlock, readOnly: boolean) {
     return block.text;
   }
 
-  if (block.type === "link" || block.type === "image") {
+  if (block.type === "image") {
     return block.text.replace(/\s*\|\s*$/, "");
   }
 
   return block.text;
 }
 
+function RefreshIcon() {
+  return <span className="text-sm leading-none">↻</span>;
+}
+
+function GridIcon() {
+  return <span className="text-sm leading-none">▦</span>;
+}
+
+function MoreIcon() {
+  return <span className="text-sm leading-none">⋯</span>;
+}
+
+function CommentIcon() {
+  return <span className="text-sm leading-none">◫</span>;
+}
+
+function actionGlyph(label: string) {
+  if (label === "复制") {
+    return "⧉";
+  }
+  if (label === "删除") {
+    return "🗑";
+  }
+  if (label === "上移") {
+    return "↑";
+  }
+  if (label === "下移") {
+    return "↓";
+  }
+  if (label === "在下方添加") {
+    return "+";
+  }
+  return "•";
+}
+
+function LinkPreviewBlock({ block, readOnly }: { block: EditableBlock; readOnly: boolean }) {
+  const preview = linkPreviewData(block);
+
+  if (!preview.href && !preview.title) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-400">
+        粘贴链接后会自动生成链接块
+      </div>
+    );
+  }
+
+  const previewBody = (() => {
+    if (preview.status === "loading") {
+      return (
+        <div className="rounded-lg border border-sky-100 bg-sky-50/60 px-4 py-3 text-sm text-slate-500">
+          正在抓取链接信息...
+        </div>
+      );
+    }
+
+    if (preview.view === "link") {
+      return (
+        <a
+          href={preview.href || undefined}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white/85 px-4 py-3 text-sm text-slate-700 transition hover:border-slate-300"
+        >
+          <span className="text-base text-sky-600">🔗</span>
+          <span className="truncate">{preview.href || preview.title}</span>
+        </a>
+      );
+    }
+
+    if (preview.view === "title") {
+      return (
+        <a
+          href={preview.href || undefined}
+          target="_blank"
+          rel="noreferrer"
+          className="block rounded-lg border border-slate-200 bg-white/85 px-4 py-3 transition hover:border-slate-300"
+        >
+          <div className="text-lg font-medium text-slate-900">{preview.title}</div>
+          <div className="mt-1 text-sm text-slate-400">{preview.href}</div>
+        </a>
+      );
+    }
+
+    const card = (
+      <div className="overflow-hidden rounded-lg border border-slate-200 bg-white/92 shadow-[0_1px_0_rgba(15,23,42,0.03)]">
+        {preview.view === "preview" ? (
+          preview.image ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={preview.image} alt={preview.title} className="h-48 w-full object-cover" />
+          ) : (
+            <div className="flex h-36 items-center justify-center bg-slate-50 text-sm text-slate-400">
+              {preview.siteName || "网页预览"}
+            </div>
+          )
+        ) : null}
+        <div className="px-4 py-3">
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            {preview.icon ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={preview.icon} alt="icon" className="h-4 w-4 rounded-sm" />
+            ) : null}
+            <span>{preview.siteName || preview.href}</span>
+          </div>
+          <div className="mt-1 text-base font-medium text-slate-900">{preview.title}</div>
+          {preview.description ? (
+            <div className="mt-1 line-clamp-2 text-sm leading-6 text-slate-500">{preview.description}</div>
+          ) : null}
+          {preview.href ? <div className="mt-2 text-xs text-slate-400">{preview.href}</div> : null}
+        </div>
+      </div>
+    );
+
+    if (!preview.href) {
+      return card;
+    }
+
+    return (
+      <a href={preview.href} target="_blank" rel="noreferrer" className="block">
+        {card}
+      </a>
+    );
+  })();
+
+  return (
+    <div className={`${readOnly ? "" : "mb-2"}`}>
+      {previewBody}
+      {preview.status === "error" ? (
+        <div className="mt-2 text-xs text-rose-500">链接信息抓取失败，可点击刷新重试。</div>
+      ) : null}
+    </div>
+  );
+}
+
 export function BlockEditor({
   blocks,
   onChange,
   readOnly = false,
+  onResolveLinkPreview,
 }: {
   blocks: EditableBlock[];
   onChange: (blocks: EditableBlock[]) => void;
   readOnly?: boolean;
+  onResolveLinkPreview?: (blockId: string, url: string) => void | Promise<void>;
 }) {
   const [commandMenu, setCommandMenu] = useState<{
     blockId: string;
@@ -261,13 +544,28 @@ export function BlockEditor({
   const [draggingBlockId, setDraggingBlockId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [visibleToolbarBlockId, setVisibleToolbarBlockId] = useState<string | null>(null);
+  const [linkViewMenuBlockId, setLinkViewMenuBlockId] = useState<string | null>(null);
+  const [closingCommandMenuBlockId, setClosingCommandMenuBlockId] = useState<string | null>(null);
+  const [pinnedCommandMenuBlockId, setPinnedCommandMenuBlockId] = useState<string | null>(null);
+  const [commandMenuPosition, setCommandMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  const handleButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const hideToolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hideCommandMenuTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const commandMenuFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const commandMenuRef = useRef<HTMLDivElement | null>(null);
+  const linkViewMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     return () => {
       if (hideToolbarTimerRef.current) {
         clearTimeout(hideToolbarTimerRef.current);
+      }
+      if (hideCommandMenuTimerRef.current) {
+        clearTimeout(hideCommandMenuTimerRef.current);
+      }
+      if (commandMenuFadeTimerRef.current) {
+        clearTimeout(commandMenuFadeTimerRef.current);
       }
     };
   }, []);
@@ -287,8 +585,112 @@ export function BlockEditor({
     setPendingFocus(null);
   }, [blocks, pendingFocus]);
 
+  useEffect(() => {
+    if (!linkViewMenuBlockId) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (linkViewMenuRef.current && !linkViewMenuRef.current.contains(event.target as Node)) {
+        setLinkViewMenuBlockId(null);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [linkViewMenuBlockId]);
+
+  useEffect(() => {
+    if (!commandMenu || commandMenu.mode !== "actions") {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (commandMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      closeCommandMenuWithFade(commandMenu.blockId);
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeCommandMenuWithFade(commandMenu.blockId);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [commandMenu]);
+
+  useEffect(() => {
+    if (!commandMenu || commandMenu.mode !== "actions") {
+      setCommandMenuPosition(null);
+      return;
+    }
+
+    const updateCommandMenuPosition = () => {
+      const anchor = handleButtonRefs.current[commandMenu.blockId];
+      const menu = commandMenuRef.current;
+      if (!anchor || !menu) {
+        return;
+      }
+
+      const anchorRect = anchor.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const gap = 8;
+      const viewportPadding = 8;
+      const menuWidth = menuRect.width || 300;
+      const menuHeight = menuRect.height || 360;
+      const fitsLeft = anchorRect.left - gap - menuWidth >= viewportPadding;
+
+      let left = fitsLeft
+        ? anchorRect.left - gap - menuWidth
+        : anchorRect.right + gap;
+      left = Math.min(
+        Math.max(viewportPadding, left),
+        Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding),
+      );
+
+      let top = anchorRect.top + anchorRect.height / 2 - 28;
+      top = Math.min(
+        Math.max(viewportPadding, top),
+        Math.max(viewportPadding, window.innerHeight - menuHeight - viewportPadding),
+      );
+
+      setCommandMenuPosition({ left, top });
+    };
+
+    updateCommandMenuPosition();
+    window.addEventListener("resize", updateCommandMenuPosition);
+    window.addEventListener("scroll", updateCommandMenuPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateCommandMenuPosition);
+      window.removeEventListener("scroll", updateCommandMenuPosition, true);
+    };
+  }, [commandMenu, blocks]);
+
   const updateBlock = (blockId: string, patch: Partial<EditableBlock>) => {
     onChange(blocks.map((block) => (block.id === blockId ? { ...block, ...patch } : block)));
+  };
+
+  const updateLinkMeta = (blockId: string, patch: Partial<LinkCardMeta>) => {
+    onChange(
+      blocks.map((block) =>
+        block.id === blockId
+          ? {
+              ...block,
+              meta: {
+                ...block.meta,
+                ...patch,
+              },
+            }
+          : block,
+      ),
+    );
   };
 
   const showToolbar = (blockId: string) => {
@@ -309,6 +711,51 @@ export function BlockEditor({
     }, 1500);
   };
 
+  const cancelCommandMenuHide = () => {
+    if (hideCommandMenuTimerRef.current) {
+      clearTimeout(hideCommandMenuTimerRef.current);
+      hideCommandMenuTimerRef.current = null;
+    }
+    if (commandMenuFadeTimerRef.current) {
+      clearTimeout(commandMenuFadeTimerRef.current);
+      commandMenuFadeTimerRef.current = null;
+    }
+    setClosingCommandMenuBlockId(null);
+  };
+
+  const openActionsMenu = (blockId: string) => {
+    cancelCommandMenuHide();
+    setCommandMenu((value) =>
+      value?.blockId === blockId && value.mode === "slash"
+        ? value
+        : {
+            blockId,
+            mode: "actions",
+            query: "",
+            selectedIndex: 0,
+        },
+    );
+  };
+
+  const closeCommandMenuWithFade = (blockId: string) => {
+    cancelCommandMenuHide();
+    setPinnedCommandMenuBlockId((current) => (current === blockId ? null : current));
+    setClosingCommandMenuBlockId(blockId);
+    commandMenuFadeTimerRef.current = setTimeout(() => {
+      setCommandMenu((current) => (current?.blockId === blockId ? null : current));
+      setClosingCommandMenuBlockId((current) => (current === blockId ? null : current));
+      commandMenuFadeTimerRef.current = null;
+    }, 180);
+  };
+
+  const hideCommandMenuWithDelay = (blockId: string) => {
+    cancelCommandMenuHide();
+    hideCommandMenuTimerRef.current = setTimeout(() => {
+      hideCommandMenuTimerRef.current = null;
+      closeCommandMenuWithFade(blockId);
+    }, 1000);
+  };
+
   const focusBlock = (blockId: string, caret: number) => {
     setPendingFocus({ blockId, caret });
   };
@@ -319,13 +766,19 @@ export function BlockEditor({
       id: crypto.randomUUID(),
       type,
       text: defaultTextByType(type),
+      headingLevel: type === "heading" ? 1 : undefined,
+      meta: defaultMetaByType(type),
     });
     onChange(nextBlocks);
   };
 
   const removeBlock = (blockId: string) => {
     const nextBlocks = blocks.filter((block) => block.id !== blockId);
-    onChange(nextBlocks.length > 0 ? nextBlocks : [{ id: crypto.randomUUID(), type: "paragraph", text: "" }]);
+    onChange(
+      nextBlocks.length > 0
+        ? nextBlocks
+        : [{ id: crypto.randomUUID(), type: "paragraph", text: "" }],
+    );
   };
 
   const moveBlock = (index: number, direction: -1 | 1) => {
@@ -350,6 +803,7 @@ export function BlockEditor({
     nextBlocks.splice(index + 1, 0, {
       ...target,
       id: crypto.randomUUID(),
+      meta: target.meta ? { ...target.meta } : undefined,
     });
     onChange(nextBlocks);
   };
@@ -380,15 +834,21 @@ export function BlockEditor({
     const before = current.text.slice(0, selectionStart);
     const after = current.text.slice(selectionEnd);
     const nextBlockId = crypto.randomUUID();
-    const currentText = before || fallbackSplitText(current.type);
-    const nextText = after || fallbackSplitText(current.type);
+    const currentText = before || fallbackSplitText();
+    const nextText = after || fallbackSplitText();
 
     const nextBlocks = [...blocks];
-    nextBlocks.splice(index, 1, { ...current, text: currentText });
+    nextBlocks.splice(index, 1, {
+      ...current,
+      text: currentText,
+      meta: current.meta ? { ...current.meta } : undefined,
+    });
     nextBlocks.splice(index + 1, 0, {
       id: nextBlockId,
       type: current.type,
       text: nextText,
+      headingLevel: current.headingLevel,
+      meta: current.type === "link" ? { ...(current.meta ?? {}), status: "idle" } : current.meta ? { ...current.meta } : undefined,
     });
 
     onChange(nextBlocks);
@@ -414,6 +874,7 @@ export function BlockEditor({
     type: EditableBlockType,
     options?: {
       preserveContent?: boolean;
+      headingLevel?: number;
     },
   ) => {
     onChange(
@@ -423,6 +884,11 @@ export function BlockEditor({
               ...block,
               type,
               text: options?.preserveContent ? block.text : defaultTextByType(type),
+              headingLevel:
+                type === "heading"
+                  ? sanitizeHeadingLevel(options?.headingLevel ?? block.headingLevel ?? 1)
+                  : undefined,
+              meta: type === "link" ? { ...(block.meta ?? {}), ...(defaultMetaByType(type) ?? {}) } : undefined,
             }
           : block,
       ),
@@ -439,6 +905,8 @@ export function BlockEditor({
   }, [commandMenu]);
 
   const closeCommandMenu = () => {
+    cancelCommandMenuHide();
+    setPinnedCommandMenuBlockId(null);
     if (commandMenu?.blockId) {
       hideToolbarWithDelay(commandMenu.blockId);
     }
@@ -447,437 +915,669 @@ export function BlockEditor({
 
   return (
     <div className="space-y-1">
-      {blocks.map((block, index) => (
-        <div
-          key={block.id}
-          className={`group relative ${
-            dropTargetId === block.id ? "before:absolute before:left-0 before:right-0 before:top-0 before:h-px before:bg-sky-400" : ""
-          }`}
-          onDragOver={(event) => {
-            if (!draggingBlockId || draggingBlockId === block.id) {
-              return;
-            }
-            event.preventDefault();
-            setDropTargetId(block.id);
-          }}
-          onDrop={(event) => {
-            if (!draggingBlockId || draggingBlockId === block.id) {
-              return;
-            }
-            event.preventDefault();
-            moveBlockToIndex(draggingBlockId, index);
-            setDraggingBlockId(null);
-            setDropTargetId(null);
-          }}
-        >
-          {!readOnly ? (
-            <div className="pointer-events-none absolute left-[-34px] top-1/2 z-10 -translate-y-1/2">
-              <button
-              type="button"
-              draggable
-              onPointerEnter={() => showToolbar(block.id)}
-              onPointerLeave={() => {
-                if (commandMenu?.blockId === block.id) {
-                  return;
-                }
-                hideToolbarWithDelay(block.id);
-              }}
-              onDragStart={(event) => {
-                setDraggingBlockId(block.id);
-                showToolbar(block.id);
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("text/plain", block.id);
-              }}
-              onDragEnd={() => {
-                setDraggingBlockId(null);
-                setDropTargetId(null);
-              }}
-              onClick={() =>
-                setCommandMenu((value) =>
-                  value?.blockId === block.id && value.mode === "actions"
-                    ? null
-                    : {
-                        blockId: block.id,
-                        mode: "actions",
-                        query: "",
-                        selectedIndex: 0,
-                      },
-                )
-              }
-              className={`pointer-events-auto flex h-8 min-w-8 items-center justify-center rounded-lg border bg-white text-slate-500 shadow-sm transition ${
-                draggingBlockId === block.id
-                  ? "border-sky-300 text-sky-600"
-                  : visibleToolbarBlockId === block.id || commandMenu?.blockId === block.id
-                    ? "border-slate-200 opacity-100 hover:border-slate-300 hover:text-slate-700"
-                    : "border-slate-200 opacity-0 hover:border-slate-300 hover:text-slate-700"
-              }`}
-              aria-label="块操作与拖拽"
-            >
-              {isEmptyBlock(block) ? (
-                <span className="text-[16px] leading-none">+</span>
-              ) : (
-                <div className="flex items-center gap-1.5 px-1.5">
-                  <span className="text-[13px] font-medium leading-none text-sky-600">T</span>
-                  <span className="text-[12px] leading-none text-slate-300">⋮</span>
-                </div>
-              )}
-              </button>
-            </div>
-          ) : null}
+      {blocks.map((block, index) => {
+        const preview = block.type === "link" ? linkPreviewData(block) : null;
+        const showLinkToolbar =
+          !readOnly &&
+          block.type === "link" &&
+          (activeBlockId === block.id ||
+            visibleToolbarBlockId === block.id ||
+            linkViewMenuBlockId === block.id ||
+            commandMenu?.blockId === block.id);
 
+        return (
           <div
-            className={`relative -mx-3 rounded-lg px-3 transition ${
-              activeBlockId === block.id || commandMenu?.blockId === block.id
-                ? "bg-sky-50/70"
-                : "bg-transparent"
+            key={block.id}
+            className={`group relative ${
+              dropTargetId === block.id
+                ? "before:absolute before:left-0 before:right-0 before:top-0 before:h-px before:bg-sky-400"
+                : ""
             }`}
+            onPointerEnter={() => {
+              if (readOnly) {
+                return;
+              }
+              showToolbar(block.id);
+            }}
+            onPointerLeave={() => {
+              if (readOnly) {
+                return;
+              }
+              if (pinnedCommandMenuBlockId === block.id) {
+                return;
+              }
+              if (commandMenu?.blockId === block.id) {
+                hideCommandMenuWithDelay(block.id);
+              }
+              if (linkViewMenuBlockId === block.id) {
+                return;
+              }
+              hideToolbarWithDelay(block.id);
+            }}
+            onDragOver={(event) => {
+              if (!draggingBlockId || draggingBlockId === block.id) {
+                return;
+              }
+              event.preventDefault();
+              setDropTargetId(block.id);
+            }}
+            onDrop={(event) => {
+              if (!draggingBlockId || draggingBlockId === block.id) {
+                return;
+              }
+              event.preventDefault();
+              moveBlockToIndex(draggingBlockId, index);
+              setDraggingBlockId(null);
+              setDropTargetId(null);
+            }}
           >
-            <textarea
-              ref={(element) => {
-                textareaRefs.current[block.id] = element;
-              }}
-              value={displayTextForBlock(block, readOnly)}
-              onChange={(event) => {
-                if (readOnly) {
-                  return;
-                }
-
-                const value = event.target.value;
-                updateBlock(block.id, { text: value });
-
-                const query = commandQuery(value);
-                if (query !== null) {
-                  setCommandMenu({
-                    blockId: block.id,
-                    mode: "slash",
-                    query,
-                    selectedIndex: 0,
-                  });
-                  return;
-                }
-
-                if (commandMenu?.blockId === block.id) {
-                  setCommandMenu(null);
-                }
-              }}
-              onFocus={() => {
-                setActiveBlockId(block.id);
-                if (readOnly) {
-                  return;
-                }
-                const query = commandQuery(block.text);
-                if (query !== null) {
-                  setCommandMenu({
-                    blockId: block.id,
-                    mode: "slash",
-                    query,
-                    selectedIndex: 0,
-                  });
-                }
-              }}
-              onBlur={() => {
-                setActiveBlockId((current) => (current === block.id ? null : current));
-              }}
-              onKeyDown={(event) => {
-                if (readOnly) {
-                  return;
-                }
-                const selectionStart = event.currentTarget.selectionStart;
-                const selectionEnd = event.currentTarget.selectionEnd;
-                const hasSelection = selectionStart !== selectionEnd;
-                const currentLength = event.currentTarget.value.length;
-
-                const directQuery = commandQuery(event.currentTarget.value);
-                if (event.key === "Enter" && !event.shiftKey && directQuery !== null) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  const directCommands = filterCommands(directQuery);
-                  const selectedIndex =
-                    commandMenu?.blockId === block.id ? commandMenu.selectedIndex : 0;
-                  const command = directCommands[selectedIndex] ?? directCommands[0];
-                  if (command) {
-                    applyCommand(block.id, command.type);
-                  }
-                  return;
-                }
-
-                if (!hasSelection) {
-                  if (event.key === "ArrowUp" && selectionStart === 0) {
-                    event.preventDefault();
-                    moveCaretToNeighbor(index, "previous", "end");
-                    return;
-                  }
-
-                  if (event.key === "ArrowLeft" && selectionStart === 0) {
-                    event.preventDefault();
-                    moveCaretToNeighbor(index, "previous", "end");
-                    return;
-                  }
-
-                  if (event.key === "ArrowDown" && selectionStart === currentLength) {
-                    event.preventDefault();
-                    moveCaretToNeighbor(index, "next", "start");
-                    return;
-                  }
-
-                  if (event.key === "ArrowRight" && selectionStart === currentLength) {
-                    event.preventDefault();
-                    moveCaretToNeighbor(index, "next", "start");
-                    return;
-                  }
-                }
-
-                if (
-                  commandMenu?.blockId === block.id &&
-                  commandMenu.mode === "slash" &&
-                  filteredCommands.length > 0
-                ) {
-                  if (event.key === "ArrowDown") {
-                    event.preventDefault();
-                    setCommandMenu((value) =>
-                      value
-                        ? {
-                            ...value,
-                            selectedIndex: (value.selectedIndex + 1) % filteredCommands.length,
-                          }
-                        : value,
-                    );
-                    return;
-                  }
-
-                  if (event.key === "ArrowUp") {
-                    event.preventDefault();
-                    setCommandMenu((value) =>
-                      value
-                        ? {
-                            ...value,
-                            selectedIndex:
-                              (value.selectedIndex - 1 + filteredCommands.length) % filteredCommands.length,
-                          }
-                        : value,
-                    );
-                    return;
-                  }
-
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    const command = filteredCommands[commandMenu.selectedIndex] ?? filteredCommands[0];
-                    if (command) {
-                      applyCommand(block.id, command.type);
+            {!readOnly ? (
+              <div className="pointer-events-none absolute left-[-42px] top-1/2 z-10 -translate-y-1/2">
+                <button
+                  ref={(element) => {
+                    handleButtonRefs.current[block.id] = element;
+                  }}
+                  type="button"
+                  draggable
+                  onPointerEnter={() => {
+                    showToolbar(block.id);
+                    openActionsMenu(block.id);
+                  }}
+                  onPointerLeave={() => {
+                    if (pinnedCommandMenuBlockId === block.id) {
+                      return;
                     }
-                    return;
-                  }
-
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    setCommandMenu(null);
-                    return;
-                  }
-                }
-
-                const liveQuery =
-                  commandMenu?.blockId === block.id ? commandMenu.query : directQuery;
-                const liveCommands = liveQuery === null ? [] : filterCommands(liveQuery);
-
-                if (liveQuery !== null && liveCommands.length > 0) {
-                  if (!commandMenu || commandMenu.blockId !== block.id) {
-                    setCommandMenu({
-                      blockId: block.id,
-                      mode: "slash",
-                      query: liveQuery,
-                      selectedIndex: 0,
-                    });
-                  }
-
-                  if (event.key === "ArrowDown") {
-                    event.preventDefault();
-                    setCommandMenu((value) =>
-                      value
-                        ? {
-                            ...value,
-                            selectedIndex: (value.selectedIndex + 1) % liveCommands.length,
-                          }
-                        : value,
-                    );
-                    return;
-                  }
-
-                  if (event.key === "ArrowUp") {
-                    event.preventDefault();
-                    setCommandMenu((value) =>
-                      value
-                        ? {
-                            ...value,
-                            selectedIndex: (value.selectedIndex - 1 + liveCommands.length) % liveCommands.length,
-                          }
-                        : value,
-                    );
-                    return;
-                  }
-
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    const command = liveCommands[0];
-                    if (command) {
-                      applyCommand(block.id, command.type);
+                    if (commandMenu?.blockId === block.id) {
+                      hideCommandMenuWithDelay(block.id);
                     }
-                    return;
-                  }
-
-                  if (event.key === "Escape") {
+                    if (linkViewMenuBlockId === block.id) {
+                      return;
+                    }
+                    hideToolbarWithDelay(block.id);
+                  }}
+                  onDragStart={(event) => {
+                    setDraggingBlockId(block.id);
+                    showToolbar(block.id);
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", block.id);
+                  }}
+                  onDragEnd={() => {
+                    setDraggingBlockId(null);
+                    setDropTargetId(null);
+                  }}
+                  onMouseDown={(event) => {
                     event.preventDefault();
-                    setCommandMenu(null);
-                    return;
-                  }
-                } else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  splitBlock(index, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
-                }
-              }}
-              rows={rowsByType(block.type, displayTextForBlock(block, readOnly))}
-              readOnly={readOnly}
-              spellCheck={!readOnly}
-              aria-readonly={readOnly}
-              className={`block w-full resize-none border-0 bg-transparent p-0 outline-none ${textAreaClassName(block.type)} ${
-                readOnly ? "cursor-text caret-transparent" : ""
+                    setPinnedCommandMenuBlockId(block.id);
+                    cancelCommandMenuHide();
+                    openActionsMenu(block.id);
+                  }}
+                  className={`pointer-events-auto flex h-8 min-w-[42px] items-center justify-center rounded-lg border bg-white text-slate-500 shadow-sm transition ${
+                    draggingBlockId === block.id
+                      ? "border-sky-300 text-sky-600"
+                      : visibleToolbarBlockId === block.id || commandMenu?.blockId === block.id
+                        ? "border-slate-200 opacity-100 hover:border-slate-300 hover:text-slate-700"
+                        : "border-slate-200 opacity-0 hover:border-slate-300 hover:text-slate-700"
+                  }`}
+                  aria-label="块操作与拖拽"
+                >
+                  {isEmptyBlock(block) ? (
+                    <span className="text-[16px] leading-none">+</span>
+                  ) : (
+                    <div className="flex items-center gap-1.5 px-1.5">
+                      <span className="text-[13px] font-medium leading-none text-sky-600">
+                        {block.type === "link" ? "↗" : block.type === "heading" ? `H${sanitizeHeadingLevel(block.headingLevel)}` : "T"}
+                      </span>
+                      <span className="text-[12px] leading-none text-slate-300">⋮</span>
+                    </div>
+                  )}
+                </button>
+              </div>
+            ) : null}
+
+            <div
+              className={`relative -mx-3 rounded-lg px-3 transition ${
+                activeBlockId === block.id || commandMenu?.blockId === block.id
+                  ? "bg-sky-50/70"
+                  : "bg-transparent"
               }`}
-              placeholder={readOnly ? "" : placeholderByType(block.type)}
-            />
-
-            {!readOnly && commandMenu?.blockId === block.id ? (
-              <div
-                className="absolute left-0 top-[calc(100%+6px)] z-20 w-[300px] rounded-lg border border-slate-200 bg-white p-0 shadow-[0_18px_45px_rgba(15,23,42,0.12)]"
-                onPointerEnter={() => showToolbar(block.id)}
-                onPointerLeave={() => hideToolbarWithDelay(block.id)}
-              >
-                <div className="grid grid-cols-6 gap-px rounded-t-2xl bg-slate-200/80 p-px">
-                  {BLOCK_COMMANDS.map((command) => (
+            >
+              {showLinkToolbar ? (
+                <div
+                  className="mb-2 flex items-center gap-1.5"
+                  onPointerEnter={() => showToolbar(block.id)}
+                  onPointerLeave={() => hideToolbarWithDelay(block.id)}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (preview?.href) {
+                        void onResolveLinkPreview?.(block.id, preview.href);
+                      }
+                    }}
+                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
+                    aria-label="刷新链接预览"
+                  >
+                    <RefreshIcon />
+                  </button>
+                  <div ref={linkViewMenuRef} className="relative">
                     <button
-                      key={command.type}
                       type="button"
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        applyCommand(block.id, command.type, {
-                          preserveContent: commandMenu.mode === "actions",
-                        });
-                      }}
-                      className={`flex h-11 flex-col items-center justify-center gap-0.5 rounded-lg bg-white text-[10px] transition ${
-                        block.type === command.type
-                          ? "text-sky-600 shadow-[inset_0_0_0_1px_rgba(96,165,250,0.45)]"
-                          : "text-slate-500 hover:bg-slate-50"
-                      }`}
+                      onClick={() =>
+                        setLinkViewMenuBlockId((current) => (current === block.id ? null : block.id))
+                      }
+                      className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 transition hover:border-slate-300"
                     >
-                      <span className="text-[13px] font-semibold">{command.shortLabel}</span>
-                      <span>{command.label}</span>
+                      <span>{LINK_VIEW_OPTIONS.find((option) => option.value === preview?.view)?.label ?? "链接视图"}</span>
+                      <span className={`text-xs text-slate-400 transition ${linkViewMenuBlockId === block.id ? "rotate-180" : ""}`}>
+                        ▾
+                      </span>
                     </button>
-                  ))}
-                </div>
-
-                {commandMenu.mode === "slash" ? (
-                  <div className="border-b border-slate-200 px-3 py-2 text-[11px] text-slate-400">
-                    输入命令中：<span className="font-medium text-slate-600">/{commandMenu.query}</span>
+                    {linkViewMenuBlockId === block.id ? (
+                      <div className="absolute left-0 top-[calc(100%+6px)] z-30 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
+                        {LINK_VIEW_OPTIONS.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => {
+                              updateLinkMeta(block.id, { view: option.value });
+                              setLinkViewMenuBlockId(null);
+                            }}
+                            className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm transition ${
+                              preview?.view === option.value
+                                ? "bg-sky-50 text-sky-700"
+                                : "text-slate-600 hover:bg-slate-50"
+                            }`}
+                          >
+                            <span>{option.label}</span>
+                            {preview?.view === option.value ? <span>✓</span> : null}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                ) : null}
+                  <button
+                    type="button"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500"
+                    aria-label="布局"
+                  >
+                    <GridIcon />
+                  </button>
+                  <button
+                    type="button"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500"
+                    aria-label="更多操作"
+                  >
+                    <MoreIcon />
+                  </button>
+                  <button
+                    type="button"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500"
+                    aria-label="评论"
+                  >
+                    <CommentIcon />
+                  </button>
+                </div>
+              ) : null}
 
-                <div className="border-b border-slate-200 px-2 py-2">
-                  {filteredCommands.length > 0 ? (
-                    <div className="space-y-1">
-                      {filteredCommands.map((command, commandIndex) => (
+              {block.type === "link" ? <LinkPreviewBlock block={block} readOnly={readOnly} /> : null}
+
+              {!(readOnly && block.type === "link") ? (
+                <textarea
+                  ref={(element) => {
+                    textareaRefs.current[block.id] = element;
+                  }}
+                  value={displayTextForBlock(block, readOnly)}
+                  onChange={(event) => {
+                    if (readOnly) {
+                      return;
+                    }
+
+                    const value = event.target.value;
+                    if (block.type === "link") {
+                      const parsed = parseLinkSource(value);
+                      onChange(
+                        blocks.map((item) =>
+                          item.id === block.id
+                            ? {
+                                ...item,
+                                text: value,
+                                meta: {
+                                  ...item.meta,
+                                  href: parsed.href || item.meta?.href,
+                                  title: parsed.title || item.meta?.title,
+                                  siteName:
+                                    item.meta?.siteName ||
+                                    (parsed.href ? inferSiteNameFromHref(parsed.href) : undefined),
+                                  view: item.meta?.view || "link",
+                                  status: item.meta?.status || (parsed.href ? "idle" : "idle"),
+                                },
+                              }
+                            : item,
+                        ),
+                      );
+                    } else {
+                      updateBlock(block.id, { text: value });
+                    }
+
+                    const query = commandQuery(value);
+                    if (query !== null) {
+                      setCommandMenu({
+                        blockId: block.id,
+                        mode: "slash",
+                        query,
+                        selectedIndex: 0,
+                      });
+                      return;
+                    }
+
+                    if (commandMenu?.blockId === block.id) {
+                      setCommandMenu(null);
+                    }
+                  }}
+                  onPaste={(event) => {
+                    if (readOnly) {
+                      return;
+                    }
+
+                    const pastedText = event.clipboardData.getData("text/plain").trim();
+                    const normalizedHref = normalizeExternalHref(pastedText);
+                    if (!normalizedHref || event.currentTarget.value.trim()) {
+                      return;
+                    }
+
+                    event.preventDefault();
+                    onChange(
+                      blocks.map((item) =>
+                        item.id === block.id
+                          ? {
+                              ...item,
+                              type: "link",
+                              text: normalizedHref,
+                              meta: {
+                                href: normalizedHref,
+                                title: inferSiteNameFromHref(normalizedHref),
+                                siteName: inferSiteNameFromHref(normalizedHref),
+                                view: "link",
+                                status: "loading",
+                              },
+                            }
+                          : item,
+                      ),
+                    );
+                    void onResolveLinkPreview?.(block.id, normalizedHref);
+                  }}
+                  onFocus={() => {
+                    setActiveBlockId(block.id);
+                    if (readOnly) {
+                      return;
+                    }
+                    const query = commandQuery(block.text);
+                    if (query !== null) {
+                      setCommandMenu({
+                        blockId: block.id,
+                        mode: "slash",
+                        query,
+                        selectedIndex: 0,
+                      });
+                    }
+                  }}
+                  onBlur={(event) => {
+                    setActiveBlockId((current) => (current === block.id ? null : current));
+                    if (readOnly || block.type !== "link") {
+                      return;
+                    }
+                    const parsed = parseLinkSource(event.currentTarget.value);
+                    const currentHref = parsed.href || block.meta?.href || "";
+                    if (currentHref && (block.meta?.href !== currentHref || block.meta?.status !== "ready")) {
+                      void onResolveLinkPreview?.(block.id, currentHref);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (readOnly) {
+                      return;
+                    }
+                    const selectionStart = event.currentTarget.selectionStart;
+                    const selectionEnd = event.currentTarget.selectionEnd;
+                    const hasSelection = selectionStart !== selectionEnd;
+                    const currentLength = event.currentTarget.value.length;
+
+                    const directQuery = commandQuery(event.currentTarget.value);
+                    if (event.key === "Enter" && !event.shiftKey && directQuery !== null) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const directCommands = filterCommands(directQuery);
+                      const selectedIndex =
+                        commandMenu?.blockId === block.id ? commandMenu.selectedIndex : 0;
+                      const command = directCommands[selectedIndex] ?? directCommands[0];
+                      if (command) {
+                        applyCommand(block.id, command.type);
+                      }
+                      return;
+                    }
+
+                    if (!hasSelection) {
+                      if (event.key === "ArrowUp" && selectionStart === 0) {
+                        event.preventDefault();
+                        moveCaretToNeighbor(index, "previous", "end");
+                        return;
+                      }
+
+                      if (event.key === "ArrowLeft" && selectionStart === 0) {
+                        event.preventDefault();
+                        moveCaretToNeighbor(index, "previous", "end");
+                        return;
+                      }
+
+                      if (event.key === "ArrowDown" && selectionStart === currentLength) {
+                        event.preventDefault();
+                        moveCaretToNeighbor(index, "next", "start");
+                        return;
+                      }
+
+                      if (event.key === "ArrowRight" && selectionStart === currentLength) {
+                        event.preventDefault();
+                        moveCaretToNeighbor(index, "next", "start");
+                        return;
+                      }
+                    }
+
+                    if (
+                      commandMenu?.blockId === block.id &&
+                      commandMenu.mode === "slash" &&
+                      filteredCommands.length > 0
+                    ) {
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        setCommandMenu((value) =>
+                          value
+                            ? {
+                                ...value,
+                                selectedIndex: (value.selectedIndex + 1) % filteredCommands.length,
+                              }
+                            : value,
+                        );
+                        return;
+                      }
+
+                      if (event.key === "ArrowUp") {
+                        event.preventDefault();
+                        setCommandMenu((value) =>
+                          value
+                            ? {
+                                ...value,
+                                selectedIndex:
+                                  (value.selectedIndex - 1 + filteredCommands.length) %
+                                  filteredCommands.length,
+                              }
+                            : value,
+                        );
+                        return;
+                      }
+
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        const command = filteredCommands[commandMenu.selectedIndex] ?? filteredCommands[0];
+                        if (command) {
+                          applyCommand(block.id, command.type);
+                        }
+                        return;
+                      }
+
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        setCommandMenu(null);
+                        return;
+                      }
+                    }
+
+                    const liveQuery =
+                      commandMenu?.blockId === block.id ? commandMenu.query : directQuery;
+                    const liveCommands = liveQuery === null ? [] : filterCommands(liveQuery);
+
+                    if (liveQuery !== null && liveCommands.length > 0) {
+                      if (!commandMenu || commandMenu.blockId !== block.id) {
+                        setCommandMenu({
+                          blockId: block.id,
+                          mode: "slash",
+                          query: liveQuery,
+                          selectedIndex: 0,
+                        });
+                      }
+
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        setCommandMenu((value) =>
+                          value
+                            ? {
+                                ...value,
+                                selectedIndex: (value.selectedIndex + 1) % liveCommands.length,
+                              }
+                            : value,
+                        );
+                        return;
+                      }
+
+                      if (event.key === "ArrowUp") {
+                        event.preventDefault();
+                        setCommandMenu((value) =>
+                          value
+                            ? {
+                                ...value,
+                                selectedIndex:
+                                  (value.selectedIndex - 1 + liveCommands.length) % liveCommands.length,
+                              }
+                            : value,
+                        );
+                        return;
+                      }
+
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        const command = liveCommands[0];
+                        if (command) {
+                          applyCommand(block.id, command.type);
+                        }
+                        return;
+                      }
+
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        setCommandMenu(null);
+                        return;
+                      }
+                    } else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      splitBlock(index, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+                    }
+                  }}
+                  rows={rowsByType(block.type, displayTextForBlock(block, readOnly))}
+                  readOnly={readOnly}
+                  spellCheck={!readOnly}
+                  aria-readonly={readOnly}
+                  className={`block w-full resize-none border-0 bg-transparent p-0 outline-none ${textAreaClassName(block)} ${
+                    readOnly ? "cursor-text caret-transparent" : ""
+                  }`}
+                  placeholder={readOnly ? "" : placeholderByType(block)}
+                />
+              ) : null}
+
+              {!readOnly && commandMenu?.blockId === block.id ? (
+                <div
+                  ref={commandMenuRef}
+                  className={`fixed z-30 w-[228px] overflow-hidden rounded-lg border border-slate-200 bg-white p-0 shadow-[0_18px_45px_rgba(15,23,42,0.12)] transition duration-180 ease-out ${
+                    closingCommandMenuBlockId === block.id
+                      ? "pointer-events-none -translate-y-1 opacity-0"
+                      : "translate-y-0 opacity-100"
+                  }`}
+                  style={
+                    commandMenuPosition
+                      ? {
+                          left: `${commandMenuPosition.left}px`,
+                          top: `${commandMenuPosition.top}px`,
+                        }
+                      : undefined
+                  }
+                  onPointerEnter={() => {
+                    showToolbar(block.id);
+                    cancelCommandMenuHide();
+                  }}
+                  onPointerLeave={() => {
+                    setPinnedCommandMenuBlockId((current) => (current === block.id ? null : current));
+                    hideToolbarWithDelay(block.id);
+                    hideCommandMenuWithDelay(block.id);
+                  }}
+                >
+                  <div className="border-b border-slate-200 px-2 py-1">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] leading-none">
+                      {quickCommandsForBlock(block).map((command) => {
+                        const isSelected =
+                          command.kind === "heading"
+                            ? block.type === "heading" && sanitizeHeadingLevel(block.headingLevel) === command.level
+                            : block.type === command.type;
+                        return (
+                          <button
+                            key={command.kind === "heading" ? `heading-${command.level}` : command.type}
+                            type="button"
+                            title={command.title}
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              if (command.kind === "heading") {
+                                applyCommand(block.id, "heading", {
+                                  preserveContent: commandMenu.mode === "actions",
+                                  headingLevel: command.level,
+                                });
+                                return;
+                              }
+                              applyCommand(block.id, command.type, {
+                                preserveContent: commandMenu.mode === "actions",
+                              });
+                            }}
+                            className={`flex h-6 items-center justify-center border-0 bg-transparent p-0 transition ${
+                              isSelected ? "text-sky-600" : "text-slate-700 hover:text-slate-900"
+                            }`}
+                          >
+                            <span className={command.kind === "heading" ? "font-medium" : "font-semibold"}>
+                              {command.label}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {commandMenu.mode === "slash" ? (
+                    <div className="border-b border-slate-200 px-3 py-1.5 text-[11px] leading-4 text-slate-400">
+                      输入命令中：<span className="font-medium text-slate-600">/{commandMenu.query}</span>
+                    </div>
+                  ) : null}
+
+                  {commandMenu.mode === "slash" ? (
+                    <div className="border-b border-slate-200 px-1.5 py-1.5">
+                      {filteredCommands.length > 0 ? (
+                        <div className="space-y-0.5">
+                          {filteredCommands.map((command, commandIndex) => (
+                            <button
+                              key={command.type}
+                              type="button"
+                              onMouseDown={(event) => {
+                                event.preventDefault();
+                                applyCommand(block.id, command.type, {
+                                  preserveContent: true,
+                                });
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition ${
+                                commandIndex === commandMenu.selectedIndex
+                                  ? "bg-sky-50 text-slate-900"
+                                  : "text-slate-600 hover:bg-slate-50"
+                              }`}
+                            >
+                              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-slate-200 text-[12px] font-semibold text-slate-500">
+                                {command.shortLabel}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-[13px] font-medium leading-4">{command.label}</div>
+                                <div className="truncate text-[11px] leading-4 text-slate-400">{command.description}</div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="px-2 py-1.5 text-sm text-slate-400">没有匹配的块命令</div>
+                      )}
+                    </div>
+                  ) : null}
+
+                  <div className="px-1.5 py-1.5">
+                    <div className="space-y-0.5">
+                      {[
+                        {
+                          label: "复制",
+                          onClick: () => {
+                            duplicateBlock(index);
+                            closeCommandMenu();
+                          },
+                        },
+                        {
+                          label: "删除",
+                          danger: true,
+                          onClick: () => {
+                            removeBlock(block.id);
+                            closeCommandMenu();
+                          },
+                        },
+                        {
+                          label: "上移",
+                          onClick: () => {
+                            moveBlock(index, -1);
+                            closeCommandMenu();
+                          },
+                        },
+                        {
+                          label: "下移",
+                          onClick: () => {
+                            moveBlock(index, 1);
+                            closeCommandMenu();
+                          },
+                        },
+                        {
+                          label: "在下方添加",
+                          onClick: () => {
+                            insertBlock(index + 1, "paragraph");
+                            closeCommandMenu();
+                          },
+                        },
+                      ].map((item) => (
                         <button
-                          key={command.type}
+                          key={item.label}
                           type="button"
+                          title={item.label}
                           onMouseDown={(event) => {
                             event.preventDefault();
-                            applyCommand(block.id, command.type, {
-                              preserveContent: true,
-                            });
+                            item.onClick();
                           }}
-                          className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition ${
-                            commandIndex === commandMenu.selectedIndex && commandMenu.mode === "slash"
-                              ? "bg-sky-50 text-slate-900"
+                          className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-[13px] leading-4 transition ${
+                            item.danger
+                              ? "text-rose-500 hover:bg-rose-50"
                               : "text-slate-600 hover:bg-slate-50"
                           }`}
                         >
-                          <div>
-                            <div className="font-medium">{command.label}</div>
-                            <div className="mt-0.5 text-xs text-slate-400">{command.description}</div>
-                          </div>
-                          <div className="rounded-lg border border-slate-200 px-2 py-0.5 text-[10px] text-slate-400">
-                            /{command.shortLabel}
-                          </div>
+                          <span className="flex items-center gap-2">
+                            <span className="flex h-5 w-5 items-center justify-center text-[13px] leading-none text-slate-400">
+                              {actionGlyph(item.label)}
+                            </span>
+                            <span>{item.label}</span>
+                          </span>
+                          <span className="text-[11px] text-slate-300">›</span>
                         </button>
                       ))}
                     </div>
-                  ) : (
-                    <div className="px-2 py-2 text-sm text-slate-400">没有匹配的块命令</div>
-                  )}
-                </div>
-
-                <div className="px-2 py-2">
-                  <div className="px-1 pb-1 text-[11px] font-medium text-slate-400">操作</div>
-                  <div className="space-y-1">
-                    {[
-                      {
-                        label: "复制",
-                        onClick: () => {
-                          duplicateBlock(index);
-                          closeCommandMenu();
-                        },
-                      },
-                      {
-                        label: "删除",
-                        danger: true,
-                        onClick: () => {
-                          removeBlock(block.id);
-                          closeCommandMenu();
-                        },
-                      },
-                      {
-                        label: "上移",
-                        onClick: () => {
-                          moveBlock(index, -1);
-                          closeCommandMenu();
-                        },
-                      },
-                      {
-                        label: "下移",
-                        onClick: () => {
-                          moveBlock(index, 1);
-                          closeCommandMenu();
-                        },
-                      },
-                      {
-                        label: "在下方添加",
-                        onClick: () => {
-                          insertBlock(index + 1, "paragraph");
-                          closeCommandMenu();
-                        },
-                      },
-                    ].map((item) => (
-                      <button
-                        key={item.label}
-                        type="button"
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          item.onClick();
-                        }}
-                        className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition ${
-                          item.danger
-                            ? "text-rose-500 hover:bg-rose-50"
-                            : "text-slate-600 hover:bg-slate-50"
-                        }`}
-                      >
-                        <span>{item.label}</span>
-                        <span className="text-xs text-slate-300">›</span>
-                      </button>
-                    ))}
                   </div>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

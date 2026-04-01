@@ -4,7 +4,7 @@
 
 ```bash
 uv sync
-cp .env.example .env
+cp ../../.env.example ../../.env
 uv run uvicorn app.main:app --reload
 ```
 

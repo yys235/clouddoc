@@ -44,6 +44,22 @@ class DocumentContentUpdateRequest(DocumentContentPayload):
     base_version_no: int | None = None
 
 
+class LinkPreviewRequest(BaseModel):
+    url: str
+
+
+class LinkPreviewResponse(BaseModel):
+    url: str
+    normalized_url: str
+    title: str
+    description: str = ""
+    site_name: str = ""
+    icon: str = ""
+    image: str = ""
+    view: str = "link"
+    status: str = "ready"
+
+
 class FavoriteStatusResponse(BaseModel):
     document_id: str
     is_favorited: bool

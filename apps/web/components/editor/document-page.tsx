@@ -8,6 +8,7 @@ import { DocumentViewModel } from "@/lib/mock-document";
 import { BlockEditor, EditableBlock } from "@/components/editor/block-editor";
 import {
   favoriteDocument,
+  fetchLinkPreview,
   softDeleteDocument,
   unfavoriteDocument,
   updateDocumentContent,
@@ -179,6 +180,26 @@ function blockId() {
   return crypto.randomUUID();
 }
 
+function blockHasMeaningfulContent(block: EditableBlock) {
+  if (block.type === "divider") {
+    return true;
+  }
+
+  if (block.type === "link") {
+    return Boolean(block.meta?.href?.trim() || block.text.trim());
+  }
+
+  if (block.type === "image") {
+    return Boolean(block.text.trim());
+  }
+
+  return Boolean(block.text.trim());
+}
+
+function documentModeStorageKey(docId: string) {
+  return `clouddoc:document-mode:${docId}`;
+}
+
 function normalizeExternalHref(rawHref: string) {
   const href = rawHref.trim();
   if (!href) {
@@ -196,6 +217,65 @@ function normalizeExternalHref(rawHref: string) {
   return "";
 }
 
+function sanitizeHeadingLevel(level: number | undefined) {
+  const value = Number(level ?? 1);
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.max(1, Math.min(6, Math.trunc(value)));
+}
+
+
+type LinkCardView = "link" | "title" | "card" | "preview";
+
+type LinkCardMeta = {
+  href?: string;
+  title?: string;
+  description?: string;
+  siteName?: string;
+  image?: string;
+  icon?: string;
+  view?: LinkCardView;
+  status?: "idle" | "loading" | "ready" | "error";
+};
+
+function parseLinkSource(text: string) {
+  const parts = text.split("|").map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 2) {
+    return {
+      title: parts[0],
+      href: normalizeExternalHref(parts[1]),
+    };
+  }
+
+  const value = text.trim();
+  const normalizedHref = normalizeExternalHref(value);
+  return {
+    title: normalizedHref ? "" : value,
+    href: normalizedHref,
+  };
+}
+
+function composeLinkSource(meta: LinkCardMeta | undefined, fallbackText: string) {
+  const href = meta?.href?.trim() ?? "";
+  const title = meta?.title?.trim() ?? "";
+  if (title && href && title !== href) {
+    return `${title} | ${href}`;
+  }
+  if (href) {
+    return href;
+  }
+  return fallbackText.trim();
+}
+
+function inferSiteNameFromHref(href: string) {
+  try {
+    return new URL(href).hostname.replace(/^www\./, "");
+  } catch {
+    return href;
+  }
+}
+
 function emptyTextNode() {
   return [{ type: "text", text: "" }];
 }
@@ -203,9 +283,11 @@ function emptyTextNode() {
 function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
   const blocks = document.content.slice(1).map((node, index) => {
     if (node.type === "heading") {
+      const level = sanitizeHeadingLevel(Number(node.attrs?.level ?? 2));
       return {
         id: `${document.id}-heading-${index}`,
         type: "heading" as const,
+        headingLevel: level,
         text: flattenText(node.content),
       };
     }
@@ -272,10 +354,34 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
     if (node.type === "link_card") {
       const title = String(node.attrs?.title ?? "").trim();
       const href = String(node.attrs?.href ?? "").trim();
+      if (!normalizeExternalHref(href)) {
+        return {
+          id: `${document.id}-paragraph-${index}`,
+          type: "paragraph" as const,
+          text: title,
+        };
+      }
+      const description = String(node.attrs?.description ?? "").trim();
+      const siteName = String(node.attrs?.site_name ?? "").trim();
+      const image = String(node.attrs?.image ?? "").trim();
+      const icon = String(node.attrs?.icon ?? "").trim();
+      const view = String(node.attrs?.view ?? "link").trim() as LinkCardView;
+      const status = String(node.attrs?.status ?? "ready").trim() as LinkCardMeta["status"];
+      const meta: LinkCardMeta = {
+        href,
+        title: title || undefined,
+        description: description || undefined,
+        siteName: siteName || undefined,
+        image: image || undefined,
+        icon: icon || undefined,
+        view,
+        status,
+      };
       return {
         id: `${document.id}-link-${index}`,
         type: "link" as const,
-        text: title && href ? `${title} | ${href}` : title || href,
+        text: composeLinkSource(meta, title || href),
+        meta,
       };
     }
 
@@ -320,11 +426,12 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
     const text = block.text.trim();
 
     if (block.type === "heading") {
+      const level = sanitizeHeadingLevel(block.headingLevel ?? 2);
       if (!text) {
         contentNodes.push({
           type: "heading",
           attrs: {
-            level: 2,
+            level,
             anchor: `empty-heading-${block.id}`,
             preservedEmpty: true,
           },
@@ -336,7 +443,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       contentNodes.push({
         type: "heading",
         attrs: {
-          level: 2,
+          level,
           anchor: text
             .trim()
             .toLowerCase()
@@ -465,14 +572,22 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
     }
 
     if (block.type === "link") {
-      const [labelPart, hrefPart] = text.split("|").map((part) => part.trim());
-      const normalizedHref = normalizeExternalHref(hrefPart || labelPart || "");
+      const parsed = parseLinkSource(text);
+      const meta = block.meta ?? {};
+      const normalizedHref = meta.href?.trim() || parsed.href || "";
+      const resolvedTitle = meta.title?.trim() || parsed.title || normalizedHref || "未命名链接";
       contentNodes.push({
         type: "link_card",
         attrs: {
-          title: labelPart || hrefPart || "未命名链接",
+          title: resolvedTitle,
           href: normalizedHref,
-          preservedEmpty: !text,
+          description: meta.description?.trim() || "",
+          site_name: meta.siteName?.trim() || (normalizedHref ? inferSiteNameFromHref(normalizedHref) : ""),
+          image: meta.image?.trim() || "",
+          icon: meta.icon?.trim() || "",
+          view: meta.view || "link",
+          status: meta.status || (normalizedHref ? "ready" : "idle"),
+          preservedEmpty: !text && !normalizedHref,
         },
       });
       continue;
@@ -541,12 +656,14 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 export function DocumentPage({ document }: { document: DocumentViewModel }) {
   const router = useRouter();
   const [currentDocument, setCurrentDocument] = useState(document);
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditing, setIsEditing] = useState(true);
+  const [modeLoadedForDocId, setModeLoadedForDocId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const modeMenuRef = useRef<HTMLDivElement | null>(null);
+  const modeMenuHideTimerRef = useRef<number | null>(null);
   const [isMutating, startTransition] = useTransition();
   const [draftTitle, setDraftTitle] = useState(document.title);
   const [draftBlocks, setDraftBlocks] = useState(() => blocksFromDocument(document));
@@ -571,6 +688,53 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
   const currentModeOption = modeOptions.find((item) => item.value === currentMode) ?? modeOptions[1];
 
   useEffect(() => {
+    setCurrentDocument(document);
+    setDraftTitle(document.title);
+    setDraftBlocks(blocksFromDocument(document));
+    setModeLoadedForDocId(null);
+    setNotice("");
+    setShowDeleteConfirm(false);
+    setIsModeMenuOpen(false);
+  }, [document]);
+
+  useEffect(() => {
+    if (isPdfDocument) {
+      setIsEditing(false);
+      setModeLoadedForDocId(currentDocument.id);
+      return;
+    }
+
+    try {
+      const savedMode = window.localStorage.getItem(documentModeStorageKey(currentDocument.id));
+      setIsEditing(savedMode ? savedMode === "edit" : true);
+    } catch {
+      setIsEditing(true);
+    } finally {
+      setModeLoadedForDocId(currentDocument.id);
+    }
+  }, [currentDocument.id, isPdfDocument]);
+
+  useEffect(() => {
+    if (isPdfDocument || modeLoadedForDocId !== currentDocument.id) {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(documentModeStorageKey(currentDocument.id), isEditing ? "edit" : "read");
+    } catch {
+      // Ignore browser storage failures and keep in-memory mode state.
+    }
+  }, [currentDocument.id, isEditing, isPdfDocument, modeLoadedForDocId]);
+
+  useEffect(() => {
+    return () => {
+      if (modeMenuHideTimerRef.current) {
+        window.clearTimeout(modeMenuHideTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isModeMenuOpen) {
       return;
     }
@@ -590,10 +754,56 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
     window.addEventListener("pointerdown", handlePointerDown);
     window.addEventListener("keydown", handleEscape);
     return () => {
+      if (modeMenuHideTimerRef.current) {
+        window.clearTimeout(modeMenuHideTimerRef.current);
+        modeMenuHideTimerRef.current = null;
+      }
       window.removeEventListener("pointerdown", handlePointerDown);
       window.removeEventListener("keydown", handleEscape);
     };
   }, [isModeMenuOpen]);
+
+  const keepModeMenuOpen = () => {
+    if (modeMenuHideTimerRef.current) {
+      window.clearTimeout(modeMenuHideTimerRef.current);
+      modeMenuHideTimerRef.current = null;
+    }
+  };
+
+  const hideModeMenuWithDelay = () => {
+    keepModeMenuOpen();
+    modeMenuHideTimerRef.current = window.setTimeout(() => {
+      setIsModeMenuOpen(false);
+      modeMenuHideTimerRef.current = null;
+    }, 1500);
+  };
+
+  useEffect(() => {
+    if (!isEditing || isPdfDocument || draftBlocks.length === 0) {
+      return;
+    }
+
+    const lastBlock = draftBlocks[draftBlocks.length - 1];
+    if (!lastBlock || !blockHasMeaningfulContent(lastBlock)) {
+      return;
+    }
+
+    setDraftBlocks((current) => {
+      const currentLastBlock = current[current.length - 1];
+      if (!currentLastBlock || !blockHasMeaningfulContent(currentLastBlock)) {
+        return current;
+      }
+
+      return [
+        ...current,
+        {
+          id: blockId(),
+          type: "paragraph",
+          text: "",
+        },
+      ];
+    });
+  }, [draftBlocks, isEditing, isPdfDocument]);
 
   const shareUrl = useMemo(() => {
     if (typeof window === "undefined") {
@@ -613,11 +823,23 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
   }, [currentDocument.summary]);
 
   const normalizedDraftBlocks = useMemo(
-    () => draftBlocks.map((block) => ({ type: block.type, text: block.text.trim() })),
+    () =>
+      draftBlocks.map((block) => ({
+        type: block.type,
+        headingLevel: block.headingLevel ?? null,
+        text: block.text.trim(),
+        meta: block.meta ?? null,
+      })),
     [draftBlocks],
   );
   const normalizedSavedBlocks = useMemo(
-    () => blocksFromDocument(currentDocument).map((block) => ({ type: block.type, text: block.text.trim() })),
+    () =>
+      blocksFromDocument(currentDocument).map((block) => ({
+        type: block.type,
+        headingLevel: block.headingLevel ?? null,
+        text: block.text.trim(),
+        meta: block.meta ?? null,
+      })),
     [currentDocument],
   );
 
@@ -644,6 +866,84 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
     draftSignature,
     savedSignature,
     isDirty,
+  };
+
+  const resolveLinkPreview = async (blockId: string, rawUrl: string) => {
+    const normalizedHref = normalizeExternalHref(rawUrl);
+    if (!normalizedHref) {
+      setDraftBlocks((current) =>
+        current.map((block) =>
+          block.id === blockId
+            ? {
+                ...block,
+                meta: {
+                  ...block.meta,
+                  href: "",
+                  status: "error",
+                },
+              }
+            : block,
+        ),
+      );
+      return;
+    }
+
+    setDraftBlocks((current) =>
+      current.map((block) =>
+        block.id === blockId
+          ? {
+              ...block,
+              meta: {
+                ...block.meta,
+                href: normalizedHref,
+                title: block.meta?.title || block.text.trim() || inferSiteNameFromHref(normalizedHref),
+                siteName: block.meta?.siteName || inferSiteNameFromHref(normalizedHref),
+                view: block.meta?.view || "link",
+                status: "loading",
+              },
+            }
+          : block,
+      ),
+    );
+
+    try {
+      const preview = await fetchLinkPreview(normalizedHref);
+      setDraftBlocks((current) =>
+        current.map((block) =>
+          block.id === blockId
+            ? {
+                ...block,
+                meta: {
+                  ...block.meta,
+                  href: preview.normalizedUrl,
+                  title: preview.title,
+                  description: preview.description,
+                  siteName: preview.siteName,
+                  image: preview.image,
+                  icon: preview.icon,
+                  view: block.meta?.view || preview.view || "link",
+                  status: preview.status,
+                },
+              }
+            : block,
+        ),
+      );
+    } catch {
+      setDraftBlocks((current) =>
+        current.map((block) =>
+          block.id === blockId
+            ? {
+                ...block,
+                meta: {
+                  ...block.meta,
+                  href: normalizedHref,
+                  status: "error",
+                },
+              }
+            : block,
+        ),
+      );
+    }
   };
 
   const persistDraft = async (source: "auto" | "mode") => {
@@ -871,11 +1171,24 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
                 删除
               </button>
               {!isPdfDocument ? (
-                <div ref={modeMenuRef} className="relative">
+                <div
+                  ref={modeMenuRef}
+                  className="relative"
+                  onPointerEnter={keepModeMenuOpen}
+                  onPointerLeave={hideModeMenuWithDelay}
+                >
                   <button
                     type="button"
                     disabled={isSaving}
-                    onClick={() => setIsModeMenuOpen((value) => !value)}
+                    onClick={() => {
+                      if (isModeMenuOpen) {
+                        keepModeMenuOpen();
+                        setIsModeMenuOpen(false);
+                        return;
+                      }
+                      keepModeMenuOpen();
+                      setIsModeMenuOpen(true);
+                    }}
                     className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/88 px-3.5 py-1.5 text-sm text-slate-800 shadow-[0_1px_0_rgba(15,23,42,0.03)] transition hover:border-slate-300 hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
                   >
                     <currentModeOption.icon active />
@@ -883,6 +1196,8 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
                     <ChevronIcon open={isModeMenuOpen} />
                   </button>
                   <div
+                    onPointerEnter={keepModeMenuOpen}
+                    onPointerLeave={hideModeMenuWithDelay}
                     className={`absolute right-0 top-[calc(100%+10px)] z-30 w-44 origin-top-right rounded-lg border border-slate-200 bg-white/96 p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)] backdrop-blur-sm transition duration-180 ease-out ${
                       isModeMenuOpen
                         ? "pointer-events-auto translate-y-0 scale-100 opacity-100"
@@ -949,7 +1264,12 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
               fileSize={currentDocument.fileSize}
             />
           ) : (
-            <BlockEditor blocks={draftBlocks} onChange={setDraftBlocks} readOnly={!isEditing} />
+            <BlockEditor
+              blocks={draftBlocks}
+              onChange={setDraftBlocks}
+              onResolveLinkPreview={resolveLinkPreview}
+              readOnly={!isEditing}
+            />
           )}
         </article>
 

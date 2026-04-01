@@ -59,6 +59,19 @@ export type SpaceSummary = {
   updatedAt: string;
 };
 
+
+export type LinkPreviewPayload = {
+  url: string;
+  normalizedUrl: string;
+  title: string;
+  description: string;
+  siteName: string;
+  icon: string;
+  image: string;
+  view: "link" | "title" | "card" | "preview";
+  status: "ready" | "error" | "loading";
+};
+
 export async function fetchDocument(docId: string): Promise<DocumentViewModel | null> {
   try {
     const response = await fetch(`${API_BASE_URL}/documents/${docId}`, {
@@ -387,4 +400,42 @@ export async function unfavoriteDocument(docId: string) {
   }
 
   return response.json();
+}
+
+export async function fetchLinkPreview(url: string): Promise<LinkPreviewPayload> {
+  const response = await fetch(`${API_BASE_URL}/documents/link-preview`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ url }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to fetch link preview");
+  }
+
+  const data = (await response.json()) as {
+    url: string;
+    normalized_url: string;
+    title: string;
+    description: string;
+    site_name: string;
+    icon: string;
+    image: string;
+    view: "link" | "title" | "card" | "preview";
+    status: "ready" | "error" | "loading";
+  };
+
+  return {
+    url: data.url,
+    normalizedUrl: data.normalized_url,
+    title: data.title,
+    description: data.description,
+    siteName: data.site_name,
+    icon: resolveApiAssetUrl(data.icon) ?? data.icon,
+    image: resolveApiAssetUrl(data.image) ?? data.image,
+    view: data.view,
+    status: data.status,
+  };
 }

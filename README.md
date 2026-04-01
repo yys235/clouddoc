@@ -23,8 +23,8 @@ Monorepo for the V1 cloud document application.
 ### Frontend
 
 ```bash
+cp .env.example .env
 cd apps/web
-cp .env.local.example .env.local
 npm install
 npm run dev
 ```
@@ -32,9 +32,9 @@ npm run dev
 ### Backend
 
 ```bash
+cp .env.example .env
 cd apps/api
 uv sync
-cp .env.example .env
 uv run uvicorn app.main:app --reload
 ```
 
@@ -46,7 +46,7 @@ Example PostgreSQL connection:
 postgresql://user:password@localhost:5432/clouddoc
 ```
 
-Set it in `apps/api/.env` as `DATABASE_URL`.
+Set it in the repository root `.env` as `DATABASE_URL`.
 
 ## Current Backend Endpoints
 

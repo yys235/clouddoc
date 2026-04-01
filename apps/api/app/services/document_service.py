@@ -1,6 +1,9 @@
 import uuid
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
+from urllib.request import Request, urlopen
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
@@ -16,10 +19,139 @@ from app.schemas.document import (
     DocumentDetail,
     FavoriteStatusResponse,
     DocumentSummary,
+    LinkPreviewResponse,
     SearchResult,
 )
 
 SUPPORTED_DOCUMENT_TYPES = {"doc", "pdf"}
+
+
+class MetadataHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title = ""
+        self.in_title = False
+        self.meta: dict[str, str] = {}
+        self.links: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = {key.lower(): value or "" for key, value in attrs}
+        tag = tag.lower()
+        if tag == "title":
+            self.in_title = True
+            return
+        if tag == "meta":
+            key = attrs_dict.get("property") or attrs_dict.get("name")
+            content = attrs_dict.get("content", "").strip()
+            if key and content:
+                self.meta[key.lower()] = content
+            return
+        if tag == "link":
+            rel = attrs_dict.get("rel", "").lower()
+            href = attrs_dict.get("href", "").strip()
+            if rel and href:
+                self.links.append({"rel": rel, "href": href})
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "title":
+            self.in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self.in_title:
+            self.title += data
+
+
+def normalize_external_url(raw_url: str) -> str:
+    url = raw_url.strip()
+    if not url:
+        raise ValueError("URL is required")
+    if url.startswith(("http://", "https://")):
+        return url
+    if "." in url and " " not in url:
+        return f"https://{url}"
+    raise ValueError("Invalid URL")
+
+
+def infer_title_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.netloc.replace("www.", "").strip()
+    return host or url
+
+
+def extract_preview_metadata(url: str) -> dict[str, str]:
+    request = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            )
+        },
+    )
+    try:
+        with urlopen(request, timeout=6) as response:
+            raw_bytes = response.read(512_000)
+            content_type = response.headers.get("Content-Type", "")
+    except Exception as exc:
+        raise RuntimeError("Failed to fetch link metadata") from exc
+
+    charset = "utf-8"
+    if "charset=" in content_type:
+        charset = content_type.split("charset=", 1)[1].split(";", 1)[0].strip() or "utf-8"
+
+    html = raw_bytes.decode(charset, errors="ignore")
+    parser = MetadataHTMLParser()
+    parser.feed(html)
+
+    title = (
+        parser.meta.get("og:title")
+        or parser.meta.get("twitter:title")
+        or parser.title.strip()
+        or infer_title_from_url(url)
+    )
+    description = (
+        parser.meta.get("og:description")
+        or parser.meta.get("description")
+        or parser.meta.get("twitter:description")
+        or ""
+    )
+    site_name = parser.meta.get("og:site_name") or infer_title_from_url(url)
+    image = parser.meta.get("og:image") or parser.meta.get("twitter:image") or ""
+
+    icon = ""
+    for link in parser.links:
+        if "icon" in link["rel"]:
+            icon = link["href"]
+            break
+
+    if image:
+        image = urljoin(url, image)
+    if icon:
+        icon = urljoin(url, icon)
+
+    return {
+        "title": title.strip(),
+        "description": description.strip(),
+        "site_name": site_name.strip(),
+        "image": image.strip(),
+        "icon": icon.strip(),
+    }
+
+
+def fetch_link_preview(url: str) -> LinkPreviewResponse:
+    normalized_url = normalize_external_url(url)
+    metadata = extract_preview_metadata(normalized_url)
+    return LinkPreviewResponse(
+        url=url,
+        normalized_url=normalized_url,
+        title=metadata["title"] or infer_title_from_url(normalized_url),
+        description=metadata["description"],
+        site_name=metadata["site_name"] or infer_title_from_url(normalized_url),
+        icon=metadata["icon"],
+        image=metadata["image"],
+        view="link",
+        status="ready",
+    )
 
 
 def extract_file_payload(content_json: dict | None) -> dict[str, object]:

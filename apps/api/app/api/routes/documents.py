@@ -8,12 +8,15 @@ from app.schemas.document import (
     DocumentDetail,
     DocumentSummary,
     FavoriteStatusResponse,
+    LinkPreviewRequest,
+    LinkPreviewResponse,
     SearchResult,
 )
 from app.services.document_service import (
     create_document,
     create_pdf_document,
     favorite_document,
+    fetch_link_preview,
     get_document_detail,
     list_documents,
     restore_document,
@@ -77,6 +80,16 @@ async def upload_pdf_document_route(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/link-preview", response_model=LinkPreviewResponse)
+def link_preview_route(payload: LinkPreviewRequest) -> LinkPreviewResponse:
+    try:
+        return fetch_link_preview(payload.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/{doc_id}", response_model=DocumentDetail)

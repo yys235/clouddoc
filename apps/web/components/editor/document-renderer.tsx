@@ -59,6 +59,25 @@ function inlineText(nodes: RichTextNode[] | undefined): string {
     .trim();
 }
 
+function headingClassName(level: number) {
+  if (level === 1) {
+    return "text-3xl font-semibold tracking-tight text-slate-950";
+  }
+  if (level === 2) {
+    return "text-[1.75rem] font-semibold tracking-tight text-slate-900";
+  }
+  if (level === 3) {
+    return "text-[1.45rem] font-semibold tracking-tight text-slate-900";
+  }
+  if (level === 4) {
+    return "text-[1.2rem] font-semibold text-slate-900";
+  }
+  if (level === 5) {
+    return "text-[1.05rem] font-semibold text-slate-800";
+  }
+  return "text-base font-semibold text-slate-800";
+}
+
 export function DocumentRenderer({ content }: { content: RichTextNode[] }) {
   return (
     <div className="space-y-1">
@@ -68,9 +87,8 @@ export function DocumentRenderer({ content }: { content: RichTextNode[] }) {
             return null;
           }
 
-          const level = Number(node.attrs?.level ?? 1);
-          const className =
-            level === 1 ? "text-3xl font-semibold tracking-tight" : "text-2xl font-semibold";
+          const level = Math.max(1, Math.min(6, Number(node.attrs?.level ?? 1)));
+          const className = headingClassName(level);
           return (
             <h2 key={index} id={String(node.attrs?.anchor ?? "")} className={className}>
               {renderInline(node.content)}
@@ -155,10 +173,9 @@ export function DocumentRenderer({ content }: { content: RichTextNode[] }) {
 
           if (!normalizedHref) {
             return (
-              <div key={index} className="py-0.5 text-slate-700">
-                <div className="text-base leading-8 text-slate-800">{title}</div>
-                {hrefLabel ? <div className="text-sm leading-6 text-slate-400">{hrefLabel}</div> : null}
-              </div>
+              <p key={index} className="text-base leading-8 text-slate-700">
+                {title}
+              </p>
             );
           }
 

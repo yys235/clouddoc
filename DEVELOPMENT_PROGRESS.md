@@ -816,3 +816,96 @@
 - 2026-03-30 18:12 CST: 文档页顶部“回收站”按钮改为“删除”，并新增删除确认弹窗。用户点击删除后不会立即执行，需在弹窗中二次确认才会移入回收站。前端 build 通过，后端 pytest 5 passed，Playwright 回归确认按钮文案和确认弹窗均生效。
 - 2026-03-30 18:18 CST: 重做文档模式切换控件，对齐参考视频样式。原生 select 替换为胶囊按钮 + 自定义浮层菜单，加入图标、当前项高亮、右侧勾选、箭头旋转以及菜单淡入下滑动画；同时补了点击外部与 Esc 关闭。前端 build 通过，后端 pytest 5 passed，Playwright 截图回归确认新样式已生效。
 - 2026-03-30 18:26 CST: 统一把前端按钮、模式菜单、弹窗和相关矩形状态块的圆角从 `rounded-xl` 再收小一档到 `rounded-lg`，整体更接近矩形按钮风格。前端 build 通过，后端 pytest 5 passed，Playwright 截图回归确认 3100 上圆角已变小。
+
+## 2026-03-30 19:21 CST
+- 调整文档模式记忆规则：首次打开文档默认进入编辑模式，已打开过的文档按该文档上次模式恢复。
+- 模式状态按文档 ID 持久化到浏览器本地存储，PDF 文档继续固定只读。
+- 文档切换时重置草稿和模式加载状态，避免不同文档之间串模式。
+- 自动化验证：`apps/web` 执行 `npm run build` 通过；`apps/api` 执行 `pytest -q` 通过（5 passed）；Playwright 验证首次打开显示“编辑”，切换到“只读”后刷新仍保持“只读”。
+
+## 2026-03-31 09:52 CST
+- 基于链接卡片视频实现第一版：空块粘贴 URL 自动转为链接块，并调用后端抓取 metadata。
+- 新增后端接口 `POST /api/documents/link-preview`，返回 title、description、site_name、icon、image。
+- 链接块新增 4 种展示模式：`链接视图 / 标题视图 / 卡片视图 / 预览视图`。
+- 链接块新增工具栏：刷新预览、视图切换，以及占位的布局/更多/评论入口。
+- 自动化验证：`apps/api` 执行 `pytest -q` 通过（7 passed）；`apps/web` 执行 `npm run build` 通过；Playwright 验证空块粘贴 `https://example.com` 后自动转链接块，并可切换到 `卡片视图` 显示 `Example Domain`。
+
+## 2026-03-31 09:58 CST
+- 运行真实浏览器回归时发现旧示例文档被整页渲染成链接块；根因是历史内容里混入了 `href` 为空的 `link_card` 节点。
+- 修复前端加载链路：`blocksFromDocument()` 遇到无有效 URL 的 `link_card` 时，直接降级为普通段落，避免阅读态和编辑态把普通文本错误显示为链接块。
+- 同步修复备用阅读渲染器：`document-renderer.tsx` 中无有效 URL 的 `link_card` 不再显示链接样式，只按普通文本渲染。
+- 自动化验证：`apps/api` 执行 `pytest -q` 通过（7 passed）；`apps/web` 执行 `npm run build` 通过；重启 `3100` 后用 Playwright 复测 `CloudDoc V1 产品简介`，确认只保留一个真实链接块，其余文本块恢复正常显示。
+
+## 2026-03-31 10:03 CST
+- 新增“末尾真实空块”规则：编辑模式下，如果最后一个块变成非空内容，会自动在文档尾部追加一个真实空段落块。
+- 该空块直接进入 `draftBlocks`，属于真实文档结构，自动保存后会落库；刷新后仍会保留。
+- 实现位置：`document-page.tsx` 增加 `blockHasMeaningfulContent()` 和编辑态尾块补齐 effect，仅处理文档尾部，不改动中间块。
+- 自动化验证：`apps/api` 执行 `pytest -q` 通过（7 passed）；`apps/web` 执行 `npm run build` 通过；Playwright 创建临时文档后验证末尾输入内容会保留一个新的空块，自动保存成功，刷新后仍存在。
+
+## 2026-03-31 10:18 CST
+- 顶部模式菜单新增“鼠标离开后 1.5 秒自动关闭”行为，沿用现有淡出动画，不再停留在打开状态。
+- `document-page.tsx` 新增 `modeMenuHideTimerRef`、`keepModeMenuOpen()` 和 `hideModeMenuWithDelay()`，并把 pointer enter/leave 绑定到菜单容器和浮层本身。
+- 自动化验证：`apps/api` 执行 `pytest -q` 通过（7 passed）；`apps/web` 执行 `npm run build` 通过；Playwright 验证菜单打开后移出 1.7 秒，样式从 `opacity:1 / pointer-events:auto` 变成 `opacity:0 / pointer-events:none`。
+
+## 2026-03-31 10:24 CST
+- 调整块工具菜单交互：
+  - 悬浮块时显示左侧工具入口。
+  - 悬浮工具入口时自动展开块工具菜单，不再强依赖点击。
+  - 工具入口宽度增至 `42px`，比原来更宽。
+  - 工具菜单在鼠标移出后延迟 `1.5s` 自动关闭，并带淡出位移动画。
+- 实现位置：`block-editor.tsx` 新增 `closingCommandMenuBlockId`、`hideCommandMenuWithDelay()`、`openActionsMenu()` 和对应的 pointer enter/leave 逻辑。
+- 自动化验证：`apps/api` 执行 `pytest -q` 通过（7 passed）；`apps/web` 执行 `npm run build` 通过；Playwright 验证块入口悬浮即可展开菜单，移出 `1.55s` 后菜单进入淡出，`250ms` 后完全卸载。
+
+## 2026-03-31 10:29 CST
+- 进一步优化块工具菜单关闭逻辑：
+  - 鼠标移出后延时从 `1.5s` 改为 `1s`。
+  - 点击菜单外任意区域时，也会走淡出关闭，而不是直接硬切。
+- 实现位置：`block-editor.tsx` 新增 `commandMenuRef` 和 actions 菜单的全局 `pointerdown` / `Escape` 监听；关闭统一走 `closeCommandMenuWithFade()`。
+- 自动化验证：`apps/api` 执行 `pytest -q` 通过（7 passed）；`apps/web` 执行 `npm run build` 通过；Playwright 验证鼠标移出 `1.1s` 后菜单已进入淡出状态，点击页面其他区域后菜单直接进入淡出并卸载。
+
+## 2026-03-31 10:34 CST
+- 调整块工具菜单定位：
+  - 菜单改为基于工具按钮的 `fixed` 定位。
+  - 优先显示在工具按钮左侧。
+  - 如果左侧空间不足，则自动回退并裁剪到浏览器可视区域内，避免超出窗口。
+- 实现位置：`block-editor.tsx` 新增 `handleButtonRefs`、`commandMenuPosition` 和基于 `getBoundingClientRect()` 的定位计算，同时监听 `resize` / `scroll` 动态更新位置。
+- 自动化验证：`apps/api` 执行 `pytest -q` 通过（7 passed）；`apps/web` 执行 `npm run build` 通过；Playwright 验证工具菜单使用 `fixed` 定位并保持在视口内。
+
+## 2026-03-31 10:39 CST
+- 收紧块工具菜单样式密度：
+  - 顶部块类型按钮改为纯图标，文字说明移除，提示改用浏览器 `title` 悬浮提示。
+  - 顶部图标区从 `6` 列改为更紧凑的 `5` 列布局。
+  - 下方命令列表和操作列表缩小内边距、行高、段间距，整体更接近紧凑样式。
+- 实现位置：`block-editor.tsx` 中命令菜单的顶部图标区、命令列表区、操作列表区样式类全面收紧。
+- 自动化验证：`apps/api` 执行 `pytest -q` 通过（7 passed）；`apps/web` 执行 `npm run build` 通过；`GET http://127.0.0.1:3100/docs/11111111-1111-1111-1111-111111111111` 返回 `200`。
+- 备注：本轮 Playwright MCP 在本机临时目录初始化时报 `ENOENT: mkdir '/.playwright-mcp'`，浏览器级样式回归被环境问题阻断，待工具环境恢复后补跑。
+
+## 2026-03-31 11:50 CST
+- 针对块工具栏跑了一轮终端版 Playwright 专项回归，覆盖：
+  - hover 打开工具菜单
+  - 顶部块类型切换（正文 -> 标题）
+  - 底部操作：在下方添加 / 复制 / 删除
+  - 点击页面其他区域关闭菜单
+- 回归结果：
+  - 菜单可正常打开
+  - 顶部“标题”切换后占位文案变为 `输入标题块`
+  - `在下方添加` 后块数 `4 -> 5`
+  - `复制` 后块数 `5 -> 6`
+  - `删除` 后块数 `6 -> 5`
+  - 外部点击后菜单状态 `1 -> 0`
+  - 终端版 Playwright 控制台检查：`0 errors`
+- 结论：本轮块工具栏专项测试未发现新的产品级 bug；测试临时文档已删除。
+
+## 2026-03-31 17:20 CST
+- 修复链接块删除入口异常：块手柄由 click 改为 mouseDown 打开动作菜单，并在手柄/块容器离开时尊重 pinned 菜单状态，避免链接块菜单刚打开就被关闭，导致删除入口不可达。
+- 自动化验证：apps/api `pytest -q` => 7 passed；apps/web `npm run build` => passed；3100 已重启到最新构建。
+
+## 2026-03-31 17:36 CST
+- 新增标题层级支持：文档块支持 H1-H6 层级持久化，工具菜单顶部根据当前标题级别显示 Hx 到 Hx+3，最多 H6；非标题块默认显示 H1-H4。
+- 调整工具菜单顶部样式：移除胶囊按钮感，改为直接文本/图标行样式，保持紧凑布局。
+- 自动化验证：apps/api `pytest -q` => 7 passed；apps/web `npm run build` => passed；3100 已重启到最新构建。
+
+## 2026-03-31 17:48 CST
+- 修正标题级别工具条：不再按当前级别截断，始终显示完整 H1-H6，避免选到 H4 后 H1-H3 消失。
+- 自动化验证：apps/api `pytest -q` => 7 passed；apps/web `npm run build` => passed；3100 已切到最新构建。
+- 浏览器回归受本机 playwright-cli session socket 异常影响，未完成可视化自动校验。
