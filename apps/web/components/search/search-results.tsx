@@ -1,16 +1,22 @@
 import Link from "next/link";
 
+import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
 import { SearchDocument } from "@/lib/api";
 
 export function SearchResults({
   query,
   results,
+  apiUnavailable = false,
 }: {
   query: string;
   results: SearchDocument[];
+  apiUnavailable?: boolean;
 }) {
   return (
     <div className="mx-auto max-w-6xl space-y-5 p-5">
+      {apiUnavailable ? (
+        <ApiUnavailableNotice message="搜索接口当前不可用，以下页面结果不是最新状态。请检查后端服务后重试。" />
+      ) : null}
       <section className="rounded-3xl bg-white p-6 shadow-panel">
         <div className="text-sm font-medium text-accent">Search</div>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">

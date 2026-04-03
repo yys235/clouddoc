@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
 import { DashboardDocument } from "@/lib/api";
 import { SearchForm } from "@/components/search/search-form";
 
@@ -17,13 +18,16 @@ function buildCards(documents: DashboardDocument[]) {
 
 export function WorkspaceOverview({
   documents,
+  apiUnavailable = false,
 }: {
   documents: DashboardDocument[];
+  apiUnavailable?: boolean;
 }) {
   const cards = buildCards(documents);
 
   return (
     <div className="mx-auto max-w-6xl space-y-5 p-5">
+      {apiUnavailable ? <ApiUnavailableNotice /> : null}
       <section id="workspace" className="rounded-3xl bg-white p-6 shadow-panel">
         <div className="max-w-2xl">
           <div className="text-sm font-medium text-accent">V1 Workspace</div>

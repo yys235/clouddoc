@@ -3,6 +3,8 @@ import { SearchForm } from "@/components/search/search-form";
 import { SearchResults } from "@/components/search/search-results";
 import { searchDocuments } from "@/lib/api";
 
+export const dynamic = "force-dynamic";
+
 export default async function SearchPage({
   searchParams,
 }: {
@@ -10,7 +12,9 @@ export default async function SearchPage({
 }) {
   const params = await searchParams;
   const query = params.q?.trim() ?? "";
-  const results = query ? await searchDocuments(query) : [];
+  const { data: results, unavailable } = query
+    ? await searchDocuments(query)
+    : { data: [], unavailable: false };
 
   return (
     <AppShell>
@@ -23,7 +27,7 @@ export default async function SearchPage({
           </div>
         </section>
       </div>
-      <SearchResults query={query} results={results} />
+      <SearchResults query={query} results={results} apiUnavailable={unavailable} />
     </AppShell>
   );
 }

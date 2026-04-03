@@ -3,9 +3,16 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
+import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
 import { instantiateTemplate, TemplateItem } from "@/lib/api";
 
-export function TemplateGallery({ templates }: { templates: TemplateItem[] }) {
+export function TemplateGallery({
+  templates,
+  apiUnavailable = false,
+}: {
+  templates: TemplateItem[];
+  apiUnavailable?: boolean;
+}) {
   const router = useRouter();
   const [error, setError] = useState("");
   const [pendingTemplateId, setPendingTemplateId] = useState<string | null>(null);
@@ -29,6 +36,7 @@ export function TemplateGallery({ templates }: { templates: TemplateItem[] }) {
 
   return (
     <div className="mx-auto max-w-6xl space-y-5 p-5">
+      {apiUnavailable ? <ApiUnavailableNotice /> : null}
       {error ? <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-600">{error}</div> : null}
       <section className="rounded-3xl bg-white p-6 shadow-panel">
         <div className="text-sm font-medium text-accent">Templates</div>

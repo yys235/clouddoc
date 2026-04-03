@@ -909,3 +909,79 @@
 - 修正标题级别工具条：不再按当前级别截断，始终显示完整 H1-H6，避免选到 H4 后 H1-H3 消失。
 - 自动化验证：apps/api `pytest -q` => 7 passed；apps/web `npm run build` => passed；3100 已切到最新构建。
 - 浏览器回归受本机 playwright-cli session socket 异常影响，未完成可视化自动校验。
+
+## 2026-04-01 10:22 CST
+- Added explicit API-unavailable handling in `apps/web/lib/api.ts` so list/detail fetches distinguish empty data from backend failures.
+- Added shared warning banner `apps/web/components/common/api-unavailable-notice.tsx` and surfaced it on workspace, list, space, template, search, trash, and document detail pages.
+- Marked all API-backed pages as `force-dynamic` to prevent `next start` from serving stale build-time data when the backend goes down.
+- Verified true degradation by stopping `8000`, confirming `3100` rendered warning banners on `/` and `/search?q=abc`, then restored backend.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+
+## 2026-04-02 09:36 CST
+- Updated block editor textareas to auto-resize to content height and hide internal scrollbars.
+- Multi-line text blocks now fully expand instead of showing a nested scroll area.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-02 10:04 CST
+- Added structured multi-line paste handling in the block editor.
+- Pasting large text now splits by newline and maps common patterns into matching block types: headings (`#`), ordered lists, bullet lists, check lists, dividers, and paragraphs.
+- Paste insertion preserves surrounding text before/after the current selection and keeps the resulting document structure aligned with the pasted content.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-02 10:11 CST
+- Changed block editor placeholders to only appear on the active block.
+- Inactive empty blocks no longer show the default command hint.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-02 10:18 CST
+- Fixed read-only block editor state leakage: read mode no longer sets active block focus state or shows edit-mode background highlight.
+- Added `tabIndex={-1}` for read-only block textareas so reading keeps the same layout without entering editable focus behavior.
+- Root cause: reused edit DOM without fully disabling read-only interaction state.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-02 14:32 CST
+- Fixed empty paragraph visibility in read mode by making block textarea auto-height keep at least one line height.
+- Root cause: auto-resize used only `scrollHeight`, so empty blocks collapsed to zero height in read mode.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-02 14:38 CST
+- Added hover activation styling for blocks in edit mode so block boundaries are visible before focus.
+- Edit mode now shows a light blue hover background per block; read mode remains unchanged.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-02 14:45 CST
+- Fixed loss of blank lines in empty text blocks by persisting raw paragraph/blockquote text as `attrs.raw_text` in document content.
+- Empty multi-line blocks now round-trip through save, refresh, and mode switching without collapsing to a single empty line.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-02 14:53 CST
+- Added HTML-aware paste parsing in the block editor.
+- Paste now preserves top-level structure from clipboard HTML for headings, ordered lists, unordered lists, check lists, quotes, code blocks, dividers, and paragraphs instead of flattening everything to plain text.
+- Root cause: previous paste logic only consumed `text/plain`, so hierarchy from rich clipboard content was discarded.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-03 11:48 CST
+- Reworked document header layout so action buttons no longer reduce the available title width.
+- Switched the document title field from single-line input to auto-resizing textarea, allowing long titles to wrap naturally instead of clipping abruptly.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-03 11:56 CST
+- Widened the left outline sidebar and reduced horizontal whitespace around the document canvas.
+- Increased document header/body max width from 980px to 1120px and reduced section padding for a denser reading layout.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-03 12:01 CST
+- Further widened the left outline sidebar to 260px and reduced document page horizontal padding again.
+- Increased document header/body max width from 1120px to 1240px for a wider content canvas.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.

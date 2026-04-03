@@ -35,10 +35,10 @@ export function SidebarNav() {
     startTransition(async () => {
       try {
         setError("");
-        const spaces = await fetchSpaces();
+        const { data: spaces, unavailable } = await fetchSpaces();
         const defaultSpace = spaces[0];
         if (!defaultSpace) {
-          throw new Error("No available space");
+          throw new Error(unavailable ? "API unavailable" : "No available space");
         }
 
         const document = await createDocument({
@@ -50,7 +50,7 @@ export function SidebarNav() {
         router.push(`/docs/${document.id}`);
         router.refresh();
       } catch {
-        setError("新建文档失败");
+        setError("新建文档失败，请确认后端服务和空间数据可用");
       }
     });
   };
@@ -63,10 +63,10 @@ export function SidebarNav() {
           throw new Error("No file selected");
         }
 
-        const spaces = await fetchSpaces();
+        const { data: spaces, unavailable } = await fetchSpaces();
         const defaultSpace = spaces[0];
         if (!defaultSpace) {
-          throw new Error("No available space");
+          throw new Error(unavailable ? "API unavailable" : "No available space");
         }
 
         const document = await uploadPdfDocument({
@@ -78,7 +78,7 @@ export function SidebarNav() {
         router.push(`/docs/${document.id}`);
         router.refresh();
       } catch {
-        setError("PDF 上传失败");
+        setError("PDF 上传失败，请确认后端服务和空间数据可用");
       }
     });
   };

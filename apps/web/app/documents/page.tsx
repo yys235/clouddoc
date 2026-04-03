@@ -2,14 +2,17 @@ import { AppShell } from "@/components/layout/app-shell";
 import { DashboardPageFrame, DocumentListSection } from "@/components/dashboard/dashboard-sections";
 import { fetchDocuments } from "@/lib/api";
 
+export const dynamic = "force-dynamic";
+
 export default async function DocumentsPage() {
-  const documents = await fetchDocuments("active");
+  const { data: documents, unavailable } = await fetchDocuments("active");
 
   return (
     <AppShell>
       <DashboardPageFrame
         title="我的文档"
         description="集中查看当前可用的活跃文档，并从这里进入文档详情页。"
+        apiUnavailable={unavailable}
       >
         <DocumentListSection
           title="文档列表"

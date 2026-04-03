@@ -280,6 +280,14 @@ function emptyTextNode() {
   return [{ type: "text", text: "" }];
 }
 
+function rawTextFromNode(node: { attrs?: Record<string, unknown>; content?: { text?: string; content?: { text?: string }[] }[] }) {
+  const rawText = node.attrs?.raw_text;
+  if (typeof rawText === "string") {
+    return rawText;
+  }
+  return flattenText(node.content);
+}
+
 function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
   const blocks = document.content.slice(1).map((node, index) => {
     if (node.type === "heading") {
@@ -339,7 +347,7 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
       return {
         id: `${document.id}-quote-${index}`,
         type: "quote" as const,
-        text: flattenText(node.content),
+        text: rawTextFromNode(node),
       };
     }
 
@@ -406,7 +414,7 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
     return {
       id: `${document.id}-paragraph-${index}`,
       type: "paragraph" as const,
-      text: flattenText(node.content),
+      text: rawTextFromNode(node),
     };
   });
 
@@ -424,6 +432,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
   for (const block of blocks) {
     const text = block.text.trim();
+    const rawText = block.text;
 
     if (block.type === "heading") {
       const level = sanitizeHeadingLevel(block.headingLevel ?? 2);
@@ -551,7 +560,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       if (!text) {
         contentNodes.push({
           type: "blockquote",
-          attrs: { preservedEmpty: true },
+          attrs: { preservedEmpty: true, raw_text: rawText },
           content: emptyTextNode(),
         });
         continue;
@@ -559,6 +568,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
       contentNodes.push({
         type: "blockquote",
+        attrs: rawText.includes("\n") ? { raw_text: rawText } : undefined,
         content: [{ type: "text", text: text.replace(/\n/g, " ") }],
       });
       continue;
@@ -627,7 +637,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
     if (!text) {
       contentNodes.push({
         type: "paragraph",
-        attrs: { preservedEmpty: true },
+        attrs: { preservedEmpty: true, raw_text: rawText },
         content: emptyTextNode(),
       });
       continue;
@@ -635,6 +645,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
     contentNodes.push({
       type: "paragraph",
+      attrs: rawText.includes("\n") ? { raw_text: rawText } : undefined,
       content: [{ type: "text", text: text.replace(/\n/g, " ") }],
     });
   }
@@ -668,6 +679,7 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
   const [draftTitle, setDraftTitle] = useState(document.title);
   const [draftBlocks, setDraftBlocks] = useState(() => blocksFromDocument(document));
   const savePromiseRef = useRef<Promise<boolean> | null>(null);
+  const titleTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const isPdfDocument = currentDocument.documentType === "pdf";
 
   const modeOptions = [
@@ -733,6 +745,16 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const textarea = titleTextareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = "0px";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [draftTitle, isEditing, currentDocument.title]);
 
   useEffect(() => {
     if (!isModeMenuOpen) {
@@ -1085,8 +1107,8 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
   };
 
   return (
-    <div className="grid min-h-screen grid-cols-1 xl:grid-cols-[180px_minmax(0,1fr)]">
-      <aside className="hidden border-r border-slate-200/80 bg-white/55 px-3 py-5 xl:block">
+    <div className="grid min-h-screen grid-cols-1 xl:grid-cols-[260px_minmax(0,1fr)]">
+      <aside className="hidden border-r border-slate-200/80 bg-white/55 px-5 py-5 xl:block">
         <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">页面目录</div>
         <div className="mt-3 space-y-1">
           {currentDocument.outline.map((item) => (
@@ -1101,10 +1123,10 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
         </div>
       </aside>
 
-      <section className="min-w-0 bg-[#fcfbf8] px-5 py-4 md:px-8">
-        <header className="mx-auto mb-4 max-w-[980px]">
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
+      <section className="min-w-0 bg-[#fcfbf8] px-3 py-4 md:px-4">
+        <header className="mx-auto mb-4 max-w-[1240px]">
+          <div className="space-y-3">
+            <div className="flex items-start justify-between gap-4">
               <nav className="flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-slate-400">
                 <Link href="/" className="transition hover:text-slate-700">
                   产品空间
@@ -1114,19 +1136,120 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
                   云文档
                 </Link>
               </nav>
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={toggleFavorite}
+                  className={`rounded-lg border px-3 py-1.5 text-sm ${
+                    currentDocument.isFavorited
+                      ? "border-amber-200 bg-amber-50 text-amber-700"
+                      : "border-slate-200 bg-white/80 text-slate-600"
+                  }`}
+                >
+                  {currentDocument.isFavorited ? "已收藏" : "收藏"}
+                </button>
+                <button
+                  type="button"
+                  onClick={copyShareLink}
+                  className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-600"
+                >
+                  分享
+                </button>
+                <button
+                  type="button"
+                  disabled={isMutating || isSaving}
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="rounded-lg border border-rose-200 bg-white/80 px-3 py-1.5 text-sm text-rose-600 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  删除
+                </button>
+                {!isPdfDocument ? (
+                  <div
+                    ref={modeMenuRef}
+                    className="relative"
+                    onPointerEnter={keepModeMenuOpen}
+                    onPointerLeave={hideModeMenuWithDelay}
+                  >
+                    <button
+                      type="button"
+                      disabled={isSaving}
+                      onClick={() => {
+                        if (isModeMenuOpen) {
+                          keepModeMenuOpen();
+                          setIsModeMenuOpen(false);
+                          return;
+                        }
+                        keepModeMenuOpen();
+                        setIsModeMenuOpen(true);
+                      }}
+                      className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/88 px-3.5 py-1.5 text-sm text-slate-800 shadow-[0_1px_0_rgba(15,23,42,0.03)] transition hover:border-slate-300 hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      <currentModeOption.icon active />
+                      <span className="font-medium">{currentModeOption.label}</span>
+                      <ChevronIcon open={isModeMenuOpen} />
+                    </button>
+                    <div
+                      onPointerEnter={keepModeMenuOpen}
+                      onPointerLeave={hideModeMenuWithDelay}
+                      className={`absolute right-0 top-[calc(100%+10px)] z-30 w-44 origin-top-right rounded-lg border border-slate-200 bg-white/96 p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)] backdrop-blur-sm transition duration-180 ease-out ${
+                        isModeMenuOpen
+                          ? "pointer-events-auto translate-y-0 scale-100 opacity-100"
+                          : "pointer-events-none -translate-y-1 scale-95 opacity-0"
+                      }`}
+                    >
+                      {modeOptions.map((option) => {
+                        const selected = currentMode === option.value;
+                        const Icon = option.icon;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            disabled={isSaving}
+                            onClick={() => {
+                              void handleModeChange(option.value);
+                            }}
+                            className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition ${
+                              selected ? "bg-slate-100/90" : "hover:bg-slate-50"
+                            } disabled:cursor-not-allowed disabled:opacity-70`}
+                          >
+                            <div className="mt-0.5 shrink-0">
+                              <Icon active={selected} />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className={`text-sm font-medium ${selected ? "text-sky-600" : "text-slate-800"}`}>
+                                {option.label}
+                              </div>
+                              <div className="mt-0.5 text-xs text-slate-400">{option.description}</div>
+                            </div>
+                            <div className="mt-0.5 shrink-0">{selected ? <CheckIcon /> : null}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <span className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-500">
+                    PDF 暂不支持编辑
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="min-w-0">
               {!isPdfDocument ? (
-                <input
+                <textarea
+                  ref={titleTextareaRef}
                   value={draftTitle}
                   onChange={(event) => setDraftTitle(event.target.value)}
                   readOnly={!isEditing}
+                  rows={1}
                   spellCheck={isEditing}
                   aria-readonly={!isEditing}
-                  className={`mt-2 w-full border-0 bg-transparent px-0 py-0 text-[2.1rem] font-semibold tracking-tight text-slate-950 outline-none ring-0 placeholder:text-slate-300 ${
+                  className={`block w-full resize-none overflow-hidden border-0 bg-transparent px-0 py-0 text-[2.1rem] font-semibold leading-tight tracking-tight text-slate-950 outline-none ring-0 placeholder:text-slate-300 ${
                     !isEditing ? "cursor-text caret-transparent" : ""
                   }`}
                 />
               ) : (
-                <h1 className="mt-2 text-[2.1rem] font-semibold tracking-tight text-slate-950">
+                <h1 className="text-[2.1rem] font-semibold leading-tight tracking-tight text-slate-950">
                   {currentDocument.title}
                 </h1>
               )}
@@ -1141,104 +1264,6 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
                   </>
                 ) : null}
               </div>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-end gap-1.5">
-              <button
-                type="button"
-                onClick={toggleFavorite}
-                className={`rounded-lg border px-3 py-1.5 text-sm ${
-                  currentDocument.isFavorited
-                    ? "border-amber-200 bg-amber-50 text-amber-700"
-                    : "border-slate-200 bg-white/80 text-slate-600"
-                }`}
-              >
-                {currentDocument.isFavorited ? "已收藏" : "收藏"}
-              </button>
-              <button
-                type="button"
-                onClick={copyShareLink}
-                className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-600"
-              >
-                分享
-              </button>
-              <button
-                type="button"
-                disabled={isMutating || isSaving}
-                onClick={() => setShowDeleteConfirm(true)}
-                className="rounded-lg border border-rose-200 bg-white/80 px-3 py-1.5 text-sm text-rose-600 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                删除
-              </button>
-              {!isPdfDocument ? (
-                <div
-                  ref={modeMenuRef}
-                  className="relative"
-                  onPointerEnter={keepModeMenuOpen}
-                  onPointerLeave={hideModeMenuWithDelay}
-                >
-                  <button
-                    type="button"
-                    disabled={isSaving}
-                    onClick={() => {
-                      if (isModeMenuOpen) {
-                        keepModeMenuOpen();
-                        setIsModeMenuOpen(false);
-                        return;
-                      }
-                      keepModeMenuOpen();
-                      setIsModeMenuOpen(true);
-                    }}
-                    className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/88 px-3.5 py-1.5 text-sm text-slate-800 shadow-[0_1px_0_rgba(15,23,42,0.03)] transition hover:border-slate-300 hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
-                  >
-                    <currentModeOption.icon active />
-                    <span className="font-medium">{currentModeOption.label}</span>
-                    <ChevronIcon open={isModeMenuOpen} />
-                  </button>
-                  <div
-                    onPointerEnter={keepModeMenuOpen}
-                    onPointerLeave={hideModeMenuWithDelay}
-                    className={`absolute right-0 top-[calc(100%+10px)] z-30 w-44 origin-top-right rounded-lg border border-slate-200 bg-white/96 p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)] backdrop-blur-sm transition duration-180 ease-out ${
-                      isModeMenuOpen
-                        ? "pointer-events-auto translate-y-0 scale-100 opacity-100"
-                        : "pointer-events-none -translate-y-1 scale-95 opacity-0"
-                    }`}
-                  >
-                    {modeOptions.map((option) => {
-                      const selected = currentMode === option.value;
-                      const Icon = option.icon;
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          disabled={isSaving}
-                          onClick={() => {
-                            void handleModeChange(option.value);
-                          }}
-                          className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition ${
-                            selected ? "bg-slate-100/90" : "hover:bg-slate-50"
-                          } disabled:cursor-not-allowed disabled:opacity-70`}
-                        >
-                          <div className="mt-0.5 shrink-0">
-                            <Icon active={selected} />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className={`text-sm font-medium ${selected ? "text-sky-600" : "text-slate-800"}`}>
-                              {option.label}
-                            </div>
-                            <div className="mt-0.5 text-xs text-slate-400">{option.description}</div>
-                          </div>
-                          <div className="mt-0.5 shrink-0">{selected ? <CheckIcon /> : null}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : (
-                <span className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-500">
-                  PDF 暂不支持编辑
-                </span>
-              )}
             </div>
           </div>
 
@@ -1256,7 +1281,7 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
           </div>
         </header>
 
-        <article className="mx-auto max-w-[980px] bg-transparent px-0 py-4">
+        <article className="mx-auto max-w-[1240px] bg-transparent px-0 py-4">
           {isPdfDocument ? (
             <PdfPreview
               fileUrl={currentDocument.fileUrl}

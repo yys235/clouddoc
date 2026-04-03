@@ -348,6 +348,175 @@ function rowsByType(type: EditableBlockType, text: string) {
   return Math.max(text.split("\n").length, type === "code_block" ? 4 : 1);
 }
 
+function resizeTextarea(textarea: HTMLTextAreaElement | null) {
+  if (!textarea) {
+    return;
+  }
+
+  textarea.style.height = "0px";
+  const computedStyle = window.getComputedStyle(textarea);
+  const lineHeight = Number.parseFloat(computedStyle.lineHeight || "0");
+  const minHeight = Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : 0;
+  textarea.style.height = `${Math.max(textarea.scrollHeight, minHeight)}px`;
+}
+
+function createBlock(type: EditableBlockType, text = "", options?: { headingLevel?: number; meta?: LinkCardMeta }) {
+  return {
+    id: crypto.randomUUID(),
+    type,
+    text,
+    headingLevel: type === "heading" ? sanitizeHeadingLevel(options?.headingLevel ?? 1) : undefined,
+    meta: type === "link" ? { ...(defaultMetaByType(type) ?? {}), ...(options?.meta ?? {}) } : options?.meta,
+  } satisfies EditableBlock;
+}
+
+function parsePastedTextToBlocks(text: string) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((rawLine) => {
+      const line = rawLine.replace(/\t/g, "    ");
+      const trimmed = line.trim();
+
+      if (!trimmed) {
+        return createBlock("paragraph", "");
+      }
+
+      if (/^---+$/.test(trimmed) || /^___+$/.test(trimmed) || /^\*\*\*+$/.test(trimmed)) {
+        return createBlock("divider", "");
+      }
+
+      const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+      if (headingMatch) {
+        return createBlock("heading", headingMatch[2], {
+          headingLevel: headingMatch[1].length,
+        });
+      }
+
+      const orderedMatch = trimmed.match(/^\d+[.)]\s+(.+)$/);
+      if (orderedMatch) {
+        return createBlock("ordered_list", orderedMatch[1]);
+      }
+
+      const checkMatch = trimmed.match(/^(?:-\s*)?\[( |x|X)\]\s+(.+)$/);
+      if (checkMatch) {
+        const checked = checkMatch[1].toLowerCase() === "x";
+        return createBlock("check_list", `${checked ? "[x]" : "[ ]"} ${checkMatch[2]}`);
+      }
+
+      const bulletMatch = trimmed.match(/^[-*•]\s+(.+)$/);
+      if (bulletMatch) {
+        return createBlock("bullet_list", bulletMatch[1]);
+      }
+
+      return createBlock("paragraph", line);
+    });
+}
+
+function htmlNodeToText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent ?? "";
+  }
+
+  if (!(node instanceof HTMLElement)) {
+    return "";
+  }
+
+  if (node.tagName === "BR") {
+    return "\n";
+  }
+
+  return Array.from(node.childNodes)
+    .map((child) => htmlNodeToText(child))
+    .join("");
+}
+
+function parsePastedHtmlToBlocks(html: string) {
+  const parser = new DOMParser();
+  const parsed = parser.parseFromString(html, "text/html");
+  const body = parsed.body;
+  const blocks: EditableBlock[] = [];
+
+  const pushBlock = (block: EditableBlock | null) => {
+    if (!block) {
+      return;
+    }
+    blocks.push(block);
+  };
+
+  const elementToBlock = (element: HTMLElement): EditableBlock | null => {
+    const tag = element.tagName.toLowerCase();
+
+    if (/^h[1-6]$/.test(tag)) {
+      return createBlock("heading", htmlNodeToText(element).trim(), {
+        headingLevel: Number(tag.slice(1)),
+      });
+    }
+
+    if (tag === "blockquote") {
+      return createBlock("quote", htmlNodeToText(element).trim());
+    }
+
+    if (tag === "hr") {
+      return createBlock("divider", "");
+    }
+
+    if (tag === "ol") {
+      const lines = Array.from(element.querySelectorAll(":scope > li"))
+        .map((item) => htmlNodeToText(item).trim())
+        .filter((line) => line.length > 0);
+      return createBlock("ordered_list", lines.join("\n"));
+    }
+
+    if (tag === "ul") {
+      const items = Array.from(element.querySelectorAll(":scope > li"));
+      const lines = items
+        .map((item) => {
+          const text = htmlNodeToText(item).trim();
+          const checkbox = item.querySelector('input[type="checkbox"]');
+          if (checkbox) {
+            const checked = checkbox.hasAttribute("checked");
+            return `${checked ? "[x]" : "[ ]"} ${text}`.trim();
+          }
+          return text;
+        })
+        .filter((line) => line.length > 0);
+
+      if (lines.some((line) => /^\[(x|X| )\]\s/.test(line))) {
+        return createBlock("check_list", lines.join("\n"));
+      }
+
+      return createBlock("bullet_list", lines.join("\n"));
+    }
+
+    if (tag === "pre") {
+      const code = element.querySelector("code");
+      return createBlock("code_block", (code?.textContent ?? element.textContent ?? "").replace(/\r\n/g, "\n"));
+    }
+
+    if (tag === "p" || tag === "div") {
+      return createBlock("paragraph", htmlNodeToText(element).replace(/\u00a0/g, " "));
+    }
+
+    return null;
+  };
+
+  const topLevelElements = Array.from(body.children) as HTMLElement[];
+  for (const element of topLevelElements) {
+    pushBlock(elementToBlock(element));
+  }
+
+  if (blocks.length === 0) {
+    const fallback = htmlNodeToText(body).trim();
+    if (!fallback) {
+      return null;
+    }
+    return parsePastedTextToBlocks(fallback);
+  }
+
+  return blocks;
+}
+
 function quickCommandsForBlock(block: EditableBlock): QuickCommand[] {
   const headingLevels = [1, 2, 3, 4, 5, 6];
 
@@ -582,8 +751,15 @@ export function BlockEditor({
 
     textarea.focus();
     textarea.setSelectionRange(pendingFocus.caret, pendingFocus.caret);
+    resizeTextarea(textarea);
     setPendingFocus(null);
   }, [blocks, pendingFocus]);
+
+  useEffect(() => {
+    Object.values(textareaRefs.current).forEach((textarea) => {
+      resizeTextarea(textarea);
+    });
+  }, [blocks, readOnly]);
 
   useEffect(() => {
     if (!linkViewMenuBlockId) {
@@ -855,6 +1031,51 @@ export function BlockEditor({
     focusBlock(nextBlockId, after ? 0 : nextText.length);
   };
 
+  const insertStructuredBlocksFromPaste = (
+    index: number,
+    selectionStart: number,
+    selectionEnd: number,
+    pastedText: string,
+    pastedHtml?: string,
+  ) => {
+    const current = blocks[index];
+    if (!current) {
+      return false;
+    }
+
+    const parsedBlocks = (pastedHtml ? parsePastedHtmlToBlocks(pastedHtml) : null) ?? parsePastedTextToBlocks(pastedText);
+    if (parsedBlocks.length <= 1) {
+      return false;
+    }
+
+    const before = current.text.slice(0, selectionStart);
+    const after = current.text.slice(selectionEnd);
+    const firstBlock = parsedBlocks[0];
+    const lastBlock = parsedBlocks[parsedBlocks.length - 1];
+    const mergedFirstText = `${before}${firstBlock.text}`;
+    const mergedLastText = `${lastBlock.text}${after}`;
+
+    const nextBlocks = [...blocks];
+    nextBlocks.splice(
+      index,
+      1,
+      {
+        ...firstBlock,
+        text: mergedFirstText,
+      },
+      ...parsedBlocks.slice(1, -1),
+      {
+        ...lastBlock,
+        text: mergedLastText,
+      },
+    );
+
+    onChange(nextBlocks);
+    const lastInsertedBlock = nextBlocks[index + parsedBlocks.length - 1];
+    focusBlock(lastInsertedBlock.id, mergedLastText.length);
+    return true;
+  };
+
   const moveCaretToNeighbor = (
     index: number,
     direction: "previous" | "next",
@@ -1036,9 +1257,11 @@ export function BlockEditor({
 
             <div
               className={`relative -mx-3 rounded-lg px-3 transition ${
-                activeBlockId === block.id || commandMenu?.blockId === block.id
+                !readOnly && (activeBlockId === block.id || commandMenu?.blockId === block.id)
                   ? "bg-sky-50/70"
-                  : "bg-transparent"
+                  : !readOnly
+                    ? "bg-transparent group-hover:bg-sky-50/50"
+                    : "bg-transparent"
               }`}
             >
               {showLinkToolbar ? (
@@ -1125,9 +1348,11 @@ export function BlockEditor({
                 <textarea
                   ref={(element) => {
                     textareaRefs.current[block.id] = element;
+                    resizeTextarea(element);
                   }}
                   value={displayTextForBlock(block, readOnly)}
                   onChange={(event) => {
+                    resizeTextarea(event.currentTarget);
                     if (readOnly) {
                       return;
                     }
@@ -1180,8 +1405,20 @@ export function BlockEditor({
                     }
 
                     const pastedText = event.clipboardData.getData("text/plain").trim();
+                    const rawPastedText = event.clipboardData.getData("text/plain");
+                    const pastedHtml = event.clipboardData.getData("text/html");
                     const normalizedHref = normalizeExternalHref(pastedText);
                     if (!normalizedHref || event.currentTarget.value.trim()) {
+                      const handled = insertStructuredBlocksFromPaste(
+                        index,
+                        event.currentTarget.selectionStart,
+                        event.currentTarget.selectionEnd,
+                        rawPastedText,
+                        pastedHtml,
+                      );
+                      if (handled) {
+                        event.preventDefault();
+                      }
                       return;
                     }
 
@@ -1207,10 +1444,10 @@ export function BlockEditor({
                     void onResolveLinkPreview?.(block.id, normalizedHref);
                   }}
                   onFocus={() => {
-                    setActiveBlockId(block.id);
                     if (readOnly) {
                       return;
                     }
+                    setActiveBlockId(block.id);
                     const query = commandQuery(block.text);
                     if (query !== null) {
                       setCommandMenu({
@@ -1392,12 +1629,13 @@ export function BlockEditor({
                   }}
                   rows={rowsByType(block.type, displayTextForBlock(block, readOnly))}
                   readOnly={readOnly}
+                  tabIndex={readOnly ? -1 : undefined}
                   spellCheck={!readOnly}
                   aria-readonly={readOnly}
                   className={`block w-full resize-none border-0 bg-transparent p-0 outline-none ${textAreaClassName(block)} ${
                     readOnly ? "cursor-text caret-transparent" : ""
-                  }`}
-                  placeholder={readOnly ? "" : placeholderByType(block)}
+                  } overflow-hidden`}
+                  placeholder={readOnly || activeBlockId !== block.id ? "" : placeholderByType(block)}
                 />
               ) : null}
 

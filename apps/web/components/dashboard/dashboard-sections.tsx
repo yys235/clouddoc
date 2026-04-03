@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
 import { DashboardDocument, SpaceSummary } from "@/lib/api";
 
 function statusLabel(status: string) {
@@ -10,15 +11,18 @@ export function DashboardPageFrame({
   title,
   description,
   actions,
+  apiUnavailable = false,
   children,
 }: {
   title: string;
   description?: string;
   actions?: React.ReactNode;
+  apiUnavailable?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div className="mx-auto max-w-6xl space-y-5 p-5">
+      {apiUnavailable ? <ApiUnavailableNotice /> : null}
       <section className="rounded-3xl bg-white p-6 shadow-panel">
         <div className="flex items-start justify-between gap-4">
           <div className="max-w-2xl">

@@ -59,6 +59,16 @@ export type SpaceSummary = {
   updatedAt: string;
 };
 
+export type ApiListResult<T> = {
+  data: T[];
+  unavailable: boolean;
+};
+
+export type ApiItemResult<T> = {
+  data: T | null;
+  unavailable: boolean;
+};
+
 
 export type LinkPreviewPayload = {
   url: string;
@@ -72,33 +82,36 @@ export type LinkPreviewPayload = {
   status: "ready" | "error" | "loading";
 };
 
-export async function fetchDocument(docId: string): Promise<DocumentViewModel | null> {
+export async function fetchDocument(docId: string): Promise<ApiItemResult<DocumentViewModel>> {
   try {
     const response = await fetch(`${API_BASE_URL}/documents/${docId}`, {
       cache: "no-store",
     });
 
     if (!response.ok) {
-      return null;
+      return { data: null, unavailable: response.status >= 500 };
     }
 
     const data = await response.json();
-    return buildDocumentViewModel({
-      ...data,
-      file_url: resolveApiAssetUrl(data.file_url),
-    });
+    return {
+      data: buildDocumentViewModel({
+        ...data,
+        file_url: resolveApiAssetUrl(data.file_url),
+      }),
+      unavailable: false,
+    };
   } catch {
-    return null;
+    return { data: null, unavailable: true };
   }
 }
 
-export async function fetchDocuments(state = "active"): Promise<DashboardDocument[]> {
+export async function fetchDocuments(state = "active"): Promise<ApiListResult<DashboardDocument>> {
   try {
     const response = await fetch(`${API_BASE_URL}/documents?state=${state}`, {
       cache: "no-store",
     });
     if (!response.ok) {
-      return [];
+      return { data: [], unavailable: true };
     }
 
     const data = (await response.json()) as Array<{
@@ -110,27 +123,30 @@ export async function fetchDocuments(state = "active"): Promise<DashboardDocumen
       is_favorited: boolean;
     }>;
 
-    return data.map((item) => ({
-      id: item.id,
-      title: item.title,
-      status: item.status,
-      isDeleted: item.is_deleted,
-      isFavorited: item.is_favorited,
-      updatedAt: new Intl.DateTimeFormat("zh-CN", {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      }).format(new Date(item.updated_at)),
-    }));
+    return {
+      data: data.map((item) => ({
+        id: item.id,
+        title: item.title,
+        status: item.status,
+        isDeleted: item.is_deleted,
+        isFavorited: item.is_favorited,
+        updatedAt: new Intl.DateTimeFormat("zh-CN", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        }).format(new Date(item.updated_at)),
+      })),
+      unavailable: false,
+    };
   } catch {
-    return [];
+    return { data: [], unavailable: true };
   }
 }
 
-export async function searchDocuments(query: string): Promise<SearchDocument[]> {
+export async function searchDocuments(query: string): Promise<ApiListResult<SearchDocument>> {
   if (!query.trim()) {
-    return [];
+    return { data: [], unavailable: false };
   }
 
   try {
@@ -139,7 +155,7 @@ export async function searchDocuments(query: string): Promise<SearchDocument[]> 
     });
 
     if (!response.ok) {
-      return [];
+      return { data: [], unavailable: true };
     }
 
     const data = (await response.json()) as Array<{
@@ -153,34 +169,37 @@ export async function searchDocuments(query: string): Promise<SearchDocument[]> 
       is_favorited: boolean;
     }>;
 
-    return data.map((item) => ({
-      id: item.id,
-      title: item.title,
-      status: item.status,
-      documentType: item.document_type,
-      spaceId: item.space_id,
-      excerpt: item.excerpt,
-      isFavorited: item.is_favorited,
-      updatedAt: new Intl.DateTimeFormat("zh-CN", {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      }).format(new Date(item.updated_at)),
-    }));
+    return {
+      data: data.map((item) => ({
+        id: item.id,
+        title: item.title,
+        status: item.status,
+        documentType: item.document_type,
+        spaceId: item.space_id,
+        excerpt: item.excerpt,
+        isFavorited: item.is_favorited,
+        updatedAt: new Intl.DateTimeFormat("zh-CN", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        }).format(new Date(item.updated_at)),
+      })),
+      unavailable: false,
+    };
   } catch {
-    return [];
+    return { data: [], unavailable: true };
   }
 }
 
-export async function fetchTemplates(): Promise<TemplateItem[]> {
+export async function fetchTemplates(): Promise<ApiListResult<TemplateItem>> {
   try {
     const response = await fetch(`${API_BASE_URL}/templates`, {
       cache: "no-store",
     });
 
     if (!response.ok) {
-      return [];
+      return { data: [], unavailable: true };
     }
 
     const data = (await response.json()) as Array<{
@@ -191,20 +210,23 @@ export async function fetchTemplates(): Promise<TemplateItem[]> {
       created_at: string;
     }>;
 
-    return data.map((item) => ({
-      id: item.id,
-      name: item.name,
-      category: item.category,
-      status: item.status,
-      createdAt: new Intl.DateTimeFormat("zh-CN", {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      }).format(new Date(item.created_at)),
-    }));
+    return {
+      data: data.map((item) => ({
+        id: item.id,
+        name: item.name,
+        category: item.category,
+        status: item.status,
+        createdAt: new Intl.DateTimeFormat("zh-CN", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        }).format(new Date(item.created_at)),
+      })),
+      unavailable: false,
+    };
   } catch {
-    return [];
+    return { data: [], unavailable: true };
   }
 }
 
@@ -233,13 +255,13 @@ export async function instantiateTemplate(
   }>;
 }
 
-export async function fetchSpaces(): Promise<SpaceSummary[]> {
+export async function fetchSpaces(): Promise<ApiListResult<SpaceSummary>> {
   try {
     const response = await fetch(`${API_BASE_URL}/spaces`, {
       cache: "no-store",
     });
     if (!response.ok) {
-      return [];
+      return { data: [], unavailable: true };
     }
 
     const data = (await response.json()) as Array<{
@@ -250,20 +272,23 @@ export async function fetchSpaces(): Promise<SpaceSummary[]> {
       updated_at: string;
     }>;
 
-    return data.map((item) => ({
-      id: item.id,
-      name: item.name,
-      spaceType: item.space_type,
-      visibility: item.visibility,
-      updatedAt: new Intl.DateTimeFormat("zh-CN", {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      }).format(new Date(item.updated_at)),
-    }));
+    return {
+      data: data.map((item) => ({
+        id: item.id,
+        name: item.name,
+        spaceType: item.space_type,
+        visibility: item.visibility,
+        updatedAt: new Intl.DateTimeFormat("zh-CN", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        }).format(new Date(item.updated_at)),
+      })),
+      unavailable: false,
+    };
   } catch {
-    return [];
+    return { data: [], unavailable: true };
   }
 }
 
