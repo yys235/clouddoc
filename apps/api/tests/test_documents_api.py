@@ -128,3 +128,25 @@ def test_upload_pdf_document() -> None:
         assert detail_response.json()["document_type"] == "pdf"
     finally:
         cleanup_document(document_id)
+
+
+def test_upload_image_asset() -> None:
+    upload_response = client.post(
+        "/api/documents/upload-image",
+        files={
+            "file": ("sample.png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", "image/png"),
+        },
+    )
+    assert upload_response.status_code == 200
+    payload = upload_response.json()
+
+    upload_file_path = Path("uploads") / payload["file_url"].split("/uploads/", 1)[1]
+    try:
+        assert payload["file_name"] == "sample.png"
+        assert payload["mime_type"] == "image/png"
+        assert payload["file_size"] > 0
+        assert payload["file_url"].startswith("/uploads/")
+        assert upload_file_path.exists()
+    finally:
+        if upload_file_path.exists():
+            upload_file_path.unlink()

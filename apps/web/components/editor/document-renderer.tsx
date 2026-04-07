@@ -200,16 +200,20 @@ export function DocumentRenderer({ content }: { content: RichTextNode[] }) {
 
           const src = String(node.attrs?.src ?? "");
           const alt = String(node.attrs?.alt ?? "图片");
+          const align = String(node.attrs?.align ?? "center");
+          const justifyClass =
+            align === "left" ? "justify-start" : align === "right" ? "justify-end" : "justify-center";
           return (
-            <figure key={index} className="py-1">
+            <div key={index} className={`flex py-1 ${justifyClass}`}>
+              <figure className="bg-transparent">
               {src ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={src} alt={alt} className="max-h-[420px] w-full rounded-lg object-cover" />
+                <img src={src} alt={alt} className="max-h-[520px] max-w-full rounded-lg object-contain" />
               ) : (
                 <div className="flex h-40 items-center justify-center text-sm text-slate-400">未提供图片地址</div>
               )}
-              <figcaption className="mt-2 text-sm leading-6 text-slate-500">{alt}</figcaption>
-            </figure>
+              </figure>
+            </div>
           );
         }
 

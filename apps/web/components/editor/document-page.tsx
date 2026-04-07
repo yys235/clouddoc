@@ -11,6 +11,7 @@ import {
   fetchLinkPreview,
   softDeleteDocument,
   unfavoriteDocument,
+  uploadImageAsset,
   updateDocumentContent,
 } from "@/lib/api";
 
@@ -289,7 +290,7 @@ function rawTextFromNode(node: { attrs?: Record<string, unknown>; content?: { te
 }
 
 function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
-  const blocks = document.content.slice(1).map((node, index) => {
+  const blocks: EditableBlock[] = document.content.slice(1).map((node, index): EditableBlock => {
     if (node.type === "heading") {
       const level = sanitizeHeadingLevel(Number(node.attrs?.level ?? 2));
       return {
@@ -396,10 +397,13 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
     if (node.type === "image_block") {
       const alt = String(node.attrs?.alt ?? "").trim();
       const src = String(node.attrs?.src ?? "").trim();
+      const align = String(node.attrs?.align ?? "center").trim();
+      const imageAlign: EditableBlock["imageAlign"] = align === "left" || align === "right" ? align : "center";
       return {
         id: `${document.id}-image-${index}`,
         type: "image" as const,
         text: alt && src ? `${alt} | ${src}` : alt || src,
+        imageAlign,
       };
     }
 
@@ -610,6 +614,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
         attrs: {
           alt: altPart || "图片",
           src: srcPart || altPart || "",
+          align: block.imageAlign || "center",
           preservedEmpty: !text,
         },
       });
@@ -849,6 +854,7 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
       draftBlocks.map((block) => ({
         type: block.type,
         headingLevel: block.headingLevel ?? null,
+        imageAlign: block.imageAlign ?? null,
         text: block.text.trim(),
         meta: block.meta ?? null,
       })),
@@ -859,6 +865,7 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
       blocksFromDocument(currentDocument).map((block) => ({
         type: block.type,
         headingLevel: block.headingLevel ?? null,
+        imageAlign: block.imageAlign ?? null,
         text: block.text.trim(),
         meta: block.meta ?? null,
       })),
@@ -968,6 +975,10 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
     }
   };
 
+  const uploadImages = async (files: File[]) => {
+    return Promise.all(files.map((file) => uploadImageAsset(file)));
+  };
+
   const persistDraft = async (source: "auto" | "mode") => {
     if (isPdfDocument) {
       return true;
@@ -1000,8 +1011,10 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
         setCurrentDocument(nextDocument);
 
         if (latestRef.current.draftSignature === snapshot.draftSignature) {
-          setDraftTitle(nextDocument.title);
-          setDraftBlocks(blocksFromDocument(nextDocument));
+          // Keep the in-flight editor tree and stable block ids after autosave.
+          // Replacing draft blocks from server response remounts textareas and drops focus.
+          setDraftTitle((current) => current);
+          setDraftBlocks((current) => current);
         }
 
         setNotice(source === "auto" ? "已自动保存" : "已保存到服务器");
@@ -1293,6 +1306,7 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
               blocks={draftBlocks}
               onChange={setDraftBlocks}
               onResolveLinkPreview={resolveLinkPreview}
+              onUploadImage={uploadImages}
               readOnly={!isEditing}
             />
           )}

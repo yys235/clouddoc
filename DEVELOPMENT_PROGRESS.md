@@ -985,3 +985,46 @@
 - Increased document header/body max width from 1120px to 1240px for a wider content canvas.
 - Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
 - Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-03 12:09 CST
+- Fixed block drag-reorder regression by removing `preventDefault()` from the drag handle mousedown path.
+- Root cause: opening the block action menu on `mousedown` blocked the browser drag gesture before `dragstart` could fire.
+- Behavior now: hover still reveals the menu, click pins/opens the menu, drag reordering works again from the same handle.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 7 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-07 09:54 CST
+- Added direct image paste support in the block editor.
+- Clipboard image files now upload through a new backend endpoint `POST /api/documents/upload-image` and are inserted as real `image_block` nodes.
+- Reused the existing uploads directory/static file serving instead of adding a separate storage path.
+- Added backend coverage for image upload and verified the returned `/uploads/*.png` asset is immediately accessible.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 8 passed; `apps/web npm run build` => passed.
+- Restarted backend `8000` and frontend `3100` to serve the latest code.
+
+## 2026-04-07 10:02 CST
+- Fixed image block rendering after paste.
+- Root cause: pasted images were uploaded correctly, but the editor still rendered the block's raw source text (`file_name | url`) instead of an image preview.
+- Image blocks now render as actual image previews in the editor and no longer expose the raw source string as a textarea.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 8 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-07 10:14 CST
+- Tightened image block layout so images no longer sit inside an oversized bordered card with large horizontal blank space.
+- Added an image hover toolbar at the top-right of the image with left/center/right alignment controls, open-original, copy-link, and delete actions.
+- Persisted image alignment into document content so read mode and edit mode keep the same image placement.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 8 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-07 10:18 CST
+- Fixed image alignment persistence.
+- Root cause: image alignment was written into document content, but the frontend dirty-check signature ignored `imageAlign`, so auto-save never fired after changing alignment.
+- Added `imageAlign` into both draft and saved block signatures so alignment changes now trigger save and survive refresh.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 8 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-07 10:24 CST
+- Fixed focus loss after pressing Enter to create a new block.
+- Root cause: the 1.2s autosave replaced the local editor block tree with a fresh server-derived block array, which remounted the new textarea and dropped focus.
+- Autosave now keeps the existing in-memory draft block tree and stable block ids instead of replacing it from the save response.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 8 passed; `apps/web npm run build` => passed.
+- Restarted frontend `3100` to serve the latest build.

@@ -11,6 +11,7 @@ from app.schemas.document import (
     LinkPreviewRequest,
     LinkPreviewResponse,
     SearchResult,
+    UploadedAssetResponse,
 )
 from app.services.document_service import (
     create_document,
@@ -23,6 +24,7 @@ from app.services.document_service import (
     search_documents,
     soft_delete_document,
     unfavorite_document,
+    upload_image_asset,
     update_document_content,
 )
 
@@ -90,6 +92,27 @@ def link_preview_route(payload: LinkPreviewRequest) -> LinkPreviewResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/upload-image", response_model=UploadedAssetResponse)
+async def upload_image_route(file: UploadFile = File(...)) -> UploadedAssetResponse:
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are supported")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file is not allowed")
+
+    try:
+        return UploadedAssetResponse(
+            **upload_image_asset(
+                file_name=file.filename or "image",
+                file_bytes=file_bytes,
+                content_type=file.content_type,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{doc_id}", response_model=DocumentDetail)

@@ -33,6 +33,14 @@ export type EditableBlock = {
   text: string;
   headingLevel?: number;
   meta?: LinkCardMeta;
+  imageAlign?: "left" | "center" | "right";
+};
+
+type UploadedImageAsset = {
+  file_url: string;
+  file_name: string;
+  mime_type: string;
+  file_size: number;
 };
 
 type BlockCommand = {
@@ -184,6 +192,40 @@ function linkPreviewData(block: EditableBlock) {
   const view = block.meta?.view || "link";
   const status = block.meta?.status || (href ? "ready" : "idle");
   return { href, title, description, siteName, image, icon, view, status };
+}
+
+function imageBlockData(block: EditableBlock) {
+  const parts = block.text.split("|").map((part) => part.trim());
+  if (parts.length >= 2) {
+    return {
+      alt: parts[0] || "图片",
+      src: parts.slice(1).join(" | ").trim(),
+    };
+  }
+
+  const single = block.text.trim();
+  const normalizedHref = normalizeExternalHref(single);
+  if (normalizedHref) {
+    return {
+      alt: "图片",
+      src: normalizedHref,
+    };
+  }
+
+  return {
+    alt: single || "图片",
+    src: "",
+  };
+}
+
+function imageAlignClassName(align: EditableBlock["imageAlign"]) {
+  if (align === "left") {
+    return "justify-start";
+  }
+  if (align === "right") {
+    return "justify-end";
+  }
+  return "justify-center";
 }
 
 function sanitizeHeadingLevel(level: number | undefined) {
@@ -517,6 +559,22 @@ function parsePastedHtmlToBlocks(html: string) {
   return blocks;
 }
 
+function imageFilesFromClipboard(data: DataTransfer | null) {
+  if (!data) {
+    return [];
+  }
+
+  const files = Array.from(data.files ?? []).filter((file) => file.type.startsWith("image/"));
+  if (files.length > 0) {
+    return files;
+  }
+
+  return Array.from(data.items ?? [])
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null);
+}
+
 function quickCommandsForBlock(block: EditableBlock): QuickCommand[] {
   const headingLevels = [1, 2, 3, 4, 5, 6];
 
@@ -688,16 +746,112 @@ function LinkPreviewBlock({ block, readOnly }: { block: EditableBlock; readOnly:
   );
 }
 
+function ImagePreviewBlock({
+  block,
+  readOnly,
+  onAlign,
+  onDelete,
+}: {
+  block: EditableBlock;
+  readOnly: boolean;
+  onAlign: (align: "left" | "center" | "right") => void;
+  onDelete: () => void;
+}) {
+  const preview = imageBlockData(block);
+
+  if (!preview.src) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-400">
+        粘贴图片后会显示在这里
+      </div>
+    );
+  }
+
+  return (
+    <div className={`mb-2 flex w-full ${imageAlignClassName(block.imageAlign)}`}>
+      <figure className="group/image relative overflow-hidden rounded-lg bg-transparent">
+        {preview.src ? (
+          <div className="pointer-events-none absolute right-3 top-3 z-10 opacity-0 transition duration-150 group-hover/image:opacity-100">
+            <div className="pointer-events-auto flex items-center gap-1 rounded-md border border-slate-200 bg-white/95 p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)] backdrop-blur-sm">
+              {!readOnly ? (
+                <>
+                  <button
+                    type="button"
+                    className={`flex h-7 w-7 items-center justify-center rounded-md text-xs ${block.imageAlign === "left" ? "bg-sky-50 text-sky-700" : "text-slate-500 hover:bg-slate-50"}`}
+                    onClick={() => onAlign("left")}
+                    title="左对齐"
+                  >
+                    左
+                  </button>
+                  <button
+                    type="button"
+                    className={`flex h-7 w-7 items-center justify-center rounded-md text-xs ${(!block.imageAlign || block.imageAlign === "center") ? "bg-sky-50 text-sky-700" : "text-slate-500 hover:bg-slate-50"}`}
+                    onClick={() => onAlign("center")}
+                    title="居中"
+                  >
+                    中
+                  </button>
+                  <button
+                    type="button"
+                    className={`flex h-7 w-7 items-center justify-center rounded-md text-xs ${block.imageAlign === "right" ? "bg-sky-50 text-sky-700" : "text-slate-500 hover:bg-slate-50"}`}
+                    onClick={() => onAlign("right")}
+                    title="右对齐"
+                  >
+                    右
+                  </button>
+                </>
+              ) : null}
+              <a
+                href={preview.src}
+                target="_blank"
+                rel="noreferrer"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-50"
+                title="打开原图"
+              >
+                ↗
+              </a>
+              <button
+                type="button"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-50"
+                onClick={() => {
+                  void navigator.clipboard.writeText(preview.src);
+                }}
+                title="复制图片链接"
+              >
+                ⧉
+              </button>
+              {!readOnly ? (
+                <button
+                  type="button"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-rose-500 hover:bg-rose-50"
+                  onClick={onDelete}
+                  title="删除图片"
+                >
+                  ✕
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={preview.src} alt={preview.alt} className="max-h-[520px] max-w-full rounded-lg object-contain bg-transparent" />
+      </figure>
+    </div>
+  );
+}
+
 export function BlockEditor({
   blocks,
   onChange,
   readOnly = false,
   onResolveLinkPreview,
+  onUploadImage,
 }: {
   blocks: EditableBlock[];
   onChange: (blocks: EditableBlock[]) => void;
   readOnly?: boolean;
   onResolveLinkPreview?: (blockId: string, url: string) => void | Promise<void>;
+  onUploadImage?: (files: File[]) => Promise<UploadedImageAsset[]>;
 }) {
   const [commandMenu, setCommandMenu] = useState<{
     blockId: string;
@@ -867,6 +1021,10 @@ export function BlockEditor({
           : block,
       ),
     );
+  };
+
+  const updateImageAlign = (blockId: string, align: "left" | "center" | "right") => {
+    onChange(blocks.map((block) => (block.id === blockId ? { ...block, imageAlign: align } : block)));
   };
 
   const showToolbar = (blockId: string) => {
@@ -1076,6 +1234,50 @@ export function BlockEditor({
     return true;
   };
 
+  const insertUploadedImages = async (index: number, files: File[]) => {
+    if (!onUploadImage || files.length === 0) {
+      return;
+    }
+
+    const uploadedAssets = await onUploadImage(files);
+    if (uploadedAssets.length === 0) {
+      return;
+    }
+
+    const current = blocks[index];
+    if (!current) {
+      return;
+    }
+
+    const imageBlocks = uploadedAssets.map((asset) =>
+      createBlock("image", `${asset.file_name} | ${asset.file_url}`),
+    );
+
+    const shouldReplaceCurrent = !current.text.trim() && current.type === "paragraph";
+    const nextBlocks = [...blocks];
+    const focusTarget =
+      imageBlocks.length > 0
+        ? createBlock("paragraph", "")
+        : null;
+
+    if (shouldReplaceCurrent) {
+      nextBlocks.splice(index, 1, ...imageBlocks);
+      if (focusTarget) {
+        nextBlocks.splice(index + imageBlocks.length, 0, focusTarget);
+      }
+    } else {
+      nextBlocks.splice(index + 1, 0, ...imageBlocks);
+      if (focusTarget) {
+        nextBlocks.splice(index + 1 + imageBlocks.length, 0, focusTarget);
+      }
+    }
+
+    onChange(nextBlocks);
+    if (focusTarget) {
+      focusBlock(focusTarget.id, 0);
+    }
+  };
+
   const moveCaretToNeighbor = (
     index: number,
     direction: "previous" | "next",
@@ -1226,8 +1428,7 @@ export function BlockEditor({
                     setDraggingBlockId(null);
                     setDropTargetId(null);
                   }}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
+                  onClick={() => {
                     setPinnedCommandMenuBlockId(block.id);
                     cancelCommandMenuHide();
                     openActionsMenu(block.id);
@@ -1343,8 +1544,16 @@ export function BlockEditor({
               ) : null}
 
               {block.type === "link" ? <LinkPreviewBlock block={block} readOnly={readOnly} /> : null}
+              {block.type === "image" ? (
+                <ImagePreviewBlock
+                  block={block}
+                  readOnly={readOnly}
+                  onAlign={(align) => updateImageAlign(block.id, align)}
+                  onDelete={() => removeBlock(block.id)}
+                />
+              ) : null}
 
-              {!(readOnly && block.type === "link") ? (
+              {block.type !== "image" && !(readOnly && block.type === "link") ? (
                 <textarea
                   ref={(element) => {
                     textareaRefs.current[block.id] = element;
@@ -1401,6 +1610,13 @@ export function BlockEditor({
                   }}
                   onPaste={(event) => {
                     if (readOnly) {
+                      return;
+                    }
+
+                    const imageFiles = imageFilesFromClipboard(event.clipboardData);
+                    if (imageFiles.length > 0) {
+                      event.preventDefault();
+                      void insertUploadedImages(index, imageFiles);
                       return;
                     }
 

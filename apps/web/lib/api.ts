@@ -348,6 +348,31 @@ export async function uploadPdfDocument(input: {
   });
 }
 
+export async function uploadImageAsset(file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await fetch(`${API_BASE_URL}/documents/upload-image`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to upload image");
+  }
+
+  const data = await response.json();
+  return {
+    ...data,
+    file_url: resolveApiAssetUrl(data.file_url),
+  } as {
+    file_url: string;
+    file_name: string;
+    mime_type: string;
+    file_size: number;
+  };
+}
+
 export async function updateDocumentContent(input: {
   docId: string;
   schemaVersion?: number;

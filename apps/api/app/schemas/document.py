@@ -60,6 +60,13 @@ class LinkPreviewResponse(BaseModel):
     status: str = "ready"
 
 
+class UploadedAssetResponse(BaseModel):
+    file_url: str
+    file_name: str
+    mime_type: str
+    file_size: int
+
+
 class FavoriteStatusResponse(BaseModel):
     document_id: str
     is_favorited: bool

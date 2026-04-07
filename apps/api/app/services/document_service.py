@@ -520,6 +520,36 @@ def create_pdf_document(
     return get_document_detail(db, document.id)  # type: ignore[return-value]
 
 
+def upload_image_asset(*, file_name: str, file_bytes: bytes, content_type: str) -> dict[str, str | int]:
+    safe_name = Path(file_name).name or "image"
+    mime_type = content_type.strip().lower()
+    if mime_type not in {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}:
+        raise ValueError("Only PNG, JPG, GIF, and WEBP images are supported")
+
+    extension = Path(safe_name).suffix.lower()
+    if mime_type == "image/jpeg" and extension not in {".jpg", ".jpeg"}:
+        extension = ".jpg"
+    elif mime_type == "image/png" and extension != ".png":
+        extension = ".png"
+    elif mime_type == "image/gif" and extension != ".gif":
+        extension = ".gif"
+    elif mime_type == "image/webp" and extension != ".webp":
+        extension = ".webp"
+
+    file_id = f"{uuid.uuid4()}{extension or '.img'}"
+    upload_dir = Path(settings.upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    file_path = upload_dir / file_id
+    file_path.write_bytes(file_bytes)
+
+    return {
+        "file_url": f"{settings.upload_url_prefix}/{file_id}",
+        "file_name": safe_name,
+        "mime_type": "image/jpeg" if mime_type == "image/jpg" else mime_type,
+        "file_size": len(file_bytes),
+    }
+
+
 def update_document_content(
     db: Session,
     doc_id: str,
