@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
+import { GuestAuthLinks, UserMenu } from "@/components/auth/auth-actions";
 import { createDocument, fetchSpaces, uploadPdfDocument } from "@/lib/api";
 
 const navItems = [
@@ -11,12 +12,21 @@ const navItems = [
   { label: "最近访问", href: "/recent" },
   { label: "我的文档", href: "/documents" },
   { label: "团队空间", href: "/spaces" },
+  { label: "通知", href: "/notifications" },
   { label: "收藏", href: "/favorites" },
   { label: "模板中心", href: "/templates" },
   { label: "回收站", href: "/trash" },
 ];
 
-export function SidebarNav() {
+export function SidebarNav({
+  currentUser,
+  currentOrganizationName,
+  notificationUnreadCount = 0,
+}: {
+  currentUser?: { name: string; email: string } | null;
+  currentOrganizationName?: string | null;
+  notificationUnreadCount?: number;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -24,6 +34,7 @@ export function SidebarNav() {
   const [showCreatePanel, setShowCreatePanel] = useState(false);
   const [pdfTitle, setPdfTitle] = useState("");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const canCreate = Boolean(currentUser);
 
   const closeCreateModal = () => {
     setShowCreatePanel(false);
@@ -96,11 +107,12 @@ export function SidebarNav() {
         <button
           type="button"
           onClick={() => setShowCreatePanel(true)}
-          disabled={isPending}
+          disabled={isPending || !canCreate}
           className="mb-2 rounded-lg bg-accent px-3 py-2.5 text-left text-sm font-medium text-white shadow-panel disabled:cursor-not-allowed disabled:opacity-70"
         >
           {isPending ? "处理中..." : "+ 新建文档"}
         </button>
+        {!canCreate ? <div className="mb-3 text-xs text-slate-500">请先登录后再创建文档</div> : null}
         {error ? <div className="mb-3 text-xs text-rose-500">{error}</div> : null}
 
         <nav className="space-y-1">
@@ -114,10 +126,27 @@ export function SidebarNav() {
               }`}
               href={item.href}
             >
-              {item.label}
+              <span className="flex items-center justify-between gap-2">
+                <span>{item.label}</span>
+                {item.href === "/notifications" && notificationUnreadCount > 0 ? (
+                  <span className="rounded-lg bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-600">
+                    {notificationUnreadCount}
+                  </span>
+                ) : null}
+              </span>
             </Link>
           ))}
         </nav>
+
+        {currentUser ? (
+          <UserMenu
+            name={currentUser.name}
+            email={currentUser.email}
+            organizationName={currentOrganizationName}
+          />
+        ) : (
+          <GuestAuthLinks />
+        )}
       </aside>
 
       {showCreatePanel ? (

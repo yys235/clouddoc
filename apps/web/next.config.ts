@@ -10,11 +10,25 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   env: {
     CLOUDDOC_API_BASE_URL:
-      process.env.CLOUDDOC_API_BASE_URL ?? 'http://127.0.0.1:8000/api',
+      process.env.CLOUDDOC_API_BASE_URL ?? '/api',
     NEXT_PUBLIC_CLOUDDOC_API_BASE_URL:
       process.env.NEXT_PUBLIC_CLOUDDOC_API_BASE_URL ??
       process.env.CLOUDDOC_API_BASE_URL ??
-      'http://127.0.0.1:8000/api',
+      '/api',
+  },
+  async rewrites() {
+    const backendOrigin = process.env.CLOUDDOC_BACKEND_ORIGIN ?? 'http://127.0.0.1:8000';
+
+    return [
+      {
+        source: '/api/:path*',
+        destination: `${backendOrigin}/api/:path*`,
+      },
+      {
+        source: '/uploads/:path*',
+        destination: `${backendOrigin}/uploads/:path*`,
+      },
+    ];
   },
 };
 

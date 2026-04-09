@@ -8,6 +8,75 @@
 
 ## Progress Log
 
+### 2026-04-08 17:12 CST
+
+- Completed the user-system implementation round based on `user-system-design.md`:
+  - added cookie-session auth routes:
+    - `POST /api/auth/register`
+    - `POST /api/auth/login`
+    - `POST /api/auth/logout`
+    - `GET /api/auth/me`
+    - `GET /api/auth/require`
+    - `POST /api/auth/dev-bootstrap`
+  - added `user_sessions` persistence and session management routes:
+    - `GET /api/sessions`
+    - `DELETE /api/sessions/{id}`
+  - added organization management routes:
+    - `POST /api/organizations`
+    - `GET /api/organizations/current`
+    - `GET /api/organizations/{id}/members`
+    - `POST /api/organizations/{id}/invite`
+    - `PATCH /api/organizations/{id}/members/{member_id}`
+  - switched document/comment/template/space paths to current-user-aware request handling instead of default-user service shortcuts
+  - added login/register pages and browser auth bootstrap
+  - added organization management UI for:
+    - creating organizations
+    - inviting members
+    - listing sessions
+    - listing members
+    - updating member role/status
+    - revoking sessions
+- Automated verification:
+  - `cd /Users/yys235/projects/clouddoc/apps/api && .venv/bin/pytest -q`
+    - Result: `16 passed`
+  - `cd /Users/yys235/projects/clouddoc/apps/web && npm run build`
+    - Result: success
+
+### 2026-04-08 17:34 CST
+
+- Tightened comment-delete permissions to the requested two-rule model:
+  - a user can delete their own comment
+  - the document owner can delete any comment on that document
+  - removed the previous broader organization admin/owner override from backend permission checks
+- Exposed document `owner_id` to the frontend document model so the comment sidebar can show delete controls for document owners as well as comment authors
+- Added regression coverage for comment-delete permissions:
+  - outsider cannot delete another user comment
+  - document owner can delete comments on their document
+  - comment author can delete their own comment
+- Automated verification:
+  - `cd /Users/yys235/projects/clouddoc/apps/api && .venv/bin/pytest -q`
+    - Result: `17 passed`
+  - `cd /Users/yys235/projects/clouddoc/apps/web && npm run build`
+    - Result: success
+
+### 2026-04-08 17:52 CST
+
+- Upgraded comments from flat thread replies to nested replies:
+  - added `comments.parent_comment_id`
+  - reply API now accepts `parent_comment_id`
+  - frontend comment sidebar now renders threaded replies with indentation
+  - per-comment reply action now targets a specific parent comment instead of only replying at the thread root
+- Implemented parent-delete behavior for nested replies:
+  - deleting a parent comment keeps child replies
+  - deleted parent comments now remain visible as a placeholder: `该评论已删除`
+  - thread deletion still happens only when all comments in the thread are deleted
+- Added runtime schema patching for existing databases so `parent_comment_id` is added automatically at startup and during test initialization
+- Automated verification:
+  - `cd /Users/yys235/projects/clouddoc/apps/api && .venv/bin/pytest -q`
+    - Result: `18 passed`
+  - `cd /Users/yys235/projects/clouddoc/apps/web && npm run build`
+    - Result: success
+
 ### 2026-03-26 18:58 CST
 
 - Established the local canonical workspace at `/Users/yys235/projects/clouddoc`.
@@ -1028,3 +1097,140 @@
 - Autosave now keeps the existing in-memory draft block tree and stable block ids instead of replacing it from the save response.
 - Automated checks: `apps/api .venv/bin/pytest -q` => 8 passed; `apps/web npm run build` => passed.
 - Restarted frontend `3100` to serve the latest build.
+
+## 2026-04-07 10:43 CST
+- Implemented `P0` comment threads for document text selections.
+- Added backend comment thread/comment tables, routes, service methods, and API coverage for create/list/reply/status-update flows.
+- Added stable persisted `block_id` attributes to document content nodes so comment anchors survive save/refresh.
+- Added a right-side comment sidebar, read-only text selection comment toolbar, thread badges on blocks, and block/thread bidirectional activation.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 9 passed; `apps/web npm run build` => passed.
+- Restarted backend `8000` and frontend `3100` to serve the latest build.
+
+## 2026-04-07 10:58 CST
+- Switched read-only text blocks from `textarea` to a dedicated text layer so inline comment highlights can render directly in document content.
+- Added range-based comment highlight segmentation per block using persisted comment anchors; clicking a highlighted range activates the corresponding thread.
+- Moved read-only selection-to-comment offset calculation onto the rendered text layer instead of textarea selection APIs.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 9 passed; `apps/web npm run build` => passed.
+
+## 2026-04-07 15:58 CST
+- Switched frontend API base configuration from absolute `127.0.0.1:8000/api` to relative `/api` in runtime defaults and root env files.
+- Kept uploaded asset URLs relative, so image and file access now stays proxy-friendly across different network segments.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 9 passed; `apps/web npm run build` => passed.
+
+## 2026-04-07 16:48 CST
+- Added Next.js rewrites for `/api/*` and `/uploads/*` so direct access to local `3100` also proxies correctly to backend `8000`.
+- Added centralized `CLOUDDOC_BACKEND_ORIGIN` config to root env files for the local frontend-to-backend proxy target.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 9 passed; `apps/web npm run build` => passed.
+
+## 2026-04-07 16:53 CST
+- Fixed SSR data fetching after switching frontend API config to relative `/api`.
+- Browser requests still use relative `/api`, but server-rendered pages now resolve relative API paths against `CLOUDDOC_BACKEND_ORIGIN` so direct access to local `3100` no longer falls into the API-unavailable state.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 9 passed; `apps/web npm run build` => passed.
+
+## 2026-04-07 16:59 CST
+- Removed the read-only-only restriction from text selection comments.
+- Comment creation now works in both edit mode and read mode for text blocks, which matches the current default document opening mode.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 9 passed; `apps/web npm run build` => passed.
+
+## 2026-04-07 17:07 CST
+- Tightened the right-side comment sidebar spacing, textarea heights, and action button sizes for a denser review panel.
+- Added automatic scroll-to-thread behavior when a commented text range activates a thread, so clicking commented text now locates the corresponding sidebar thread.
+- Added backend comment-thread synchronization during document save: threads now relocate when possible and are deleted together with their comments when the quoted text is actually removed from the document.
+- Added API coverage for comment-thread removal when quoted text is deleted.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-07 17:14 CST
+- Fixed comment creation visibility in edit mode by removing the remaining read-only-only guard from the selection toolbar rendering path.
+- Added bidirectional hover linkage between inline comment highlights and sidebar threads so text hover and thread hover now share the same highlight state.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-07 17:20 CST
+- Fixed read-mode empty-line loss after switching text blocks to the custom read-only text layer.
+- Read-only text blocks now preserve minimum height based on the real line count from the stored block text, so blank paragraphs and newline-only blocks remain visible.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-07 17:28 CST
+- Restored comment visibility in edit mode by rendering inline comment highlight underlays for editable text blocks.
+- Clicking inside a commented text range in edit mode now activates the corresponding comment thread based on caret offset.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-07 17:46 CST
+- Added the unified text-surface design document at `text-block-unified-surface-design.md` and started the refactor against that plan.
+- Removed the dedicated read-only text-layer branch from `block-editor`; text blocks now use the same textarea surface in both read and edit modes, with `readOnly` as the behavior switch.
+- Comment highlighting, empty-line preservation, selection handling, and thread activation now stay on that single text surface instead of splitting between read-only text spans and editable textareas.
+- Added explicit divider rendering while keeping text blocks on the unified surface.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-08 10:08 CST
+- Continued the unified text-surface refactor by removing the remaining read-only value branching from text blocks.
+- Added a single `showsUnifiedTextSurface()` gate so text blocks now pass through one visible surface branch, while `link/image/divider` stay on their specialized renderers.
+- Simplified text value handling so the unified surface always reads from the same stored block text, reducing the chance of mode-specific divergence returning later.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-08 10:18 CST
+- Extracted the unified text rendering branch into a dedicated `TextBlockSurface` component inside `block-editor`.
+- Moved comment highlight underlay, textarea surface wiring, and readOnly/editable switching behind that component so later text-surface changes are centralized in one place.
+- Fixed a React-vs-DOM keyboard event type collision introduced during the extraction.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-08 10:29 CST
+- Centralized unified text-surface event logic by extracting change, paste, focus, blur, selection, and keydown handling into dedicated handlers in `block-editor`.
+- `TextBlockSurface` now consumes a stable handler set instead of large inline JSX callbacks, reducing the chance of read/edit behavior drifting apart again.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-08 10:39 CST
+- Moved `TextBlockSurface` into its own file: `apps/web/components/editor/text-block-surface.tsx`.
+- Moved the comment range type and the unified text underlay rendering logic with it, so text-surface changes no longer require editing the larger `block-editor` file.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-08 10:48 CST
+- Moved text-surface helper functions into `apps/web/components/editor/text-block-surface-utils.ts`.
+- `block-editor` now imports text display, placeholder, row sizing, min-height, and unified-surface predicates instead of defining them inline.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-08 10:55 CST
+- Moved slash-command parsing and quick-command definitions into `apps/web/components/editor/block-command-utils.ts`.
+- `block-editor` now imports command-query and quick-command helpers instead of carrying that text-surface-adjacent logic inline.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-08 11:03 CST
+- Moved text-surface selection helpers into `apps/web/components/editor/text-block-selection-utils.ts`.
+- Thread hit testing and selection-toolbar anchor construction are now isolated from `block-editor`, further reducing text-surface-specific logic in the main editor file.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-08 11:13 CST
+- Extracted the inline comment-selection popover into `apps/web/components/editor/comment-selection-toolbar.tsx`.
+- `block-editor` now delegates selection-toolbar rendering instead of carrying that UI inline.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+
+## 2026-04-08 11:20 CST
+- Made comment thread count badges visible in both read mode and edit mode so annotated blocks keep the same information structure across modes.
+- Automated checks: `apps/api .venv/bin/pytest -q` => 10 passed; `apps/web npm run build` => passed.
+- 2026-04-08 11:32 CST: moved bullet/ordered list line markers into the unified TextBlockSurface so read/edit share the same surface layout and gutter treatment.
+- 2026-04-08 11:47 CST: moved checklist markers and toggle handling into the unified TextBlockSurface so check-list blocks share the same read/edit surface and preserve checked state through display-text edits.
+- 2026-04-08 12:02 CST: made active comment-thread selection scroll and select the unified text surface in both read and edit mode so comment navigation no longer diverges by mode.
+- 2026-04-08 12:11 CST: mapped checklist comment offsets between stored raw text and displayed text so comment highlighting, selection, and thread activation stay aligned after moving checklist rendering into the unified text surface.
+- 2026-04-08 12:24 CST: replaced fixed list/check gutter widths with dynamic unified-surface gutter sizing so ordered lists with multi-digit indices keep read/edit alignment without hard-coded padding.
+- 2026-04-08 12:39 CST: removed the unused legacy read-only document renderer component to eliminate stale dual-rendering code paths after the unified text-surface refactor.
+- 2026-04-08 12:46 CST: added a final cleanup pass by removing the unused legacy read-only renderer and including frontend lint in the closing validation set for the unified text-surface work.
+- 2026-04-08 12:58 CST: removed the partial ESLint bootstrap artifacts after confirming lint dependency installation is environment-blocked, keeping the repo free of half-configured tooling state.
+- 2026-04-08 13:08 CST: added user-system-design.md to define the authentication, session, organization, membership, and permission model needed to replace the current default-user flow and support comment ownership/deletion safely.
+- 2026-04-08 15:42 CST: implemented backend auth/session foundations with `user_sessions`, cookie-based auth routes (`/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`, `/api/auth/dev-bootstrap`), PBKDF2 password hashing, and current-user resolution with development fallback.
+- 2026-04-08 15:42 CST: replaced document/comment/template/space default-user route wiring with current-user-aware dependencies, updated template/document creation ownership paths, and aligned SQL bootstrap schema with the new `user_sessions` table.
+- 2026-04-08 15:42 CST: added backend auth API coverage (`apps/api/tests/test_auth_api.py`) and browser-side auth session bootstrap in `apps/web/app/layout.tsx` so the browser can establish a same-origin session without a dedicated login page yet.
+- 2026-04-08 15:42 CST: automated checks completed after auth rollout: `apps/api .venv/bin/pytest -q` => 13 passed; `apps/web npm run build` => passed.
+- 2026-04-08 16:20 CST: added organization read/manage APIs for current organization, members, organization creation, invitations, and member updates; added `organization_invitations` schema/model and backend coverage for session listing/revocation and organization management.
+- 2026-04-08 16:20 CST: added frontend user pages and shell integration: `/login`, `/register`, sidebar current-user card with logout, team-space organization/member overview, organization management panel, and session list display.
+- 2026-04-08 16:20 CST: added comment deletion through authenticated ownership checks and surfaced comment delete actions in the right-hand comment sidebar.
+- 2026-04-08 16:20 CST: automated checks after organization/user UI rollout: `apps/api .venv/bin/pytest -q` => 16 passed; `apps/web npm run build` => passed.
+- 2026-04-08 16:52 CST: unified destructive confirmations across the current UI surface: document deletion, block/image deletion, comment deletion, and session revoke/exit now all require explicit confirmation before executing.
+- 2026-04-08 16:52 CST: fixed the comment sidebar delete-confirmation wiring by moving the nested comment delete trigger to an explicit callback instead of a missing local setter reference.
+- 2026-04-08 16:52 CST: automated checks after destructive-action confirmation rollout: `apps/api .venv/bin/pytest -q` => 18 passed; `apps/web npm run build` => passed.
+- 2026-04-08 17:06 CST: added resolved-thread folding in the right comment sidebar, with automatic expansion when the active thread is already resolved.
+- 2026-04-08 17:06 CST: changed comment-thread ordering to follow document position (`block_id + start_offset`) instead of raw creation time so the sidebar matches reading order.
+- 2026-04-08 17:06 CST: added lightweight `@成员` autocomplete in new-comment and reply composers, backed by real organization members on the document page.
+- 2026-04-08 17:06 CST: automated checks after comment-sidebar improvements: `apps/api .venv/bin/pytest -q` => 18 passed; `apps/web npm run build` => passed.
+ - 2026-04-09 09:41 CST: fixed notification/comment/document deletion cleanup ordering so comment thread removal clears dependent notifications before deleting comments and threads, eliminating foreign-key failures in comment-delete and notification tests.
+ - 2026-04-09 09:41 CST: extended test cleanup for document fixtures to delete comment notifications, comments, and threads before removing the document record.
+ - 2026-04-09 09:41 CST: completed the notification UX loop so opening a notification marks it as read before navigating to the target document thread.
+ - 2026-04-09 09:41 CST: automated checks after notification cleanup and read-on-open flow: `apps/api .venv/bin/pytest -q` => 19 passed; `apps/web npm run build` => passed.

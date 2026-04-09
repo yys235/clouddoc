@@ -23,5 +23,11 @@ def get_db():
 
 def init_db() -> None:
     from app import models  # noqa: F401
+    from app.services.bootstrap_service import ensure_runtime_schema
 
     Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        ensure_runtime_schema(db)
+    finally:
+        db.close()

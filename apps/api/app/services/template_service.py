@@ -15,7 +15,6 @@ from app.schemas.template import (
 )
 from app.services.document_service import (
     extract_plain_text,
-    get_default_user_id,
     get_document_detail,
 )
 
@@ -37,18 +36,17 @@ def instantiate_template(
     db: Session,
     template_id: str,
     payload: TemplateInstantiateRequest,
+    current_user_id: str,
 ) -> TemplateInstantiateResponse | None:
     template = db.get(Template, template_id)
     if template is None:
         return None
 
-    owner_id = get_default_user_id(db)
-    if owner_id is None:
-        return None
-
     target_space_id = payload.space_id
     if target_space_id is None:
-        default_space = db.scalar(select(Space).order_by(Space.created_at.asc()).limit(1))
+        default_space = db.scalar(
+            select(Space).where(Space.owner_id == current_user_id).order_by(Space.created_at.asc()).limit(1)
+        )
         if default_space is None:
             return None
         target_space_id = default_space.id
@@ -73,8 +71,8 @@ def instantiate_template(
     document = Document(
         space_id=space.id,
         parent_id=None,
-        creator_id=owner_id,
-        owner_id=owner_id,
+        creator_id=current_user_id,
+        owner_id=current_user_id,
         title=default_title,
         document_type="doc",
         status="draft",
@@ -89,7 +87,7 @@ def instantiate_template(
         schema_version=1,
         content_json=content_json,
         plain_text=extract_plain_text(content_json),
-        created_by=owner_id,
+        created_by=current_user_id,
     )
     db.add(content)
     db.flush()
@@ -99,7 +97,7 @@ def instantiate_template(
         content_id=content.id,
         version_no=1,
         message=f"Created from template: {template.name}",
-        created_by=owner_id,
+        created_by=current_user_id,
     )
     db.add(version)
     db.flush()
@@ -108,7 +106,7 @@ def instantiate_template(
     db.commit()
     db.refresh(document)
 
-    detail = get_document_detail(db, document.id)
+    detail = get_document_detail(db, document.id, current_user_id)
     if detail is None:
         return None
 

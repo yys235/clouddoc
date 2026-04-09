@@ -1,6 +1,47 @@
 "use client";
 
+import type {
+  ChangeEvent as ReactChangeEvent,
+  ClipboardEvent as ReactClipboardEvent,
+  FocusEvent as ReactFocusEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+} from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import type { CommentAnchor, CommentThread } from "@/lib/api";
+import {
+  commandQuery,
+  filterCommands,
+  quickCommandsForBlock,
+} from "@/components/editor/block-command-utils";
+import {
+  TextBlockSurface,
+  type TextCommentRange,
+  type UnifiedTextBlockType,
+} from "@/components/editor/text-block-surface";
+import {
+  buildCheckListRawText,
+  displayOffsetFromBlockRawOffset,
+  displayTextForBlock,
+  parseCheckListRawText,
+  placeholderByType,
+  readOnlyMinHeightStyle,
+  rawOffsetFromBlockDisplayOffset,
+  rowsByType,
+  showsUnifiedTextSurface,
+  textSurfacePaddingClassName,
+  textSurfaceGutterWidth,
+  textAreaClassName,
+  toggleCheckListLine,
+} from "@/components/editor/text-block-surface-utils";
+import {
+  buildSelectionToolbarState,
+  type SelectionToolbarState,
+  threadIdAtOffset,
+} from "@/components/editor/text-block-selection-utils";
+import { CommentSelectionToolbar } from "@/components/editor/comment-selection-toolbar";
 
 export type LinkCardView = "link" | "title" | "card" | "preview";
 
@@ -42,91 +83,6 @@ type UploadedImageAsset = {
   mime_type: string;
   file_size: number;
 };
-
-type BlockCommand = {
-  type: EditableBlockType;
-  label: string;
-  shortLabel: string;
-  description: string;
-  keywords: string[];
-};
-
-type QuickCommand =
-  | { kind: "type"; type: EditableBlockType; label: string; title: string }
-  | { kind: "heading"; level: number; label: string; title: string };
-
-const BLOCK_COMMANDS: BlockCommand[] = [
-  {
-    type: "paragraph",
-    label: "正文",
-    shortLabel: "T",
-    description: "普通正文段落",
-    keywords: ["text", "paragraph", "body", "p"],
-  },
-  {
-    type: "heading",
-    label: "标题",
-    shortLabel: "H1",
-    description: "章节标题和大纲节点",
-    keywords: ["heading", "title", "h1", "h2", "h3", "h4", "h5", "h6"],
-  },
-  {
-    type: "bullet_list",
-    label: "列表",
-    shortLabel: "•",
-    description: "无序列表，每行一个条目",
-    keywords: ["list", "bullet", "ul"],
-  },
-  {
-    type: "ordered_list",
-    label: "有序列表",
-    shortLabel: "1.",
-    description: "有序列表，每行一个条目",
-    keywords: ["ordered", "number", "list", "ol"],
-  },
-  {
-    type: "check_list",
-    label: "检查项",
-    shortLabel: "[]",
-    description: "任务清单，支持 [x] 和 [ ]",
-    keywords: ["check", "todo", "task", "checkbox"],
-  },
-  {
-    type: "quote",
-    label: "引用",
-    shortLabel: "❝",
-    description: "强调引用内容",
-    keywords: ["quote", "blockquote"],
-  },
-  {
-    type: "divider",
-    label: "分割线",
-    shortLabel: "—",
-    description: "插入一条分割线",
-    keywords: ["divider", "line", "hr"],
-  },
-  {
-    type: "link",
-    label: "链接",
-    shortLabel: "↗",
-    description: "粘贴链接并生成链接卡片",
-    keywords: ["link", "url", "href"],
-  },
-  {
-    type: "image",
-    label: "图片",
-    shortLabel: "🖼",
-    description: "图片地址和说明",
-    keywords: ["image", "img", "picture"],
-  },
-  {
-    type: "code_block",
-    label: "代码",
-    shortLabel: "{}",
-    description: "多行代码片段",
-    keywords: ["code", "snippet", "pre"],
-  },
-];
 
 const LINK_VIEW_OPTIONS: Array<{ value: LinkCardView; label: string }> = [
   { value: "link", label: "链接视图" },
@@ -236,98 +192,6 @@ function sanitizeHeadingLevel(level: number | undefined) {
   return Math.max(1, Math.min(6, Math.trunc(value)));
 }
 
-function headingTextClassName(level: number | undefined) {
-  const currentLevel = sanitizeHeadingLevel(level);
-  if (currentLevel === 1) {
-    return "text-3xl font-semibold leading-tight tracking-tight text-slate-900";
-  }
-  if (currentLevel === 2) {
-    return "text-[1.75rem] font-semibold leading-tight tracking-tight text-slate-900";
-  }
-  if (currentLevel === 3) {
-    return "text-[1.45rem] font-semibold leading-tight tracking-tight text-slate-900";
-  }
-  if (currentLevel === 4) {
-    return "text-[1.2rem] font-semibold leading-8 tracking-tight text-slate-900";
-  }
-  if (currentLevel === 5) {
-    return "text-[1.05rem] font-semibold leading-8 text-slate-800";
-  }
-  return "text-base font-semibold leading-8 text-slate-800";
-}
-
-function textAreaClassName(block: EditableBlock) {
-  if (block.type === "heading") {
-    return `min-h-0 ${headingTextClassName(block.headingLevel)}`;
-  }
-
-  if (block.type === "divider") {
-    return "min-h-0 text-sm leading-6 text-slate-400";
-  }
-
-  if (block.type === "link") {
-    return "min-h-0 px-0 py-0 text-sm leading-6 text-slate-500";
-  }
-
-  if (block.type === "image") {
-    return "min-h-0 px-0 py-0 text-base leading-8 text-slate-700";
-  }
-
-  if (block.type === "code_block") {
-    return "min-h-0 px-0 py-0 font-mono text-sm leading-7 text-slate-700";
-  }
-
-  if (block.type === "quote") {
-    return "min-h-0 px-0 py-0 text-base leading-8 text-slate-600";
-  }
-
-  if (block.type === "check_list") {
-    return "min-h-0 text-base leading-8 text-slate-700";
-  }
-
-  return "min-h-0 text-base leading-8 text-slate-700";
-}
-
-function placeholderByType(block: EditableBlock) {
-  if (block.type === "heading") {
-    return `输入 H${sanitizeHeadingLevel(block.headingLevel)} 标题块`;
-  }
-
-  if (block.type === "bullet_list") {
-    return "每行一个列表项";
-  }
-
-  if (block.type === "ordered_list") {
-    return "每行一个条目，自动按顺序渲染";
-  }
-
-  if (block.type === "check_list") {
-    return "每行一个检查项，支持 [ ] 和 [x]";
-  }
-
-  if (block.type === "quote") {
-    return "输入引用内容";
-  }
-
-  if (block.type === "divider") {
-    return "输入 --- 或直接保留为空";
-  }
-
-  if (block.type === "link") {
-    return "粘贴链接，或输入 标题 | URL";
-  }
-
-  if (block.type === "image") {
-    return "图片说明 | https://example.com/image.png";
-  }
-
-  if (block.type === "code_block") {
-    return "输入代码块";
-  }
-
-  return "输入正文，或输入 / 打开命令";
-}
-
 function defaultTextByType(type: EditableBlockType) {
   if (type === "link") {
     return "";
@@ -345,49 +209,8 @@ function defaultMetaByType(type: EditableBlockType): LinkCardMeta | undefined {
   return undefined;
 }
 
-function commandQuery(text: string) {
-  const normalized = text
-    .trim()
-    .replace(/^\[(x|X| )\]\s*/, "")
-    .trim();
-  if (!normalized.startsWith("/")) {
-    return null;
-  }
-
-  if (normalized.includes(" ")) {
-    return null;
-  }
-
-  return normalized.slice(1).toLowerCase();
-}
-
-function filterCommands(query: string) {
-  if (!query) {
-    return BLOCK_COMMANDS;
-  }
-
-  return BLOCK_COMMANDS.filter((command) => {
-    const haystacks = [command.label, command.description, ...command.keywords]
-      .join(" ")
-      .toLowerCase();
-    return haystacks.includes(query);
-  });
-}
-
 function fallbackSplitText() {
   return "";
-}
-
-function rowsByType(type: EditableBlockType, text: string) {
-  if (type === "divider") {
-    return 1;
-  }
-
-  if (type === "link") {
-    return 1;
-  }
-
-  return Math.max(text.split("\n").length, type === "code_block" ? 4 : 1);
 }
 
 function resizeTextarea(textarea: HTMLTextAreaElement | null) {
@@ -575,42 +398,8 @@ function imageFilesFromClipboard(data: DataTransfer | null) {
     .filter((file): file is File => file !== null);
 }
 
-function quickCommandsForBlock(block: EditableBlock): QuickCommand[] {
-  const headingLevels = [1, 2, 3, 4, 5, 6];
-
-  return [
-    { kind: "type", type: "paragraph", label: "T", title: "正文" },
-    ...headingLevels.map((level) => ({
-      kind: "heading" as const,
-      level,
-      label: `H${level}`,
-      title: `标题 ${level}`,
-    })),
-    { kind: "type", type: "ordered_list", label: "1.", title: "有序列表" },
-    { kind: "type", type: "bullet_list", label: "≡", title: "列表" },
-    { kind: "type", type: "check_list", label: "☑", title: "检查项" },
-    { kind: "type", type: "code_block", label: "{}", title: "代码" },
-    { kind: "type", type: "quote", label: "❝", title: "引用" },
-    { kind: "type", type: "divider", label: "▭", title: "分割线" },
-    { kind: "type", type: "link", label: "↗", title: "链接" },
-    { kind: "type", type: "image", label: "⧉", title: "图片" },
-  ];
-}
-
 function isEmptyBlock(block: EditableBlock) {
   return block.text.trim().length === 0;
-}
-
-function displayTextForBlock(block: EditableBlock, readOnly: boolean) {
-  if (!readOnly) {
-    return block.text;
-  }
-
-  if (block.type === "image") {
-    return block.text.replace(/\s*\|\s*$/, "");
-  }
-
-  return block.text;
 }
 
 function RefreshIcon() {
@@ -846,12 +635,24 @@ export function BlockEditor({
   readOnly = false,
   onResolveLinkPreview,
   onUploadImage,
+  commentThreads = [],
+  activeCommentThreadId = null,
+  hoveredCommentThreadId = null,
+  onActivateCommentThread,
+  onHoverCommentThread,
+  onCreateCommentSelection,
 }: {
   blocks: EditableBlock[];
   onChange: (blocks: EditableBlock[]) => void;
   readOnly?: boolean;
   onResolveLinkPreview?: (blockId: string, url: string) => void | Promise<void>;
   onUploadImage?: (files: File[]) => Promise<UploadedImageAsset[]>;
+  commentThreads?: CommentThread[];
+  activeCommentThreadId?: string | null;
+  hoveredCommentThreadId?: string | null;
+  onActivateCommentThread?: (threadId: string) => void;
+  onHoverCommentThread?: (threadId: string | null) => void;
+  onCreateCommentSelection?: (anchor: CommentAnchor) => void;
 }) {
   const [commandMenu, setCommandMenu] = useState<{
     blockId: string;
@@ -871,6 +672,11 @@ export function BlockEditor({
   const [closingCommandMenuBlockId, setClosingCommandMenuBlockId] = useState<string | null>(null);
   const [pinnedCommandMenuBlockId, setPinnedCommandMenuBlockId] = useState<string | null>(null);
   const [commandMenuPosition, setCommandMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const [selectionToolbar, setSelectionToolbar] = useState<SelectionToolbarState | null>(null);
+  const [pendingDeleteBlock, setPendingDeleteBlock] = useState<{
+    blockId: string;
+    kind: "block" | "image";
+  } | null>(null);
   const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const handleButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const hideToolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -914,6 +720,51 @@ export function BlockEditor({
       resizeTextarea(textarea);
     });
   }, [blocks, readOnly]);
+
+  useEffect(() => {
+    const dismissSelection = () => setSelectionToolbar(null);
+    window.addEventListener("scroll", dismissSelection, true);
+    return () => {
+      window.removeEventListener("scroll", dismissSelection, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeCommentThreadId) {
+      return;
+    }
+
+    const thread = commentThreads.find((item) => item.id === activeCommentThreadId);
+    if (!thread) {
+      return;
+    }
+
+    const textarea = textareaRefs.current[thread.anchorBlockId];
+    if (!textarea) {
+      return;
+    }
+
+    const targetBlock = blocks.find((block) => block.id === thread.anchorBlockId);
+    const blockForOffset = targetBlock ?? {
+      id: thread.anchorBlockId,
+      type: "paragraph" as const,
+      text: textarea.value,
+    };
+    const start = Math.max(
+      0,
+      Math.min(displayOffsetFromBlockRawOffset(blockForOffset, thread.anchorStartOffset), textarea.value.length),
+    );
+    const end = Math.max(
+      start,
+      Math.min(displayOffsetFromBlockRawOffset(blockForOffset, thread.anchorEndOffset), textarea.value.length),
+    );
+    if (!readOnly) {
+      setActiveBlockId(thread.anchorBlockId);
+    }
+    textarea.focus();
+    textarea.scrollIntoView({ block: "center", behavior: "smooth" });
+    textarea.setSelectionRange(start, end);
+  }, [activeCommentThreadId, blocks, commentThreads, readOnly]);
 
   useEffect(() => {
     if (!linkViewMenuBlockId) {
@@ -1113,6 +964,19 @@ export function BlockEditor({
         ? nextBlocks
         : [{ id: crypto.randomUUID(), type: "paragraph", text: "" }],
     );
+  };
+
+  const requestDeleteBlock = (blockId: string, kind: "block" | "image" = "block") => {
+    setPendingDeleteBlock({ blockId, kind });
+  };
+
+  const confirmDeleteBlock = () => {
+    if (!pendingDeleteBlock) {
+      return;
+    }
+    removeBlock(pendingDeleteBlock.blockId);
+    closeCommandMenu();
+    setPendingDeleteBlock(null);
   };
 
   const moveBlock = (index: number, direction: -1 | 1) => {
@@ -1336,6 +1200,348 @@ export function BlockEditor({
     setCommandMenu(null);
   };
 
+  const commentsByBlockId = useMemo(() => {
+    return commentThreads.reduce<Record<string, CommentThread[]>>((accumulator, thread) => {
+      accumulator[thread.anchorBlockId] = [...(accumulator[thread.anchorBlockId] ?? []), thread];
+      return accumulator;
+    }, {});
+  }, [commentThreads]);
+
+  const openSelectionToolbar = (
+    blockId: string,
+    value: string,
+    start: number,
+    end: number,
+    clientX: number,
+    clientY: number,
+  ) => {
+    const nextToolbar = buildSelectionToolbarState(blockId, value, start, end, clientX, clientY);
+    if (!nextToolbar) {
+      setSelectionToolbar(null);
+      return;
+    }
+    setSelectionToolbar(nextToolbar);
+  };
+
+  const handleTextSurfaceChange = (block: EditableBlock) => (event: ReactChangeEvent<HTMLTextAreaElement>) => {
+    resizeTextarea(event.currentTarget);
+    if (readOnly) {
+      return;
+    }
+
+    const value = event.target.value;
+    if (block.type === "link") {
+      const parsed = parseLinkSource(value);
+      onChange(
+        blocks.map((item) =>
+          item.id === block.id
+            ? {
+                ...item,
+                text: value,
+                meta: {
+                  ...item.meta,
+                  href: parsed.href || item.meta?.href,
+                  title: parsed.title || item.meta?.title,
+                  siteName:
+                    item.meta?.siteName ||
+                    (parsed.href ? inferSiteNameFromHref(parsed.href) : undefined),
+                  view: item.meta?.view || "link",
+                  status: item.meta?.status || (parsed.href ? "idle" : "idle"),
+                },
+              }
+            : item,
+        ),
+      );
+    } else if (block.type === "check_list") {
+      updateBlock(block.id, {
+        text: buildCheckListRawText(block.text, value),
+      });
+    } else {
+      updateBlock(block.id, { text: value });
+    }
+
+    const query = commandQuery(value);
+    if (query !== null) {
+      setCommandMenu({
+        blockId: block.id,
+        mode: "slash",
+        query,
+        selectedIndex: 0,
+      });
+      return;
+    }
+
+    if (commandMenu?.blockId === block.id) {
+      setCommandMenu(null);
+    }
+  };
+
+  const handleTextSurfacePaste =
+    (block: EditableBlock, index: number) =>
+    (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+      if (readOnly) {
+        return;
+      }
+
+      const imageFiles = imageFilesFromClipboard(event.clipboardData);
+      if (imageFiles.length > 0) {
+        event.preventDefault();
+        void insertUploadedImages(index, imageFiles);
+        return;
+      }
+
+      const pastedText = event.clipboardData.getData("text/plain").trim();
+      const rawPastedText = event.clipboardData.getData("text/plain");
+      const pastedHtml = event.clipboardData.getData("text/html");
+      const normalizedHref = normalizeExternalHref(pastedText);
+      if (!normalizedHref || event.currentTarget.value.trim()) {
+        const handled = insertStructuredBlocksFromPaste(
+          index,
+          event.currentTarget.selectionStart,
+          event.currentTarget.selectionEnd,
+          rawPastedText,
+          pastedHtml,
+        );
+        if (handled) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      event.preventDefault();
+      onChange(
+        blocks.map((item) =>
+          item.id === block.id
+            ? {
+                ...item,
+                type: "link",
+                text: normalizedHref,
+                meta: {
+                  href: normalizedHref,
+                  title: inferSiteNameFromHref(normalizedHref),
+                  siteName: inferSiteNameFromHref(normalizedHref),
+                  view: "link",
+                  status: "loading",
+                },
+              }
+            : item,
+        ),
+      );
+      void onResolveLinkPreview?.(block.id, normalizedHref);
+    };
+
+  const handleTextSurfaceFocus = (block: EditableBlock) => () => {
+    if (readOnly) {
+      return;
+    }
+    setActiveBlockId(block.id);
+    const query = commandQuery(block.text);
+    if (query !== null) {
+      setCommandMenu({
+        blockId: block.id,
+        mode: "slash",
+        query,
+        selectedIndex: 0,
+      });
+    }
+  };
+
+  const handleTextSurfaceBlur = (block: EditableBlock) => (event: ReactFocusEvent<HTMLTextAreaElement>) => {
+    setActiveBlockId((current) => (current === block.id ? null : current));
+    if (readOnly || block.type !== "link") {
+      return;
+    }
+    const parsed = parseLinkSource(event.currentTarget.value);
+    const currentHref = parsed.href || block.meta?.href || "";
+    if (currentHref && (block.meta?.href !== currentHref || block.meta?.status !== "ready")) {
+      void onResolveLinkPreview?.(block.id, currentHref);
+    }
+  };
+
+  const handleToggleCheckListLine = (block: EditableBlock, lineIndex: number) => {
+    if (readOnly) {
+      return;
+    }
+    updateBlock(block.id, {
+      text: toggleCheckListLine(block.text, lineIndex),
+    });
+  };
+
+  const handleTextSurfaceMouseUp =
+    (block: EditableBlock, blockCommentRanges: TextCommentRange[]) =>
+    (event: ReactMouseEvent<HTMLTextAreaElement>) => {
+      if (!onCreateCommentSelection) {
+        return;
+      }
+      const target = event.currentTarget;
+      const start = target.selectionStart ?? 0;
+      const end = target.selectionEnd ?? 0;
+      if (start === end) {
+        setSelectionToolbar(null);
+        const threadId = threadIdAtOffset(blockCommentRanges, start);
+        if (threadId) {
+          onActivateCommentThread?.(threadId);
+        }
+        return;
+      }
+      const rawStart = rawOffsetFromBlockDisplayOffset(block, start);
+      const rawEnd = rawOffsetFromBlockDisplayOffset(block, end);
+      openSelectionToolbar(block.id, block.text, rawStart, rawEnd, event.clientX, event.clientY);
+    };
+
+  const handleTextSurfaceKeyDown =
+    (block: EditableBlock, index: number) =>
+    (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+      if (readOnly) {
+        return;
+      }
+      const selectionStart = event.currentTarget.selectionStart;
+      const selectionEnd = event.currentTarget.selectionEnd;
+      const hasSelection = selectionStart !== selectionEnd;
+      const currentLength = event.currentTarget.value.length;
+
+      const directQuery = commandQuery(event.currentTarget.value);
+      if (event.key === "Enter" && !event.shiftKey && directQuery !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        const directCommands = filterCommands(directQuery);
+        const selectedIndex = commandMenu?.blockId === block.id ? commandMenu.selectedIndex : 0;
+        const command = directCommands[selectedIndex] ?? directCommands[0];
+        if (command) {
+          applyCommand(block.id, command.type);
+        }
+        return;
+      }
+
+      if (!hasSelection) {
+        if (event.key === "ArrowUp" && selectionStart === 0) {
+          event.preventDefault();
+          moveCaretToNeighbor(index, "previous", "end");
+          return;
+        }
+
+        if (event.key === "ArrowLeft" && selectionStart === 0) {
+          event.preventDefault();
+          moveCaretToNeighbor(index, "previous", "end");
+          return;
+        }
+
+        if (event.key === "ArrowDown" && selectionStart === currentLength) {
+          event.preventDefault();
+          moveCaretToNeighbor(index, "next", "start");
+          return;
+        }
+
+        if (event.key === "ArrowRight" && selectionStart === currentLength) {
+          event.preventDefault();
+          moveCaretToNeighbor(index, "next", "start");
+          return;
+        }
+      }
+
+      if (commandMenu?.blockId === block.id && commandMenu.mode === "slash" && filteredCommands.length > 0) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setCommandMenu((value) =>
+            value
+              ? {
+                  ...value,
+                  selectedIndex: (value.selectedIndex + 1) % filteredCommands.length,
+                }
+              : value,
+          );
+          return;
+        }
+
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setCommandMenu((value) =>
+            value
+              ? {
+                  ...value,
+                  selectedIndex:
+                    (value.selectedIndex - 1 + filteredCommands.length) % filteredCommands.length,
+                }
+              : value,
+          );
+          return;
+        }
+
+        if (event.key === "Enter") {
+          event.preventDefault();
+          const command = filteredCommands[commandMenu.selectedIndex] ?? filteredCommands[0];
+          if (command) {
+            applyCommand(block.id, command.type);
+          }
+          return;
+        }
+
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setCommandMenu(null);
+          return;
+        }
+      }
+
+      const liveQuery = commandMenu?.blockId === block.id ? commandMenu.query : directQuery;
+      const liveCommands = liveQuery === null ? [] : filterCommands(liveQuery);
+
+      if (liveQuery !== null && liveCommands.length > 0) {
+        if (!commandMenu || commandMenu.blockId !== block.id) {
+          setCommandMenu({
+            blockId: block.id,
+            mode: "slash",
+            query: liveQuery,
+            selectedIndex: 0,
+          });
+        }
+
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setCommandMenu((value) =>
+            value
+              ? {
+                  ...value,
+                  selectedIndex: (value.selectedIndex + 1) % liveCommands.length,
+                }
+              : value,
+          );
+          return;
+        }
+
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setCommandMenu((value) =>
+            value
+              ? {
+                  ...value,
+                  selectedIndex: (value.selectedIndex - 1 + liveCommands.length) % liveCommands.length,
+                }
+              : value,
+          );
+          return;
+        }
+
+        if (event.key === "Enter") {
+          event.preventDefault();
+          const command = liveCommands[0];
+          if (command) {
+            applyCommand(block.id, command.type);
+          }
+          return;
+        }
+
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setCommandMenu(null);
+          return;
+        }
+      } else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+        splitBlock(index, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+      }
+    };
+
   return (
     <div className="space-y-1">
       {blocks.map((block, index) => {
@@ -1347,10 +1553,20 @@ export function BlockEditor({
             visibleToolbarBlockId === block.id ||
             linkViewMenuBlockId === block.id ||
             commandMenu?.blockId === block.id);
-
+        const blockThreads = commentsByBlockId[block.id] ?? [];
+        const hasActiveThread = blockThreads.some((thread) => thread.id === activeCommentThreadId);
+        const hasHoveredThread = blockThreads.some((thread) => thread.id === hoveredCommentThreadId);
+        const displayText = displayTextForBlock(block);
+        const blockCommentRanges = blockThreads.map((thread) => ({
+          id: thread.id,
+          start: displayOffsetFromBlockRawOffset(block, thread.anchorStartOffset),
+          end: displayOffsetFromBlockRawOffset(block, thread.anchorEndOffset),
+          active: thread.id === activeCommentThreadId || thread.id === hoveredCommentThreadId,
+        }));
         return (
           <div
             key={block.id}
+            data-block-id={block.id}
             className={`group relative ${
               dropTargetId === block.id
                 ? "before:absolute before:left-0 before:right-0 before:top-0 before:h-px before:bg-sky-400"
@@ -1458,14 +1674,35 @@ export function BlockEditor({
 
             <div
               className={`relative -mx-3 rounded-lg px-3 transition ${
-                !readOnly && (activeBlockId === block.id || commandMenu?.blockId === block.id)
+                hasActiveThread
+                  ? "bg-amber-50/70"
+                  : hasHoveredThread
+                  ? "bg-amber-50/45"
+                  : !readOnly && (activeBlockId === block.id || commandMenu?.blockId === block.id)
                   ? "bg-sky-50/70"
                   : !readOnly
                     ? "bg-transparent group-hover:bg-sky-50/50"
                     : "bg-transparent"
               }`}
             >
-              {showLinkToolbar ? (
+              {blockThreads.length > 0 ? (
+                <button
+                  type="button"
+                  className={`absolute -right-3 top-3 z-10 rounded-md border px-1.5 py-0.5 text-[11px] ${
+                    hasActiveThread
+                      ? "border-amber-300 bg-amber-100 text-amber-800"
+                      : hasHoveredThread
+                        ? "border-amber-200 bg-amber-50 text-amber-700"
+                      : "border-slate-200 bg-white/90 text-slate-500"
+                  }`}
+                  onClick={() => onActivateCommentThread?.(blockThreads[0].id)}
+                  onMouseEnter={() => onHoverCommentThread?.(blockThreads[0].id)}
+                  onMouseLeave={() => onHoverCommentThread?.(null)}
+                >
+                  {blockThreads.length}评
+                </button>
+              ) : null}
+            {showLinkToolbar ? (
                 <div
                   className="mb-2 flex items-center gap-1.5"
                   onPointerEnter={() => showToolbar(block.id)}
@@ -1549,309 +1786,42 @@ export function BlockEditor({
                   block={block}
                   readOnly={readOnly}
                   onAlign={(align) => updateImageAlign(block.id, align)}
-                  onDelete={() => removeBlock(block.id)}
+                  onDelete={() => requestDeleteBlock(block.id, "image")}
                 />
               ) : null}
 
-              {block.type !== "image" && !(readOnly && block.type === "link") ? (
-                <textarea
-                  ref={(element) => {
+              {block.type === "divider" ? (
+                <div className="py-3">
+                  <div className="border-t border-slate-200" />
+                </div>
+              ) : null}
+
+              {showsUnifiedTextSurface(block, readOnly) ? (
+                <TextBlockSurface
+                  blockId={block.id}
+                  blockType={block.type as UnifiedTextBlockType}
+                  text={displayText}
+                  readOnly={readOnly}
+                  isActive={activeBlockId === block.id}
+                  commentRanges={blockCommentRanges}
+                  textClassName={textAreaClassName(block)}
+                  contentPaddingClassName={textSurfacePaddingClassName(block)}
+                  contentPaddingLeft={textSurfaceGutterWidth(block, displayText)}
+                  checkListLines={block.type === "check_list" ? parseCheckListRawText(block.text) : undefined}
+                  minHeightStyle={readOnlyMinHeightStyle(block, block.text)}
+                  rows={rowsByType(block.type, displayText)}
+                  textareaRef={(element) => {
                     textareaRefs.current[block.id] = element;
                     resizeTextarea(element);
                   }}
-                  value={displayTextForBlock(block, readOnly)}
-                  onChange={(event) => {
-                    resizeTextarea(event.currentTarget);
-                    if (readOnly) {
-                      return;
-                    }
-
-                    const value = event.target.value;
-                    if (block.type === "link") {
-                      const parsed = parseLinkSource(value);
-                      onChange(
-                        blocks.map((item) =>
-                          item.id === block.id
-                            ? {
-                                ...item,
-                                text: value,
-                                meta: {
-                                  ...item.meta,
-                                  href: parsed.href || item.meta?.href,
-                                  title: parsed.title || item.meta?.title,
-                                  siteName:
-                                    item.meta?.siteName ||
-                                    (parsed.href ? inferSiteNameFromHref(parsed.href) : undefined),
-                                  view: item.meta?.view || "link",
-                                  status: item.meta?.status || (parsed.href ? "idle" : "idle"),
-                                },
-                              }
-                            : item,
-                        ),
-                      );
-                    } else {
-                      updateBlock(block.id, { text: value });
-                    }
-
-                    const query = commandQuery(value);
-                    if (query !== null) {
-                      setCommandMenu({
-                        blockId: block.id,
-                        mode: "slash",
-                        query,
-                        selectedIndex: 0,
-                      });
-                      return;
-                    }
-
-                    if (commandMenu?.blockId === block.id) {
-                      setCommandMenu(null);
-                    }
-                  }}
-                  onPaste={(event) => {
-                    if (readOnly) {
-                      return;
-                    }
-
-                    const imageFiles = imageFilesFromClipboard(event.clipboardData);
-                    if (imageFiles.length > 0) {
-                      event.preventDefault();
-                      void insertUploadedImages(index, imageFiles);
-                      return;
-                    }
-
-                    const pastedText = event.clipboardData.getData("text/plain").trim();
-                    const rawPastedText = event.clipboardData.getData("text/plain");
-                    const pastedHtml = event.clipboardData.getData("text/html");
-                    const normalizedHref = normalizeExternalHref(pastedText);
-                    if (!normalizedHref || event.currentTarget.value.trim()) {
-                      const handled = insertStructuredBlocksFromPaste(
-                        index,
-                        event.currentTarget.selectionStart,
-                        event.currentTarget.selectionEnd,
-                        rawPastedText,
-                        pastedHtml,
-                      );
-                      if (handled) {
-                        event.preventDefault();
-                      }
-                      return;
-                    }
-
-                    event.preventDefault();
-                    onChange(
-                      blocks.map((item) =>
-                        item.id === block.id
-                          ? {
-                              ...item,
-                              type: "link",
-                              text: normalizedHref,
-                              meta: {
-                                href: normalizedHref,
-                                title: inferSiteNameFromHref(normalizedHref),
-                                siteName: inferSiteNameFromHref(normalizedHref),
-                                view: "link",
-                                status: "loading",
-                              },
-                            }
-                          : item,
-                      ),
-                    );
-                    void onResolveLinkPreview?.(block.id, normalizedHref);
-                  }}
-                  onFocus={() => {
-                    if (readOnly) {
-                      return;
-                    }
-                    setActiveBlockId(block.id);
-                    const query = commandQuery(block.text);
-                    if (query !== null) {
-                      setCommandMenu({
-                        blockId: block.id,
-                        mode: "slash",
-                        query,
-                        selectedIndex: 0,
-                      });
-                    }
-                  }}
-                  onBlur={(event) => {
-                    setActiveBlockId((current) => (current === block.id ? null : current));
-                    if (readOnly || block.type !== "link") {
-                      return;
-                    }
-                    const parsed = parseLinkSource(event.currentTarget.value);
-                    const currentHref = parsed.href || block.meta?.href || "";
-                    if (currentHref && (block.meta?.href !== currentHref || block.meta?.status !== "ready")) {
-                      void onResolveLinkPreview?.(block.id, currentHref);
-                    }
-                  }}
-                  onKeyDown={(event) => {
-                    if (readOnly) {
-                      return;
-                    }
-                    const selectionStart = event.currentTarget.selectionStart;
-                    const selectionEnd = event.currentTarget.selectionEnd;
-                    const hasSelection = selectionStart !== selectionEnd;
-                    const currentLength = event.currentTarget.value.length;
-
-                    const directQuery = commandQuery(event.currentTarget.value);
-                    if (event.key === "Enter" && !event.shiftKey && directQuery !== null) {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      const directCommands = filterCommands(directQuery);
-                      const selectedIndex =
-                        commandMenu?.blockId === block.id ? commandMenu.selectedIndex : 0;
-                      const command = directCommands[selectedIndex] ?? directCommands[0];
-                      if (command) {
-                        applyCommand(block.id, command.type);
-                      }
-                      return;
-                    }
-
-                    if (!hasSelection) {
-                      if (event.key === "ArrowUp" && selectionStart === 0) {
-                        event.preventDefault();
-                        moveCaretToNeighbor(index, "previous", "end");
-                        return;
-                      }
-
-                      if (event.key === "ArrowLeft" && selectionStart === 0) {
-                        event.preventDefault();
-                        moveCaretToNeighbor(index, "previous", "end");
-                        return;
-                      }
-
-                      if (event.key === "ArrowDown" && selectionStart === currentLength) {
-                        event.preventDefault();
-                        moveCaretToNeighbor(index, "next", "start");
-                        return;
-                      }
-
-                      if (event.key === "ArrowRight" && selectionStart === currentLength) {
-                        event.preventDefault();
-                        moveCaretToNeighbor(index, "next", "start");
-                        return;
-                      }
-                    }
-
-                    if (
-                      commandMenu?.blockId === block.id &&
-                      commandMenu.mode === "slash" &&
-                      filteredCommands.length > 0
-                    ) {
-                      if (event.key === "ArrowDown") {
-                        event.preventDefault();
-                        setCommandMenu((value) =>
-                          value
-                            ? {
-                                ...value,
-                                selectedIndex: (value.selectedIndex + 1) % filteredCommands.length,
-                              }
-                            : value,
-                        );
-                        return;
-                      }
-
-                      if (event.key === "ArrowUp") {
-                        event.preventDefault();
-                        setCommandMenu((value) =>
-                          value
-                            ? {
-                                ...value,
-                                selectedIndex:
-                                  (value.selectedIndex - 1 + filteredCommands.length) %
-                                  filteredCommands.length,
-                              }
-                            : value,
-                        );
-                        return;
-                      }
-
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        const command = filteredCommands[commandMenu.selectedIndex] ?? filteredCommands[0];
-                        if (command) {
-                          applyCommand(block.id, command.type);
-                        }
-                        return;
-                      }
-
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        setCommandMenu(null);
-                        return;
-                      }
-                    }
-
-                    const liveQuery =
-                      commandMenu?.blockId === block.id ? commandMenu.query : directQuery;
-                    const liveCommands = liveQuery === null ? [] : filterCommands(liveQuery);
-
-                    if (liveQuery !== null && liveCommands.length > 0) {
-                      if (!commandMenu || commandMenu.blockId !== block.id) {
-                        setCommandMenu({
-                          blockId: block.id,
-                          mode: "slash",
-                          query: liveQuery,
-                          selectedIndex: 0,
-                        });
-                      }
-
-                      if (event.key === "ArrowDown") {
-                        event.preventDefault();
-                        setCommandMenu((value) =>
-                          value
-                            ? {
-                                ...value,
-                                selectedIndex: (value.selectedIndex + 1) % liveCommands.length,
-                              }
-                            : value,
-                        );
-                        return;
-                      }
-
-                      if (event.key === "ArrowUp") {
-                        event.preventDefault();
-                        setCommandMenu((value) =>
-                          value
-                            ? {
-                                ...value,
-                                selectedIndex:
-                                  (value.selectedIndex - 1 + liveCommands.length) % liveCommands.length,
-                              }
-                            : value,
-                        );
-                        return;
-                      }
-
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        const command = liveCommands[0];
-                        if (command) {
-                          applyCommand(block.id, command.type);
-                        }
-                        return;
-                      }
-
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        setCommandMenu(null);
-                        return;
-                      }
-                    } else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                      event.preventDefault();
-                      splitBlock(index, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
-                    }
-                  }}
-                  rows={rowsByType(block.type, displayTextForBlock(block, readOnly))}
-                  readOnly={readOnly}
-                  tabIndex={readOnly ? -1 : undefined}
-                  spellCheck={!readOnly}
-                  aria-readonly={readOnly}
-                  className={`block w-full resize-none border-0 bg-transparent p-0 outline-none ${textAreaClassName(block)} ${
-                    readOnly ? "cursor-text caret-transparent" : ""
-                  } overflow-hidden`}
-                  placeholder={readOnly || activeBlockId !== block.id ? "" : placeholderByType(block)}
+                  placeholder={placeholderByType(block)}
+                  onToggleCheckListLine={(lineIndex) => handleToggleCheckListLine(block, lineIndex)}
+                  onChange={handleTextSurfaceChange(block)}
+                  onPaste={handleTextSurfacePaste(block, index)}
+                  onFocus={handleTextSurfaceFocus(block)}
+                  onBlur={handleTextSurfaceBlur(block)}
+                  onMouseUp={handleTextSurfaceMouseUp(block, blockCommentRanges)}
+                  onKeyDown={handleTextSurfaceKeyDown(block, index)}
                 />
               ) : null}
 
@@ -1975,8 +1945,7 @@ export function BlockEditor({
                           label: "删除",
                           danger: true,
                           onClick: () => {
-                            removeBlock(block.id);
-                            closeCommandMenu();
+                            requestDeleteBlock(block.id, "block");
                           },
                         },
                         {
@@ -2032,6 +2001,28 @@ export function BlockEditor({
           </div>
         );
       })}
+      <CommentSelectionToolbar
+        selection={selectionToolbar}
+        onCreate={(selection) => {
+          onCreateCommentSelection?.(selection.anchor);
+          setSelectionToolbar(null);
+        }}
+        onCancel={() => setSelectionToolbar(null)}
+      />
+      <ConfirmDialog
+        open={Boolean(pendingDeleteBlock)}
+        title={pendingDeleteBlock?.kind === "image" ? "确认删除图片" : "确认删除文档块"}
+        description={
+          pendingDeleteBlock?.kind === "image"
+            ? "删除后该图片块会从当前文档移除。"
+            : "删除后该文档块会从当前文档移除。"
+        }
+        confirmLabel="确认删除"
+        cancelLabel="取消"
+        danger
+        onCancel={() => setPendingDeleteBlock(null)}
+        onConfirm={confirmDeleteBlock}
+      />
     </div>
   );
 }

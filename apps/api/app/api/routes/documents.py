@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
+from app.models.user import User
 from app.schemas.document import (
     DocumentContentUpdateRequest,
     DocumentCreateRequest,
@@ -13,6 +14,7 @@ from app.schemas.document import (
     SearchResult,
     UploadedAssetResponse,
 )
+from app.services.auth_service import optional_current_user_dependency, require_current_user_dependency
 from app.services.document_service import (
     create_document,
     create_pdf_document,
@@ -35,25 +37,28 @@ router = APIRouter()
 def list_documents_route(
     state: str = Query(default="active", pattern="^(active|trash|all)$"),
     db: Session = Depends(get_db),
+    current_user: User | None = Depends(optional_current_user_dependency),
 ) -> list[DocumentSummary]:
-    return list_documents(db, state=state)
+    return list_documents(db, state=state, user_id=current_user.id if current_user else None)
 
 
 @router.get("/search", response_model=list[SearchResult])
 def search_documents_route(
     q: str = Query(default="", min_length=0),
     db: Session = Depends(get_db),
+    current_user: User | None = Depends(optional_current_user_dependency),
 ) -> list[SearchResult]:
-    return search_documents(db, q)
+    return search_documents(db, q, user_id=current_user.id if current_user else None)
 
 
 @router.post("", response_model=DocumentDetail)
 def create_document_route(
     payload: DocumentCreateRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
 ) -> DocumentDetail:
     try:
-        return create_document(db, payload)
+        return create_document(db, payload, current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -64,6 +69,7 @@ async def upload_pdf_document_route(
     title: str | None = Form(default=None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
 ) -> DocumentDetail:
     if file.content_type not in {"application/pdf", "application/octet-stream"}:
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
@@ -75,6 +81,7 @@ async def upload_pdf_document_route(
     try:
         return create_pdf_document(
             db,
+            current_user_id=current_user.id,
             title=title or "",
             space_id=space_id,
             file_name=file.filename or "upload.pdf",
@@ -116,8 +123,12 @@ async def upload_image_route(file: UploadFile = File(...)) -> UploadedAssetRespo
 
 
 @router.get("/{doc_id}", response_model=DocumentDetail)
-def get_document(doc_id: str, db: Session = Depends(get_db)) -> DocumentDetail:
-    document = get_document_detail(db, doc_id)
+def get_document(
+    doc_id: str,
+    db: Session = Depends(get_db),
+    current_user: User | None = Depends(optional_current_user_dependency),
+) -> DocumentDetail:
+    document = get_document_detail(db, doc_id, current_user.id if current_user else None)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
@@ -128,40 +139,57 @@ def update_document_content_route(
     doc_id: str,
     payload: DocumentContentUpdateRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
 ) -> DocumentDetail:
-    document = update_document_content(db, doc_id, payload)
+    document = update_document_content(db, doc_id, payload, current_user.id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
 
 
 @router.delete("/{doc_id}", response_model=DocumentDetail)
-def delete_document_route(doc_id: str, db: Session = Depends(get_db)) -> DocumentDetail:
-    document = soft_delete_document(db, doc_id)
+def delete_document_route(
+    doc_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> DocumentDetail:
+    document = soft_delete_document(db, doc_id, current_user.id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
 
 
 @router.post("/{doc_id}/restore", response_model=DocumentDetail)
-def restore_document_route(doc_id: str, db: Session = Depends(get_db)) -> DocumentDetail:
-    document = restore_document(db, doc_id)
+def restore_document_route(
+    doc_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> DocumentDetail:
+    document = restore_document(db, doc_id, current_user.id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
 
 
 @router.post("/{doc_id}/favorite", response_model=FavoriteStatusResponse)
-def favorite_document_route(doc_id: str, db: Session = Depends(get_db)) -> FavoriteStatusResponse:
-    result = favorite_document(db, doc_id)
+def favorite_document_route(
+    doc_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> FavoriteStatusResponse:
+    result = favorite_document(db, doc_id, current_user.id)
     if result is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return result
 
 
 @router.delete("/{doc_id}/favorite", response_model=FavoriteStatusResponse)
-def unfavorite_document_route(doc_id: str, db: Session = Depends(get_db)) -> FavoriteStatusResponse:
-    result = unfavorite_document(db, doc_id)
+def unfavorite_document_route(
+    doc_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> FavoriteStatusResponse:
+    result = unfavorite_document(db, doc_id, current_user.id)
     if result is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return result

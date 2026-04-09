@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.models.document import Document, DocumentContent, DocumentFavorite, DocumentVersion
 from app.models.space import Space
 from app.models.user import User
+from app.services.comment_service import sync_comment_threads_with_content
 from app.schemas.document import (
     DocumentContentPayload,
     DocumentContentUpdateRequest,
@@ -247,8 +248,8 @@ def ensure_supported_document_types(db: Session) -> None:
     db.commit()
 
 
-def list_documents(db: Session, state: str = "active") -> list[DocumentSummary]:
-    favorite_ids = get_favorite_document_ids(db, get_default_user_id(db))
+def list_documents(db: Session, state: str = "active", user_id: str | None = None) -> list[DocumentSummary]:
+    favorite_ids = get_favorite_document_ids(db, user_id)
     statement = select(Document)
     if state == "active":
         statement = statement.where(Document.is_deleted.is_(False))
@@ -260,6 +261,7 @@ def list_documents(db: Session, state: str = "active") -> list[DocumentSummary]:
         DocumentSummary(
             id=doc.id,
             title=doc.title,
+            owner_id=doc.owner_id,
             document_type=doc.document_type,
             status=doc.status,
             updated_at=doc.updated_at,
@@ -271,12 +273,12 @@ def list_documents(db: Session, state: str = "active") -> list[DocumentSummary]:
     ]
 
 
-def search_documents(db: Session, query: str) -> list[SearchResult]:
+def search_documents(db: Session, query: str, user_id: str | None = None) -> list[SearchResult]:
     normalized_query = query.strip()
     if not normalized_query:
         return []
 
-    favorite_ids = get_favorite_document_ids(db, get_default_user_id(db))
+    favorite_ids = get_favorite_document_ids(db, user_id)
     latest_versions = (
         select(
             DocumentContent.document_id.label("document_id"),
@@ -348,7 +350,7 @@ def build_search_excerpt(text: str, query: str) -> str:
     return excerpt
 
 
-def get_document_detail(db: Session, doc_id: str) -> DocumentDetail | None:
+def get_document_detail(db: Session, doc_id: str, user_id: str | None = None) -> DocumentDetail | None:
     document = db.get(Document, doc_id)
     if not document or document.is_deleted:
         return None
@@ -377,13 +379,14 @@ def get_document_detail(db: Session, doc_id: str) -> DocumentDetail | None:
         db.add(content)
         db.flush()
 
-    favorite_ids = get_favorite_document_ids(db, get_default_user_id(db))
+    favorite_ids = get_favorite_document_ids(db, user_id)
 
     file_payload = extract_file_payload(content.content_json)
 
     return DocumentDetail(
         id=document.id,
         title=document.title,
+        owner_id=document.owner_id,
         document_type=document.document_type,
         status=document.status,
         updated_at=document.updated_at,
@@ -401,7 +404,7 @@ def get_document_detail(db: Session, doc_id: str) -> DocumentDetail | None:
     )
 
 
-def create_document(db: Session, payload: DocumentCreateRequest) -> DocumentDetail:
+def create_document(db: Session, payload: DocumentCreateRequest, current_user_id: str) -> DocumentDetail:
     space = db.get(Space, payload.space_id)
     if space is None:
         raise ValueError("Space not found")
@@ -411,7 +414,7 @@ def create_document(db: Session, payload: DocumentCreateRequest) -> DocumentDeta
     if payload.document_type != "doc":
         raise ValueError("Use the PDF upload endpoint for PDF documents")
 
-    owner_id = space.owner_id
+    owner_id = current_user_id
     document = Document(
         space_id=payload.space_id,
         parent_id=payload.parent_id,
@@ -451,12 +454,13 @@ def create_document(db: Session, payload: DocumentCreateRequest) -> DocumentDeta
     db.commit()
     db.refresh(document)
 
-    return get_document_detail(db, document.id)  # type: ignore[return-value]
+    return get_document_detail(db, document.id, owner_id)  # type: ignore[return-value]
 
 
 def create_pdf_document(
     db: Session,
     *,
+    current_user_id: str,
     title: str,
     space_id: str,
     file_name: str,
@@ -466,7 +470,7 @@ def create_pdf_document(
     if space is None:
         raise ValueError("Space not found")
 
-    owner_id = space.owner_id
+    owner_id = current_user_id
     safe_name = Path(file_name).name
     if not safe_name.lower().endswith(".pdf"):
         raise ValueError("Only PDF files are supported")
@@ -517,7 +521,7 @@ def create_pdf_document(
     document.current_version_id = version.id
     db.commit()
     db.refresh(document)
-    return get_document_detail(db, document.id)  # type: ignore[return-value]
+    return get_document_detail(db, document.id, owner_id)  # type: ignore[return-value]
 
 
 def upload_image_asset(*, file_name: str, file_bytes: bytes, content_type: str) -> dict[str, str | int]:
@@ -554,12 +558,13 @@ def update_document_content(
     db: Session,
     doc_id: str,
     payload: DocumentContentUpdateRequest,
+    current_user_id: str,
 ) -> DocumentDetail | None:
     document = db.get(Document, doc_id)
     if not document or document.is_deleted:
         return None
     if document.document_type == "pdf":
-        return get_document_detail(db, doc_id)
+        return get_document_detail(db, doc_id, current_user_id)
 
     next_version_no = (
         db.scalar(select(func.max(DocumentContent.version_no)).where(DocumentContent.document_id == doc_id)) or 0
@@ -572,7 +577,7 @@ def update_document_content(
         schema_version=payload.schema_version,
         content_json=payload.content_json,
         plain_text=plain_text,
-        created_by=document.owner_id,
+        created_by=current_user_id,
     )
     db.add(content)
     db.flush()
@@ -582,7 +587,7 @@ def update_document_content(
         content_id=content.id,
         version_no=next_version_no,
         message="Autosave snapshot",
-        created_by=document.owner_id,
+        created_by=current_user_id,
     )
     db.add(version)
     db.flush()
@@ -595,13 +600,14 @@ def update_document_content(
             document.title = first_text[:255]
     document.summary = plain_text[:280] if plain_text else document.summary
     document.updated_at = datetime.now(timezone.utc)
+    sync_comment_threads_with_content(db, doc_id, payload.content_json)
 
     db.commit()
     db.refresh(document)
-    return get_document_detail(db, doc_id)
+    return get_document_detail(db, doc_id, current_user_id)
 
 
-def soft_delete_document(db: Session, doc_id: str) -> DocumentDetail | None:
+def soft_delete_document(db: Session, doc_id: str, user_id: str | None = None) -> DocumentDetail | None:
     document = db.get(Document, doc_id)
     if not document:
         return None
@@ -610,10 +616,10 @@ def soft_delete_document(db: Session, doc_id: str) -> DocumentDetail | None:
     document.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(document)
-    return get_document_detail_including_deleted(db, doc_id)
+    return get_document_detail_including_deleted(db, doc_id, user_id)
 
 
-def restore_document(db: Session, doc_id: str) -> DocumentDetail | None:
+def restore_document(db: Session, doc_id: str, user_id: str | None = None) -> DocumentDetail | None:
     document = db.get(Document, doc_id)
     if not document:
         return None
@@ -622,10 +628,10 @@ def restore_document(db: Session, doc_id: str) -> DocumentDetail | None:
     document.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(document)
-    return get_document_detail(db, doc_id)
+    return get_document_detail(db, doc_id, user_id)
 
 
-def get_document_detail_including_deleted(db: Session, doc_id: str) -> DocumentDetail | None:
+def get_document_detail_including_deleted(db: Session, doc_id: str, user_id: str | None = None) -> DocumentDetail | None:
     document = db.get(Document, doc_id)
     if not document:
         return None
@@ -659,12 +665,13 @@ def get_document_detail_including_deleted(db: Session, doc_id: str) -> DocumentD
     return DocumentDetail(
         id=document.id,
         title=document.title,
+        owner_id=document.owner_id,
         document_type=document.document_type,
         status=document.status,
         updated_at=document.updated_at,
         space_id=document.space_id,
         is_deleted=document.is_deleted,
-        is_favorited=document.id in get_favorite_document_ids(db, get_default_user_id(db)),
+        is_favorited=document.id in get_favorite_document_ids(db, user_id),
         icon=document.icon,
         summary=document.summary,
         content=DocumentContentPayload(
@@ -676,10 +683,9 @@ def get_document_detail_including_deleted(db: Session, doc_id: str) -> DocumentD
     )
 
 
-def favorite_document(db: Session, doc_id: str) -> FavoriteStatusResponse | None:
+def favorite_document(db: Session, doc_id: str, user_id: str) -> FavoriteStatusResponse | None:
     document = db.get(Document, doc_id)
-    user_id = get_default_user_id(db)
-    if document is None or user_id is None:
+    if document is None:
         return None
 
     existing = db.scalar(
@@ -695,10 +701,9 @@ def favorite_document(db: Session, doc_id: str) -> FavoriteStatusResponse | None
     return FavoriteStatusResponse(document_id=doc_id, is_favorited=True)
 
 
-def unfavorite_document(db: Session, doc_id: str) -> FavoriteStatusResponse | None:
+def unfavorite_document(db: Session, doc_id: str, user_id: str) -> FavoriteStatusResponse | None:
     document = db.get(Document, doc_id)
-    user_id = get_default_user_id(db)
-    if document is None or user_id is None:
+    if document is None:
         return None
 
     existing = db.scalar(

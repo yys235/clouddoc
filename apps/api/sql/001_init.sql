@@ -30,6 +30,20 @@ CREATE TABLE IF NOT EXISTS organization_members (
     CONSTRAINT uq_org_member UNIQUE (organization_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS organization_invitations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id),
+    email VARCHAR(255) NOT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'member',
+    invited_by UUID NOT NULL REFERENCES users(id),
+    token_hash VARCHAR(128) NOT NULL UNIQUE,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    expires_at TIMESTAMPTZ NOT NULL,
+    accepted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS spaces (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID REFERENCES organizations(id),
@@ -113,6 +127,61 @@ CREATE TABLE IF NOT EXISTS document_favorites (
     CONSTRAINT uq_document_favorite UNIQUE (user_id, document_id)
 );
 
+CREATE TABLE IF NOT EXISTS comment_threads (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id UUID NOT NULL REFERENCES documents(id),
+    anchor_block_id VARCHAR(128) NOT NULL,
+    anchor_start_offset INTEGER NOT NULL,
+    anchor_end_offset INTEGER NOT NULL,
+    quote_text TEXT NOT NULL,
+    prefix_text TEXT,
+    suffix_text TEXT,
+    status VARCHAR(32) NOT NULL DEFAULT 'open',
+    created_by UUID NOT NULL REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_comment_thread_status CHECK (status IN ('open', 'resolved'))
+);
+
+CREATE TABLE IF NOT EXISTS comments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    thread_id UUID NOT NULL REFERENCES comment_threads(id),
+    document_id UUID NOT NULL REFERENCES documents(id),
+    parent_comment_id UUID REFERENCES comments(id),
+    author_id UUID NOT NULL REFERENCES users(id),
+    body TEXT NOT NULL,
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    token_hash VARCHAR(128) NOT NULL UNIQUE,
+    user_agent VARCHAR(512),
+    ip_address VARCHAR(64),
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_notifications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    actor_id UUID REFERENCES users(id),
+    document_id UUID REFERENCES documents(id),
+    thread_id UUID REFERENCES comment_threads(id),
+    comment_id UUID REFERENCES comments(id),
+    notification_type VARCHAR(32) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    body TEXT NOT NULL,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS share_links (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID NOT NULL REFERENCES documents(id),
@@ -146,6 +215,8 @@ CREATE TABLE IF NOT EXISTS templates (
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_org_members_org ON organization_members(organization_id);
 CREATE INDEX IF NOT EXISTS idx_org_members_user ON organization_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_org_invitations_org ON organization_invitations(organization_id);
+CREATE INDEX IF NOT EXISTS idx_org_invitations_email ON organization_invitations(email);
 CREATE INDEX IF NOT EXISTS idx_spaces_owner ON spaces(owner_id);
 CREATE INDEX IF NOT EXISTS idx_documents_space ON documents(space_id);
 CREATE INDEX IF NOT EXISTS idx_documents_parent ON documents(parent_id);
@@ -157,6 +228,17 @@ CREATE INDEX IF NOT EXISTS idx_document_permissions_document ON document_permiss
 CREATE INDEX IF NOT EXISTS idx_document_permissions_subject ON document_permissions(subject_id);
 CREATE INDEX IF NOT EXISTS idx_document_favorites_user ON document_favorites(user_id);
 CREATE INDEX IF NOT EXISTS idx_document_favorites_document ON document_favorites(document_id);
+CREATE INDEX IF NOT EXISTS idx_comment_threads_document ON comment_threads(document_id);
+CREATE INDEX IF NOT EXISTS idx_comment_threads_block ON comment_threads(anchor_block_id);
+CREATE INDEX IF NOT EXISTS idx_comments_thread ON comments(thread_id);
+CREATE INDEX IF NOT EXISTS idx_comments_document ON comments(document_id);
+CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_read ON user_notifications(is_read);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_thread ON user_notifications(thread_id);
 CREATE INDEX IF NOT EXISTS idx_share_links_document ON share_links(document_id);
 CREATE INDEX IF NOT EXISTS idx_templates_org ON templates(organization_id);
 CREATE INDEX IF NOT EXISTS idx_document_contents_search ON document_contents USING GIN (to_tsvector('simple', plain_text));

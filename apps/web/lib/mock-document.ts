@@ -9,6 +9,7 @@ export type RichTextNode = {
 export type DocumentViewModel = {
   id: string;
   title: string;
+  ownerId: string;
   documentType: string;
   updatedAt: string;
   saveStatus: string;
@@ -43,6 +44,7 @@ export function buildOutline(content: RichTextNode[]) {
 export function buildDocumentViewModel(data: {
   id: string;
   title: string;
+  owner_id: string;
   document_type?: string;
   updated_at?: string;
   is_favorited?: boolean;
@@ -57,6 +59,7 @@ export function buildDocumentViewModel(data: {
   return {
     id: data.id,
     title: data.title || "未命名文档",
+    ownerId: data.owner_id,
     documentType: data.document_type || "doc",
     updatedAt: data.updated_at
       ? new Intl.DateTimeFormat("zh-CN", {

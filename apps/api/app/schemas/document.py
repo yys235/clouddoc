@@ -9,6 +9,7 @@ class DocumentSummary(BaseModel):
 
     id: str
     title: str
+    owner_id: str
     document_type: str
     status: str
     updated_at: datetime
@@ -65,6 +66,66 @@ class UploadedAssetResponse(BaseModel):
     file_name: str
     mime_type: str
     file_size: int
+
+
+class CommentAnchorPayload(BaseModel):
+    block_id: str
+    start_offset: int
+    end_offset: int
+    quote_text: str
+    prefix_text: str | None = None
+    suffix_text: str | None = None
+
+
+class CommentCreateRequest(BaseModel):
+    anchor: CommentAnchorPayload
+    body: str
+
+
+class CommentReplyRequest(BaseModel):
+    body: str
+    parent_comment_id: str | None = None
+
+
+class CommentStatusUpdateRequest(BaseModel):
+    status: str
+
+
+class CommentItemResponse(BaseModel):
+    id: str
+    thread_id: str
+    document_id: str
+    parent_comment_id: str | None = None
+    author_id: str
+    author_name: str
+    body: str
+    is_deleted: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class CommentThreadResponse(BaseModel):
+    id: str
+    document_id: str
+    anchor_block_id: str
+    anchor_start_offset: int
+    anchor_end_offset: int
+    quote_text: str
+    prefix_text: str | None = None
+    suffix_text: str | None = None
+    status: str
+    created_by: str
+    created_by_name: str
+    created_at: datetime
+    updated_at: datetime
+    comments: list[CommentItemResponse]
+
+
+class CommentDeleteResponse(BaseModel):
+    comment_id: str
+    thread_id: str
+    thread_deleted: bool
+    thread: CommentThreadResponse | None = None
 
 
 class FavoriteStatusResponse(BaseModel):

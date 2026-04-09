@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
-import { DashboardDocument, SpaceSummary } from "@/lib/api";
+import { CurrentOrganization, DashboardDocument, OrganizationMember, SpaceSummary } from "@/lib/api";
 
 function statusLabel(status: string) {
   return status === "published" ? "已发布" : "草稿";
@@ -111,6 +111,55 @@ export function SpacesSection({ spaces }: { spaces: SpaceSummary[] }) {
           <p className="text-sm leading-6 text-slate-600">当前还没有可用空间。</p>
         )}
       </div>
+    </section>
+  );
+}
+
+export function OrganizationSummarySection({
+  organization,
+  members,
+}: {
+  organization: CurrentOrganization | null;
+  members: OrganizationMember[];
+}) {
+  return (
+    <section className="rounded-3xl bg-white p-5 shadow-panel">
+      <h2 className="text-lg font-semibold">当前组织</h2>
+      {organization ? (
+        <>
+          <div className="mt-3 rounded-lg border border-slate-100 px-3.5 py-3">
+            <div className="text-sm font-medium">{organization.name}</div>
+            <div className="mt-0.5 text-xs text-slate-500">
+              角色：{organization.role} · 成员 {organization.memberCount} 人
+            </div>
+          </div>
+          <div className="mt-4">
+            <div className="mb-2 text-sm font-medium text-slate-800">成员</div>
+            <div className="space-y-2">
+              {members.length > 0 ? (
+                members.map((member) => (
+                  <div
+                    key={member.id}
+                    className="flex items-center justify-between rounded-lg border border-slate-100 px-3.5 py-2.5"
+                  >
+                    <div>
+                      <div className="text-sm font-medium">{member.name}</div>
+                      <div className="mt-0.5 text-xs text-slate-500">{member.email}</div>
+                    </div>
+                    <div className="rounded-lg bg-mist px-3 py-1 text-xs font-medium text-slate-600">
+                      {member.role}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm leading-6 text-slate-600">当前组织还没有成员数据。</p>
+              )}
+            </div>
+          </div>
+        </>
+      ) : (
+        <p className="mt-3 text-sm leading-6 text-slate-600">当前没有可用的组织上下文。</p>
+      )}
     </section>
   );
 }

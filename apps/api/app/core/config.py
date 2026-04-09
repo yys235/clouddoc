@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     cors_origins: str = 'http://localhost:3000,http://127.0.0.1:3000,http://127.0.0.1:3100'
     upload_dir: str = 'uploads'
     upload_url_prefix: str = '/uploads'
+    session_cookie_name: str = 'clouddoc_session'
+    session_ttl_days: int = 14
+    session_cookie_secure: bool = False
+    session_cookie_samesite: str = 'lax'
 
     model_config = SettingsConfigDict(env_file=str(ENV_FILE), extra='ignore')
 

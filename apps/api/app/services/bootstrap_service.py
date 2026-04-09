@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models.document import Document, DocumentContent, DocumentPermission, DocumentVersion
@@ -6,6 +6,7 @@ from app.models.organization import Organization, OrganizationMember
 from app.models.space import Space
 from app.models.template import Template
 from app.models.user import User
+from app.services.auth_service import hash_password, is_password_hash_supported
 from app.services.document_service import build_default_content, extract_plain_text
 
 DEMO_DOCUMENT_ID = "11111111-1111-1111-1111-111111111111"
@@ -14,13 +15,16 @@ DEMO_DOCUMENT_ID = "11111111-1111-1111-1111-111111111111"
 def seed_demo_data(db: Session) -> None:
     existing_user = db.scalar(select(User).limit(1))
     if existing_user:
+        if existing_user.email == "demo@clouddoc.local" and not is_password_hash_supported(existing_user.password_hash):
+            existing_user.password_hash = hash_password("demo123456")
+            db.commit()
         seed_templates_if_missing(db)
         return
 
     user = User(
         name="Demo Owner",
         email="demo@clouddoc.local",
-        password_hash="demo-password-hash",
+        password_hash=hash_password("demo123456"),
     )
     db.add(user)
     db.flush()
@@ -199,4 +203,10 @@ def seed_templates_if_missing(db: Session) -> None:
             created_by=user.id,
         )
     )
+    db.commit()
+
+
+def ensure_runtime_schema(db: Session) -> None:
+    db.execute(text("ALTER TABLE comments ADD COLUMN IF NOT EXISTS parent_comment_id UUID REFERENCES comments(id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id)"))
     db.commit()

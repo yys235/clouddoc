@@ -4,13 +4,24 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { DocumentViewModel } from "@/lib/mock-document";
 import { BlockEditor, EditableBlock } from "@/components/editor/block-editor";
+import { CommentSidebar } from "@/components/editor/comment-sidebar";
 import {
+  createCommentThread,
+  deleteComment,
+  fetchCommentThreads,
+  fetchCurrentUser,
   favoriteDocument,
   fetchLinkPreview,
+  type CommentAnchor,
+  type CommentThread,
+  type OrganizationMember,
+  replyCommentThread,
   softDeleteDocument,
   unfavoriteDocument,
+  updateCommentThreadStatus,
   uploadImageAsset,
   updateDocumentContent,
 } from "@/lib/api";
@@ -291,10 +302,12 @@ function rawTextFromNode(node: { attrs?: Record<string, unknown>; content?: { te
 
 function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
   const blocks: EditableBlock[] = document.content.slice(1).map((node, index): EditableBlock => {
+    const persistedBlockId = String(node.attrs?.block_id ?? "");
+    const fallbackId = (suffix: string) => persistedBlockId || `${document.id}-${suffix}-${index}`;
     if (node.type === "heading") {
       const level = sanitizeHeadingLevel(Number(node.attrs?.level ?? 2));
       return {
-        id: `${document.id}-heading-${index}`,
+        id: fallbackId("heading"),
         type: "heading" as const,
         headingLevel: level,
         text: flattenText(node.content),
@@ -303,7 +316,7 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
 
     if (node.type === "bullet_list") {
       return {
-        id: `${document.id}-list-${index}`,
+        id: fallbackId("list"),
         type: "bullet_list" as const,
         text:
           node.content
@@ -315,7 +328,7 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
 
     if (node.type === "ordered_list") {
       return {
-        id: `${document.id}-ordered-list-${index}`,
+        id: fallbackId("ordered-list"),
         type: "ordered_list" as const,
         text:
           node.content
@@ -327,7 +340,7 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
 
     if (node.type === "check_list") {
       return {
-        id: `${document.id}-check-${index}`,
+        id: fallbackId("check"),
         type: "check_list" as const,
         text:
           node.content
@@ -346,7 +359,7 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
 
     if (node.type === "blockquote") {
       return {
-        id: `${document.id}-quote-${index}`,
+        id: fallbackId("quote"),
         type: "quote" as const,
         text: rawTextFromNode(node),
       };
@@ -354,7 +367,7 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
 
     if (node.type === "horizontal_rule") {
       return {
-        id: `${document.id}-divider-${index}`,
+        id: fallbackId("divider"),
         type: "divider" as const,
         text: "",
       };
@@ -365,7 +378,7 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
       const href = String(node.attrs?.href ?? "").trim();
       if (!normalizeExternalHref(href)) {
         return {
-          id: `${document.id}-paragraph-${index}`,
+          id: fallbackId("paragraph"),
           type: "paragraph" as const,
           text: title,
         };
@@ -387,7 +400,7 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
         status,
       };
       return {
-        id: `${document.id}-link-${index}`,
+        id: fallbackId("link"),
         type: "link" as const,
         text: composeLinkSource(meta, title || href),
         meta,
@@ -400,7 +413,7 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
       const align = String(node.attrs?.align ?? "center").trim();
       const imageAlign: EditableBlock["imageAlign"] = align === "left" || align === "right" ? align : "center";
       return {
-        id: `${document.id}-image-${index}`,
+        id: fallbackId("image"),
         type: "image" as const,
         text: alt && src ? `${alt} | ${src}` : alt || src,
         imageAlign,
@@ -409,14 +422,14 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
 
     if (node.type === "code_block") {
       return {
-        id: `${document.id}-code-${index}`,
+        id: fallbackId("code"),
         type: "code_block" as const,
         text: node.content?.[0]?.text ?? "",
       };
     }
 
     return {
-      id: `${document.id}-paragraph-${index}`,
+      id: fallbackId("paragraph"),
       type: "paragraph" as const,
       text: rawTextFromNode(node),
     };
@@ -446,6 +459,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
           attrs: {
             level,
             anchor: `empty-heading-${block.id}`,
+            block_id: block.id,
             preservedEmpty: true,
           },
           content: emptyTextNode(),
@@ -457,6 +471,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
         type: "heading",
         attrs: {
           level,
+          block_id: block.id,
           anchor: text
             .trim()
             .toLowerCase()
@@ -475,7 +490,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       if (lines.length === 0) {
         contentNodes.push({
           type: "bullet_list",
-          attrs: { preservedEmpty: true },
+          attrs: { preservedEmpty: true, block_id: block.id },
           content: [
             {
               type: "list_item",
@@ -488,6 +503,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
       contentNodes.push({
         type: "bullet_list",
+        attrs: { block_id: block.id },
         content: lines.map((line) => ({
           type: "list_item",
           content: [{ type: "text", text: line.replace(/^- /, "").trim() }],
@@ -504,7 +520,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       if (lines.length === 0) {
         contentNodes.push({
           type: "ordered_list",
-          attrs: { preservedEmpty: true },
+          attrs: { preservedEmpty: true, block_id: block.id },
           content: [
             {
               type: "list_item",
@@ -517,6 +533,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
       contentNodes.push({
         type: "ordered_list",
+        attrs: { block_id: block.id },
         content: lines.map((line) => ({
           type: "list_item",
           content: [{ type: "text", text: line.replace(/^\d+[.)]\s*/, "").trim() }],
@@ -533,7 +550,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
       contentNodes.push({
         type: "check_list",
-        attrs: lines.length === 0 ? { preservedEmpty: true } : undefined,
+        attrs: lines.length === 0 ? { preservedEmpty: true, block_id: block.id } : { block_id: block.id },
         content:
           lines.length > 0
             ? lines.map((line) => {
@@ -564,7 +581,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       if (!text) {
         contentNodes.push({
           type: "blockquote",
-          attrs: { preservedEmpty: true, raw_text: rawText },
+          attrs: { preservedEmpty: true, raw_text: rawText, block_id: block.id },
           content: emptyTextNode(),
         });
         continue;
@@ -572,7 +589,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
       contentNodes.push({
         type: "blockquote",
-        attrs: rawText.includes("\n") ? { raw_text: rawText } : undefined,
+        attrs: rawText.includes("\n") ? { raw_text: rawText, block_id: block.id } : { block_id: block.id },
         content: [{ type: "text", text: text.replace(/\n/g, " ") }],
       });
       continue;
@@ -581,6 +598,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
     if (block.type === "divider") {
       contentNodes.push({
         type: "horizontal_rule",
+        attrs: { block_id: block.id },
       });
       continue;
     }
@@ -593,6 +611,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       contentNodes.push({
         type: "link_card",
         attrs: {
+          block_id: block.id,
           title: resolvedTitle,
           href: normalizedHref,
           description: meta.description?.trim() || "",
@@ -612,6 +631,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       contentNodes.push({
         type: "image_block",
         attrs: {
+          block_id: block.id,
           alt: altPart || "图片",
           src: srcPart || altPart || "",
           align: block.imageAlign || "center",
@@ -625,7 +645,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       if (!text) {
         contentNodes.push({
           type: "code_block",
-          attrs: { language: "plain", preservedEmpty: true },
+          attrs: { language: "plain", preservedEmpty: true, block_id: block.id },
           content: emptyTextNode(),
         });
         continue;
@@ -633,7 +653,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
       contentNodes.push({
         type: "code_block",
-        attrs: { language: "plain" },
+        attrs: { language: "plain", block_id: block.id },
         content: [{ type: "text", text }],
       });
       continue;
@@ -642,7 +662,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
     if (!text) {
       contentNodes.push({
         type: "paragraph",
-        attrs: { preservedEmpty: true, raw_text: rawText },
+        attrs: { preservedEmpty: true, raw_text: rawText, block_id: block.id },
         content: emptyTextNode(),
       });
       continue;
@@ -650,7 +670,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
     contentNodes.push({
       type: "paragraph",
-      attrs: rawText.includes("\n") ? { raw_text: rawText } : undefined,
+      attrs: rawText.includes("\n") ? { raw_text: rawText, block_id: block.id } : { block_id: block.id },
       content: [{ type: "text", text: text.replace(/\n/g, " ") }],
     });
   }
@@ -669,9 +689,23 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
   };
 }
 
-export function DocumentPage({ document }: { document: DocumentViewModel }) {
+export function DocumentPage({
+  document,
+  mentionCandidates,
+  initialActiveThreadId,
+}: {
+  document: DocumentViewModel;
+  mentionCandidates: OrganizationMember[];
+  initialActiveThreadId?: string | null;
+}) {
   const router = useRouter();
   const [currentDocument, setCurrentDocument] = useState(document);
+  const [commentThreads, setCommentThreads] = useState<CommentThread[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [commentsUnavailable, setCommentsUnavailable] = useState(false);
+  const [pendingCommentAnchor, setPendingCommentAnchor] = useState<CommentAnchor | null>(null);
+  const [activeCommentThreadId, setActiveCommentThreadId] = useState<string | null>(initialActiveThreadId ?? null);
+  const [hoveredCommentThreadId, setHoveredCommentThreadId] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(true);
   const [modeLoadedForDocId, setModeLoadedForDocId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
@@ -712,7 +746,41 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
     setNotice("");
     setShowDeleteConfirm(false);
     setIsModeMenuOpen(false);
-  }, [document]);
+    setPendingCommentAnchor(null);
+    setActiveCommentThreadId(initialActiveThreadId ?? null);
+    setHoveredCommentThreadId(null);
+  }, [document, initialActiveThreadId]);
+
+  useEffect(() => {
+    let disposed = false;
+    const loadCurrentUser = async () => {
+      const result = await fetchCurrentUser();
+      if (disposed) {
+        return;
+      }
+      setCurrentUserId(result.data?.id ?? null);
+    };
+    void loadCurrentUser();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const loadComments = async () => {
+      const result = await fetchCommentThreads(document.id);
+      if (disposed) {
+        return;
+      }
+      setCommentThreads(result.data);
+      setCommentsUnavailable(result.unavailable);
+    };
+    void loadComments();
+    return () => {
+      disposed = true;
+    };
+  }, [document.id]);
 
   useEffect(() => {
     if (isPdfDocument) {
@@ -979,6 +1047,68 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
     return Promise.all(files.map((file) => uploadImageAsset(file)));
   };
 
+  const handleCreateCommentThread = async (body: string) => {
+    if (!pendingCommentAnchor) {
+      return;
+    }
+    try {
+      const thread = await createCommentThread(currentDocument.id, {
+        anchor: pendingCommentAnchor,
+        body,
+      });
+      setCommentThreads((current) => [...current, thread]);
+      setPendingCommentAnchor(null);
+      setActiveCommentThreadId(thread.id);
+      setCommentsUnavailable(false);
+      setNotice("评论已添加");
+    } catch {
+      setNotice("评论创建失败");
+    }
+  };
+
+  const handleReplyCommentThread = async (threadId: string, body: string, parentCommentId?: string | null) => {
+    try {
+      const nextThread = await replyCommentThread(threadId, body, parentCommentId);
+      setCommentThreads((current) => current.map((thread) => (thread.id === threadId ? nextThread : thread)));
+      setActiveCommentThreadId(threadId);
+      setCommentsUnavailable(false);
+      setNotice("回复已添加");
+    } catch {
+      setNotice("回复失败");
+    }
+  };
+
+  const handleCommentStatusChange = async (threadId: string, status: "open" | "resolved") => {
+    try {
+      const nextThread = await updateCommentThreadStatus(threadId, status);
+      setCommentThreads((current) => current.map((thread) => (thread.id === threadId ? nextThread : thread)));
+      setActiveCommentThreadId(threadId);
+      setCommentsUnavailable(false);
+      setNotice(status === "resolved" ? "评论已解决" : "评论已重新打开");
+    } catch {
+      setNotice("评论状态更新失败");
+    }
+  };
+
+  const handleDeleteComment = async (commentId: string) => {
+    try {
+      const result = await deleteComment(commentId);
+      setCommentThreads((current) => {
+        if (result.threadDeleted || !result.thread) {
+          return current.filter((thread) => thread.id !== result.threadId);
+        }
+        return current.map((thread) => (thread.id === result.threadId ? result.thread! : thread));
+      });
+      if (activeCommentThreadId === result.threadId && result.threadDeleted) {
+        setActiveCommentThreadId(null);
+      }
+      setCommentsUnavailable(false);
+      setNotice("评论已删除");
+    } catch {
+      setNotice("评论删除失败");
+    }
+  };
+
   const persistDraft = async (source: "auto" | "mode") => {
     if (isPdfDocument) {
       return true;
@@ -1120,7 +1250,7 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
   };
 
   return (
-    <div className="grid min-h-screen grid-cols-1 xl:grid-cols-[260px_minmax(0,1fr)]">
+    <div className="grid min-h-screen grid-cols-1 xl:grid-cols-[260px_minmax(0,1fr)_340px]">
       <aside className="hidden border-r border-slate-200/80 bg-white/55 px-5 py-5 xl:block">
         <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">页面目录</div>
         <div className="mt-3 space-y-1">
@@ -1307,40 +1437,47 @@ export function DocumentPage({ document }: { document: DocumentViewModel }) {
               onChange={setDraftBlocks}
               onResolveLinkPreview={resolveLinkPreview}
               onUploadImage={uploadImages}
+              commentThreads={commentThreads}
+              activeCommentThreadId={activeCommentThreadId}
+              hoveredCommentThreadId={hoveredCommentThreadId}
+              onActivateCommentThread={setActiveCommentThreadId}
+              onHoverCommentThread={setHoveredCommentThreadId}
+              onCreateCommentSelection={setPendingCommentAnchor}
               readOnly={!isEditing}
             />
           )}
         </article>
-
-        {showDeleteConfirm ? (
-          <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/18 px-4">
-            <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.18)]">
-              <h2 className="text-lg font-semibold text-slate-900">确认删除文档</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
-                删除后文档会移入回收站。此操作会关闭当前页面。
-              </p>
-              <div className="mt-5 flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  disabled={isMutating}
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  disabled={isMutating}
-                  onClick={confirmDelete}
-                  className="rounded-lg bg-rose-500 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {isMutating ? "删除中..." : "确认删除"}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
+        <ConfirmDialog
+          open={showDeleteConfirm}
+          title="确认删除文档"
+          description="删除后文档会移入回收站。此操作会关闭当前页面。"
+          confirmLabel="确认删除"
+          cancelLabel="取消"
+          danger
+          pending={isMutating}
+          onCancel={() => setShowDeleteConfirm(false)}
+          onConfirm={confirmDelete}
+        />
       </section>
+      {!isPdfDocument ? (
+        <CommentSidebar
+          threads={commentThreads}
+          blockOrder={draftBlocks.map((block) => block.id)}
+          mentionCandidates={mentionCandidates}
+          currentUserId={currentUserId}
+          documentOwnerId={document.ownerId}
+          activeThreadId={activeCommentThreadId}
+          hoveredThreadId={hoveredCommentThreadId}
+          pendingAnchor={pendingCommentAnchor}
+          unavailable={commentsUnavailable}
+          onActivate={setActiveCommentThreadId}
+          onHoverThread={setHoveredCommentThreadId}
+          onCreate={handleCreateCommentThread}
+          onReply={handleReplyCommentThread}
+          onStatusChange={handleCommentStatusChange}
+          onDeleteComment={handleDeleteComment}
+        />
+      ) : null}
     </div>
   );
 }
