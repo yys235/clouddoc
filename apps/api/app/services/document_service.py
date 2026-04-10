@@ -9,7 +9,14 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.document import Document, DocumentContent, DocumentFavorite, DocumentVersion
+from app.models.document import (
+    Document,
+    DocumentContent,
+    DocumentFavorite,
+    DocumentPermission,
+    DocumentVersion,
+)
+from app.models.organization import OrganizationMember
 from app.models.space import Space
 from app.models.user import User
 from app.services.comment_service import sync_comment_threads_with_content
@@ -227,6 +234,85 @@ def get_default_user_id(db: Session) -> str | None:
     return user.id if user else None
 
 
+def get_user_organization_ids(db: Session, user_id: str | None) -> set[str]:
+    if not user_id:
+        return set()
+    return set(
+        db.scalars(
+            select(OrganizationMember.organization_id)
+            .where(OrganizationMember.user_id == user_id)
+            .where(OrganizationMember.status == "active")
+        ).all()
+    )
+
+
+def get_document_permission_levels(db: Session, document_id: str, user_id: str | None) -> set[str]:
+    if not user_id:
+        return set()
+    organization_ids = get_user_organization_ids(db, user_id)
+    statement = select(DocumentPermission.permission_level).where(DocumentPermission.document_id == document_id)
+    filters = [
+        (DocumentPermission.subject_type == "user") & (DocumentPermission.subject_id == user_id),
+    ]
+    if organization_ids:
+        filters.append(
+            (DocumentPermission.subject_type == "organization")
+            & (DocumentPermission.subject_id.in_(organization_ids))
+        )
+    statement = statement.where(or_(*filters))
+    return set(db.scalars(statement).all())
+
+
+def can_view_document(db: Session, document: Document, user_id: str | None) -> bool:
+    if document.is_deleted:
+        return False
+    if document.visibility == "public":
+        return True
+    if user_id is None:
+        return False
+    if document.owner_id == user_id or document.creator_id == user_id:
+        return True
+    permission_levels = get_document_permission_levels(db, document.id, user_id)
+    return bool(permission_levels & {"view", "edit", "manage"})
+
+
+def can_edit_document(db: Session, document: Document, user_id: str | None) -> bool:
+    if user_id is None:
+        return False
+    if document.owner_id == user_id or document.creator_id == user_id:
+        return True
+    permission_levels = get_document_permission_levels(db, document.id, user_id)
+    return bool(permission_levels & {"edit", "manage"})
+
+
+def can_manage_document(db: Session, document: Document, user_id: str | None) -> bool:
+    if user_id is None:
+        return False
+    if document.owner_id == user_id:
+        return True
+    permission_levels = get_document_permission_levels(db, document.id, user_id)
+    return "manage" in permission_levels
+
+
+def can_comment_document(db: Session, document: Document, user_id: str | None) -> bool:
+    return can_edit_document(db, document, user_id)
+
+
+def can_create_document_in_space(db: Session, space: Space, user_id: str) -> bool:
+    if space.owner_id == user_id:
+        return True
+    if space.organization_id is None:
+        return False
+    membership = db.scalar(
+        select(OrganizationMember.id)
+        .where(OrganizationMember.organization_id == space.organization_id)
+        .where(OrganizationMember.user_id == user_id)
+        .where(OrganizationMember.status == "active")
+        .limit(1)
+    )
+    return membership is not None
+
+
 def get_favorite_document_ids(db: Session, user_id: str | None) -> set[str]:
     if user_id is None:
         return set()
@@ -235,6 +321,87 @@ def get_favorite_document_ids(db: Session, user_id: str | None) -> set[str]:
         select(DocumentFavorite.document_id).where(DocumentFavorite.user_id == user_id)
     ).all()
     return set(rows)
+
+
+def get_or_create_latest_content(db: Session, document: Document) -> DocumentContent:
+    latest_version_no = (
+        db.scalar(
+            select(func.max(DocumentContent.version_no)).where(DocumentContent.document_id == document.id)
+        )
+        or 1
+    )
+    content = db.scalar(
+        select(DocumentContent).where(
+            DocumentContent.document_id == document.id,
+            DocumentContent.version_no == latest_version_no,
+        )
+    )
+    if content is not None:
+        return content
+
+    content = DocumentContent(
+        document_id=document.id,
+        version_no=1,
+        schema_version=1,
+        content_json=build_default_content(document.title),
+        plain_text=document.title,
+        created_by=document.creator_id,
+    )
+    db.add(content)
+    db.flush()
+    return content
+
+
+def build_document_detail_payload(
+    db: Session,
+    document: Document,
+    *,
+    user_id: str | None,
+    force_can_edit: bool | None = None,
+    force_can_manage: bool | None = None,
+    force_can_comment: bool | None = None,
+    force_is_shared_view: bool | None = None,
+) -> DocumentDetail:
+    content = get_or_create_latest_content(db, document)
+    file_payload = extract_file_payload(content.content_json)
+    can_edit = can_edit_document(db, document, user_id) and document.document_type != "pdf"
+    can_manage = can_manage_document(db, document, user_id)
+    can_comment = can_comment_document(db, document, user_id)
+    is_shared_view = False
+
+    if force_can_edit is not None:
+        can_edit = force_can_edit
+    if force_can_manage is not None:
+        can_manage = force_can_manage
+    if force_can_comment is not None:
+        can_comment = force_can_comment
+    if force_is_shared_view is not None:
+        is_shared_view = force_is_shared_view
+
+    return DocumentDetail(
+        id=document.id,
+        title=document.title,
+        owner_id=document.owner_id,
+        document_type=document.document_type,
+        status=document.status,
+        visibility=document.visibility,
+        updated_at=document.updated_at,
+        space_id=document.space_id,
+        is_deleted=document.is_deleted,
+        is_favorited=document.id in get_favorite_document_ids(db, user_id),
+        can_edit=can_edit,
+        can_manage=can_manage,
+        can_comment=can_comment,
+        is_shared_view=is_shared_view,
+        icon=document.icon,
+        summary=document.summary,
+        content=DocumentContentPayload(
+            schema_version=content.schema_version,
+            content_json=content.content_json,
+            plain_text=content.plain_text,
+        ),
+        **file_payload,
+    )
 
 
 def ensure_supported_document_types(db: Session) -> None:
@@ -264,12 +431,18 @@ def list_documents(db: Session, state: str = "active", user_id: str | None = Non
             owner_id=doc.owner_id,
             document_type=doc.document_type,
             status=doc.status,
+            visibility=doc.visibility,
             updated_at=doc.updated_at,
             space_id=doc.space_id,
             is_deleted=doc.is_deleted,
             is_favorited=doc.id in favorite_ids,
+            can_edit=can_edit_document(db, doc, user_id),
+            can_manage=can_manage_document(db, doc, user_id),
+            can_comment=can_comment_document(db, doc, user_id),
+            is_shared_view=False,
         )
         for doc in db.scalars(statement).all()
+        if can_view_document(db, doc, user_id) or (state == "trash" and can_manage_document(db, doc, user_id))
     ]
 
 
@@ -311,6 +484,8 @@ def search_documents(db: Session, query: str, user_id: str | None = None) -> lis
 
     results: list[SearchResult] = []
     for document, content in db.execute(statement).all():
+        if not can_view_document(db, document, user_id):
+            continue
         plain_text = content.plain_text or ""
         excerpt_source = plain_text if plain_text else document.title
         results.append(
@@ -352,55 +527,23 @@ def build_search_excerpt(text: str, query: str) -> str:
 
 def get_document_detail(db: Session, doc_id: str, user_id: str | None = None) -> DocumentDetail | None:
     document = db.get(Document, doc_id)
+    if not document or document.is_deleted or not can_view_document(db, document, user_id):
+        return None
+    return build_document_detail_payload(db, document, user_id=user_id)
+
+
+def get_document_detail_for_share(db: Session, doc_id: str) -> DocumentDetail | None:
+    document = db.get(Document, doc_id)
     if not document or document.is_deleted:
         return None
-
-    latest_version_no = (
-        db.scalar(
-            select(func.max(DocumentContent.version_no)).where(DocumentContent.document_id == document.id)
-        )
-        or 1
-    )
-    content = db.scalar(
-        select(DocumentContent).where(
-            DocumentContent.document_id == document.id,
-            DocumentContent.version_no == latest_version_no,
-        )
-    )
-    if content is None:
-        content = DocumentContent(
-            document_id=document.id,
-            version_no=1,
-            schema_version=1,
-            content_json=build_default_content(document.title),
-            plain_text=document.title,
-            created_by=document.creator_id,
-        )
-        db.add(content)
-        db.flush()
-
-    favorite_ids = get_favorite_document_ids(db, user_id)
-
-    file_payload = extract_file_payload(content.content_json)
-
-    return DocumentDetail(
-        id=document.id,
-        title=document.title,
-        owner_id=document.owner_id,
-        document_type=document.document_type,
-        status=document.status,
-        updated_at=document.updated_at,
-        space_id=document.space_id,
-        is_deleted=document.is_deleted,
-        is_favorited=document.id in favorite_ids,
-        icon=document.icon,
-        summary=document.summary,
-        content=DocumentContentPayload(
-            schema_version=content.schema_version,
-            content_json=content.content_json,
-            plain_text=content.plain_text,
-        ),
-        **file_payload,
+    return build_document_detail_payload(
+        db,
+        document,
+        user_id=None,
+        force_can_edit=False,
+        force_can_manage=False,
+        force_can_comment=False,
+        force_is_shared_view=True,
     )
 
 
@@ -408,6 +551,8 @@ def create_document(db: Session, payload: DocumentCreateRequest, current_user_id
     space = db.get(Space, payload.space_id)
     if space is None:
         raise ValueError("Space not found")
+    if not can_create_document_in_space(db, space, current_user_id):
+        raise PermissionError("Not allowed to create document in this space")
 
     if payload.document_type not in SUPPORTED_DOCUMENT_TYPES:
         raise ValueError("Unsupported document type")
@@ -423,6 +568,7 @@ def create_document(db: Session, payload: DocumentCreateRequest, current_user_id
         title=payload.title or "Untitled",
         document_type=payload.document_type,
         status="draft",
+        visibility=payload.visibility if payload.visibility in {"private", "public"} else "private",
         icon=payload.document_type,
     )
     db.add(document)
@@ -469,6 +615,8 @@ def create_pdf_document(
     space = db.get(Space, space_id)
     if space is None:
         raise ValueError("Space not found")
+    if not can_create_document_in_space(db, space, current_user_id):
+        raise PermissionError("Not allowed to upload PDF to this space")
 
     owner_id = current_user_id
     safe_name = Path(file_name).name
@@ -489,6 +637,7 @@ def create_pdf_document(
         title=title or Path(safe_name).stem or "未命名 PDF",
         document_type="pdf",
         status="uploaded",
+        visibility="private",
         icon="pdf",
         summary=safe_name,
     )
@@ -563,6 +712,8 @@ def update_document_content(
     document = db.get(Document, doc_id)
     if not document or document.is_deleted:
         return None
+    if not can_edit_document(db, document, current_user_id):
+        raise PermissionError("Not allowed to edit document")
     if document.document_type == "pdf":
         return get_document_detail(db, doc_id, current_user_id)
 
@@ -611,6 +762,8 @@ def soft_delete_document(db: Session, doc_id: str, user_id: str | None = None) -
     document = db.get(Document, doc_id)
     if not document:
         return None
+    if not can_manage_document(db, document, user_id):
+        raise PermissionError("Not allowed to delete document")
 
     document.is_deleted = True
     document.updated_at = datetime.now(timezone.utc)
@@ -623,6 +776,8 @@ def restore_document(db: Session, doc_id: str, user_id: str | None = None) -> Do
     document = db.get(Document, doc_id)
     if not document:
         return None
+    if not can_manage_document(db, document, user_id):
+        raise PermissionError("Not allowed to restore document")
 
     document.is_deleted = False
     document.updated_at = datetime.now(timezone.utc)
@@ -635,58 +790,15 @@ def get_document_detail_including_deleted(db: Session, doc_id: str, user_id: str
     document = db.get(Document, doc_id)
     if not document:
         return None
-
-    latest_version_no = (
-        db.scalar(
-            select(func.max(DocumentContent.version_no)).where(DocumentContent.document_id == document.id)
-        )
-        or 1
-    )
-    content = db.scalar(
-        select(DocumentContent).where(
-            DocumentContent.document_id == document.id,
-            DocumentContent.version_no == latest_version_no,
-        )
-    )
-    if content is None:
-        content = DocumentContent(
-            document_id=document.id,
-            version_no=1,
-            schema_version=1,
-            content_json=build_default_content(document.title),
-            plain_text=document.title,
-            created_by=document.creator_id,
-        )
-        db.add(content)
-        db.flush()
-
-    file_payload = extract_file_payload(content.content_json)
-
-    return DocumentDetail(
-        id=document.id,
-        title=document.title,
-        owner_id=document.owner_id,
-        document_type=document.document_type,
-        status=document.status,
-        updated_at=document.updated_at,
-        space_id=document.space_id,
-        is_deleted=document.is_deleted,
-        is_favorited=document.id in get_favorite_document_ids(db, user_id),
-        icon=document.icon,
-        summary=document.summary,
-        content=DocumentContentPayload(
-            schema_version=content.schema_version,
-            content_json=content.content_json,
-            plain_text=content.plain_text,
-        ),
-        **file_payload,
-    )
+    return build_document_detail_payload(db, document, user_id=user_id)
 
 
 def favorite_document(db: Session, doc_id: str, user_id: str) -> FavoriteStatusResponse | None:
     document = db.get(Document, doc_id)
     if document is None:
         return None
+    if not can_view_document(db, document, user_id):
+        raise PermissionError("Not allowed to favorite document")
 
     existing = db.scalar(
         select(DocumentFavorite).where(
@@ -705,6 +817,8 @@ def unfavorite_document(db: Session, doc_id: str, user_id: str) -> FavoriteStatu
     document = db.get(Document, doc_id)
     if document is None:
         return None
+    if not can_view_document(db, document, user_id):
+        raise PermissionError("Not allowed to unfavorite document")
 
     existing = db.scalar(
         select(DocumentFavorite).where(

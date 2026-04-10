@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS documents (
     title VARCHAR(255) NOT NULL DEFAULT 'Untitled',
     document_type VARCHAR(32) NOT NULL DEFAULT 'doc',
     status VARCHAR(32) NOT NULL DEFAULT 'draft',
+    visibility VARCHAR(16) NOT NULL DEFAULT 'private',
     icon VARCHAR(32),
     cover_url VARCHAR(512),
     summary TEXT,
@@ -188,7 +189,11 @@ CREATE TABLE IF NOT EXISTS share_links (
     token VARCHAR(128) NOT NULL UNIQUE,
     access_scope VARCHAR(32) NOT NULL DEFAULT 'private',
     permission_level VARCHAR(32) NOT NULL DEFAULT 'view',
+    password_hash TEXT,
     expires_at TIMESTAMPTZ,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    access_count INTEGER NOT NULL DEFAULT 0,
+    last_accessed_at TIMESTAMPTZ,
     allow_copy BOOLEAN NOT NULL DEFAULT FALSE,
     allow_export BOOLEAN NOT NULL DEFAULT FALSE,
     created_by UUID NOT NULL REFERENCES users(id),
@@ -221,6 +226,7 @@ CREATE INDEX IF NOT EXISTS idx_spaces_owner ON spaces(owner_id);
 CREATE INDEX IF NOT EXISTS idx_documents_space ON documents(space_id);
 CREATE INDEX IF NOT EXISTS idx_documents_parent ON documents(parent_id);
 CREATE INDEX IF NOT EXISTS idx_documents_owner ON documents(owner_id);
+CREATE INDEX IF NOT EXISTS idx_documents_visibility ON documents(visibility);
 CREATE INDEX IF NOT EXISTS idx_documents_deleted ON documents(is_deleted);
 CREATE INDEX IF NOT EXISTS idx_document_contents_document ON document_contents(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_versions_document ON document_versions(document_id);

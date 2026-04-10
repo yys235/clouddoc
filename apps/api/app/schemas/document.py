@@ -12,10 +12,15 @@ class DocumentSummary(BaseModel):
     owner_id: str
     document_type: str
     status: str
+    visibility: str
     updated_at: datetime
     space_id: str
     is_deleted: bool = False
     is_favorited: bool = False
+    can_edit: bool = False
+    can_manage: bool = False
+    can_comment: bool = False
+    is_shared_view: bool = False
 
 
 class DocumentContentPayload(BaseModel):
@@ -39,6 +44,7 @@ class DocumentCreateRequest(BaseModel):
     space_id: str
     parent_id: str | None = None
     document_type: str = "doc"
+    visibility: str = "private"
 
 
 class DocumentContentUpdateRequest(DocumentContentPayload):

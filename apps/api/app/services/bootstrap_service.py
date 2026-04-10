@@ -69,6 +69,7 @@ def seed_demo_data(db: Session) -> None:
         title="CloudDoc V1 产品简介",
         document_type="doc",
         status="draft",
+        visibility="private",
         icon="doc",
         summary="Structured cloud document with continuous document presentation.",
     )
@@ -207,6 +208,12 @@ def seed_templates_if_missing(db: Session) -> None:
 
 
 def ensure_runtime_schema(db: Session) -> None:
+    db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'private'"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_visibility ON documents(visibility)"))
     db.execute(text("ALTER TABLE comments ADD COLUMN IF NOT EXISTS parent_comment_id UUID REFERENCES comments(id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id)"))
+    db.execute(text("ALTER TABLE share_links ADD COLUMN IF NOT EXISTS password_hash TEXT"))
+    db.execute(text("ALTER TABLE share_links ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE"))
+    db.execute(text("ALTER TABLE share_links ADD COLUMN IF NOT EXISTS access_count INTEGER NOT NULL DEFAULT 0"))
+    db.execute(text("ALTER TABLE share_links ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ"))
     db.commit()

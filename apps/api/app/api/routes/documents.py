@@ -14,7 +14,10 @@ from app.schemas.document import (
     SearchResult,
     UploadedAssetResponse,
 )
-from app.services.auth_service import optional_current_user_dependency, require_current_user_dependency
+from app.services.auth_service import (
+    optional_current_user_no_fallback_dependency,
+    require_current_user_dependency,
+)
 from app.services.document_service import (
     create_document,
     create_pdf_document,
@@ -37,7 +40,7 @@ router = APIRouter()
 def list_documents_route(
     state: str = Query(default="active", pattern="^(active|trash|all)$"),
     db: Session = Depends(get_db),
-    current_user: User | None = Depends(optional_current_user_dependency),
+    current_user: User | None = Depends(optional_current_user_no_fallback_dependency),
 ) -> list[DocumentSummary]:
     return list_documents(db, state=state, user_id=current_user.id if current_user else None)
 
@@ -46,7 +49,7 @@ def list_documents_route(
 def search_documents_route(
     q: str = Query(default="", min_length=0),
     db: Session = Depends(get_db),
-    current_user: User | None = Depends(optional_current_user_dependency),
+    current_user: User | None = Depends(optional_current_user_no_fallback_dependency),
 ) -> list[SearchResult]:
     return search_documents(db, q, user_id=current_user.id if current_user else None)
 
@@ -59,6 +62,8 @@ def create_document_route(
 ) -> DocumentDetail:
     try:
         return create_document(db, payload, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -87,6 +92,8 @@ async def upload_pdf_document_route(
             file_name=file.filename or "upload.pdf",
             file_bytes=file_bytes,
         )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -126,7 +133,7 @@ async def upload_image_route(file: UploadFile = File(...)) -> UploadedAssetRespo
 def get_document(
     doc_id: str,
     db: Session = Depends(get_db),
-    current_user: User | None = Depends(optional_current_user_dependency),
+    current_user: User | None = Depends(optional_current_user_no_fallback_dependency),
 ) -> DocumentDetail:
     document = get_document_detail(db, doc_id, current_user.id if current_user else None)
     if document is None:
@@ -141,7 +148,10 @@ def update_document_content_route(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_current_user_dependency),
 ) -> DocumentDetail:
-    document = update_document_content(db, doc_id, payload, current_user.id)
+    try:
+        document = update_document_content(db, doc_id, payload, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
@@ -153,7 +163,10 @@ def delete_document_route(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_current_user_dependency),
 ) -> DocumentDetail:
-    document = soft_delete_document(db, doc_id, current_user.id)
+    try:
+        document = soft_delete_document(db, doc_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
@@ -165,7 +178,10 @@ def restore_document_route(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_current_user_dependency),
 ) -> DocumentDetail:
-    document = restore_document(db, doc_id, current_user.id)
+    try:
+        document = restore_document(db, doc_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
@@ -177,7 +193,10 @@ def favorite_document_route(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_current_user_dependency),
 ) -> FavoriteStatusResponse:
-    result = favorite_document(db, doc_id, current_user.id)
+    try:
+        result = favorite_document(db, doc_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return result
@@ -189,7 +208,10 @@ def unfavorite_document_route(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_current_user_dependency),
 ) -> FavoriteStatusResponse:
-    result = unfavorite_document(db, doc_id, current_user.id)
+    try:
+        result = unfavorite_document(db, doc_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return result

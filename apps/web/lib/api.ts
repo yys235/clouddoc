@@ -12,6 +12,31 @@ const API_BASE_URL =
 
 const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, "");
 
+async function buildRequestHeaders(init?: RequestInit) {
+  const headers = new Headers(init?.headers ?? {});
+  if (typeof window === "undefined") {
+    try {
+      const { cookies } = await import("next/headers");
+      const cookieStore = await cookies();
+      const cookieHeader = cookieStore.toString();
+      if (cookieHeader && !headers.has("cookie")) {
+        headers.set("cookie", cookieHeader);
+      }
+    } catch {
+      // ignore server cookie forwarding failures
+    }
+  }
+  return headers;
+}
+
+async function apiFetch(input: string, init?: RequestInit) {
+  const headers = await buildRequestHeaders(init);
+  return fetch(input, {
+    ...init,
+    headers,
+  });
+}
+
 function resolveApiAssetUrl(value?: string | null) {
   if (!value) {
     return undefined;
@@ -35,6 +60,8 @@ export type DashboardDocument = {
   updatedAt: string;
   isDeleted: boolean;
   isFavorited: boolean;
+  visibility: string;
+  canManage: boolean;
 };
 
 export type SearchDocument = {
@@ -46,6 +73,29 @@ export type SearchDocument = {
   updatedAt: string;
   excerpt: string;
   isFavorited: boolean;
+  visibility: string;
+};
+
+export type ShareLinkSettings = {
+  id?: string;
+  token?: string;
+  shareUrl?: string;
+  isEnabled: boolean;
+  isActive: boolean;
+  requiresPassword: boolean;
+  expiresAt?: string;
+  allowCopy: boolean;
+  allowExport: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  accessCount: number;
+  lastAccessedAt?: string;
+};
+
+export type SharedDocumentResponse = {
+  status: string;
+  document: DocumentViewModel | null;
+  share: ShareLinkSettings | null;
 };
 
 export type TemplateItem = {
@@ -204,7 +254,7 @@ function buildCurrentUser(item: {
 export async function fetchCurrentUser(options?: { bootstrap?: boolean }): Promise<ApiItemResult<CurrentUser>> {
   try {
     const bootstrap = options?.bootstrap ?? true;
-    const response = await fetch(`${API_BASE_URL}/auth/me?bootstrap=${bootstrap ? "true" : "false"}`, {
+    const response = await apiFetch(`${API_BASE_URL}/auth/me?bootstrap=${bootstrap ? "true" : "false"}`, {
       cache: "no-store",
       credentials: "same-origin",
     });
@@ -274,7 +324,7 @@ export async function logout(): Promise<void> {
 
 export async function fetchCurrentOrganization(): Promise<ApiItemResult<CurrentOrganization>> {
   try {
-    const response = await fetch(`${API_BASE_URL}/organizations/current`, {
+    const response = await apiFetch(`${API_BASE_URL}/organizations/current`, {
       cache: "no-store",
       credentials: "same-origin",
     });
@@ -308,7 +358,7 @@ export async function fetchOrganizationMembers(
   organizationId: string,
 ): Promise<ApiListResult<OrganizationMember>> {
   try {
-    const response = await fetch(`${API_BASE_URL}/organizations/${organizationId}/members`, {
+    const response = await apiFetch(`${API_BASE_URL}/organizations/${organizationId}/members`, {
       cache: "no-store",
       credentials: "same-origin",
     });
@@ -346,7 +396,7 @@ export async function fetchOrganizationMembers(
 
 export async function fetchSessions(): Promise<ApiListResult<SessionSummary>> {
   try {
-    const response = await fetch(`${API_BASE_URL}/sessions`, {
+    const response = await apiFetch(`${API_BASE_URL}/sessions`, {
       cache: "no-store",
       credentials: "same-origin",
     });
@@ -382,7 +432,7 @@ export async function fetchSessions(): Promise<ApiListResult<SessionSummary>> {
 
 export async function fetchNotifications(): Promise<ApiListResult<NotificationItem>> {
   try {
-    const response = await fetch(`${API_BASE_URL}/notifications`, {
+    const response = await apiFetch(`${API_BASE_URL}/notifications`, {
       cache: "no-store",
       credentials: "same-origin",
     });
@@ -434,7 +484,7 @@ export async function fetchNotifications(): Promise<ApiListResult<NotificationIt
 
 export async function fetchUnreadNotificationCount(): Promise<ApiItemResult<{ unreadCount: number }>> {
   try {
-    const response = await fetch(`${API_BASE_URL}/notifications/unread-count`, {
+    const response = await apiFetch(`${API_BASE_URL}/notifications/unread-count`, {
       cache: "no-store",
       credentials: "same-origin",
     });
@@ -580,8 +630,9 @@ export async function updateOrganizationMember(input: {
 
 export async function fetchDocument(docId: string): Promise<ApiItemResult<DocumentViewModel>> {
   try {
-    const response = await fetch(`${API_BASE_URL}/documents/${docId}`, {
+    const response = await apiFetch(`${API_BASE_URL}/documents/${docId}`, {
       cache: "no-store",
+      credentials: "same-origin",
     });
 
     if (!response.ok) {
@@ -657,10 +708,43 @@ function buildCommentThread(item: {
   };
 }
 
+function buildShareLinkSettings(item: {
+  id?: string | null;
+  token?: string | null;
+  share_url?: string | null;
+  is_enabled?: boolean;
+  is_active?: boolean;
+  requires_password?: boolean;
+  expires_at?: string | null;
+  allow_copy?: boolean;
+  allow_export?: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+  access_count?: number;
+  last_accessed_at?: string | null;
+}): ShareLinkSettings {
+  return {
+    id: item.id ?? undefined,
+    token: item.token ?? undefined,
+    shareUrl: item.share_url ?? undefined,
+    isEnabled: Boolean(item.is_enabled),
+    isActive: Boolean(item.is_active),
+    requiresPassword: Boolean(item.requires_password),
+    expiresAt: item.expires_at ?? undefined,
+    allowCopy: Boolean(item.allow_copy),
+    allowExport: Boolean(item.allow_export),
+    createdAt: item.created_at ?? undefined,
+    updatedAt: item.updated_at ?? undefined,
+    accessCount: Number(item.access_count ?? 0),
+    lastAccessedAt: item.last_accessed_at ?? undefined,
+  };
+}
+
 export async function fetchCommentThreads(docId: string): Promise<ApiListResult<CommentThread>> {
   try {
-    const response = await fetch(`${API_BASE_URL}/documents/${docId}/comments`, {
+    const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/comments`, {
       cache: "no-store",
+      credentials: "same-origin",
     });
     if (!response.ok) {
       return { data: [], unavailable: true };
@@ -673,9 +757,10 @@ export async function fetchCommentThreads(docId: string): Promise<ApiListResult<
 }
 
 export async function createCommentThread(docId: string, input: { anchor: CommentAnchor; body: string }) {
-  const response = await fetch(`${API_BASE_URL}/documents/${docId}/comments`, {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/comments`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     body: JSON.stringify({
       anchor: {
         block_id: input.anchor.blockId,
@@ -695,9 +780,10 @@ export async function createCommentThread(docId: string, input: { anchor: Commen
 }
 
 export async function replyCommentThread(threadId: string, body: string, parentCommentId?: string | null) {
-  const response = await fetch(`${API_BASE_URL}/comments/${threadId}/reply`, {
+  const response = await apiFetch(`${API_BASE_URL}/comments/${threadId}/reply`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     body: JSON.stringify({ body, parent_comment_id: parentCommentId ?? null }),
   });
   if (!response.ok) {
@@ -707,9 +793,10 @@ export async function replyCommentThread(threadId: string, body: string, parentC
 }
 
 export async function updateCommentThreadStatus(threadId: string, status: "open" | "resolved") {
-  const response = await fetch(`${API_BASE_URL}/comments/${threadId}/status`, {
+  const response = await apiFetch(`${API_BASE_URL}/comments/${threadId}/status`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     body: JSON.stringify({ status }),
   });
   if (!response.ok) {
@@ -719,7 +806,7 @@ export async function updateCommentThreadStatus(threadId: string, status: "open"
 }
 
 export async function deleteComment(commentId: string) {
-  const response = await fetch(`${API_BASE_URL}/comments/${commentId}`, {
+  const response = await apiFetch(`${API_BASE_URL}/comments/${commentId}`, {
     method: "DELETE",
     credentials: "same-origin",
   });
@@ -737,8 +824,9 @@ export async function deleteComment(commentId: string) {
 
 export async function fetchDocuments(state = "active"): Promise<ApiListResult<DashboardDocument>> {
   try {
-    const response = await fetch(`${API_BASE_URL}/documents?state=${state}`, {
+    const response = await apiFetch(`${API_BASE_URL}/documents?state=${state}`, {
       cache: "no-store",
+      credentials: "same-origin",
     });
     if (!response.ok) {
       return { data: [], unavailable: true };
@@ -751,6 +839,8 @@ export async function fetchDocuments(state = "active"): Promise<ApiListResult<Da
       updated_at: string;
       is_deleted: boolean;
       is_favorited: boolean;
+      visibility: string;
+      can_manage: boolean;
     }>;
 
     return {
@@ -760,6 +850,8 @@ export async function fetchDocuments(state = "active"): Promise<ApiListResult<Da
         status: item.status,
         isDeleted: item.is_deleted,
         isFavorited: item.is_favorited,
+        visibility: item.visibility,
+        canManage: Boolean(item.can_manage),
         updatedAt: new Intl.DateTimeFormat("zh-CN", {
           month: "2-digit",
           day: "2-digit",
@@ -780,8 +872,9 @@ export async function searchDocuments(query: string): Promise<ApiListResult<Sear
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/documents/search?q=${encodeURIComponent(query)}`, {
+    const response = await apiFetch(`${API_BASE_URL}/documents/search?q=${encodeURIComponent(query)}`, {
       cache: "no-store",
+      credentials: "same-origin",
     });
 
     if (!response.ok) {
@@ -797,6 +890,7 @@ export async function searchDocuments(query: string): Promise<ApiListResult<Sear
       updated_at: string;
       excerpt: string;
       is_favorited: boolean;
+      visibility?: string;
     }>;
 
     return {
@@ -808,6 +902,7 @@ export async function searchDocuments(query: string): Promise<ApiListResult<Sear
         spaceId: item.space_id,
         excerpt: item.excerpt,
         isFavorited: item.is_favorited,
+        visibility: item.visibility ?? "private",
         updatedAt: new Intl.DateTimeFormat("zh-CN", {
           month: "2-digit",
           day: "2-digit",
@@ -824,8 +919,9 @@ export async function searchDocuments(query: string): Promise<ApiListResult<Sear
 
 export async function fetchTemplates(): Promise<ApiListResult<TemplateItem>> {
   try {
-    const response = await fetch(`${API_BASE_URL}/templates`, {
+    const response = await apiFetch(`${API_BASE_URL}/templates`, {
       cache: "no-store",
+      credentials: "same-origin",
     });
 
     if (!response.ok) {
@@ -887,8 +983,9 @@ export async function instantiateTemplate(
 
 export async function fetchSpaces(): Promise<ApiListResult<SpaceSummary>> {
   try {
-    const response = await fetch(`${API_BASE_URL}/spaces`, {
+    const response = await apiFetch(`${API_BASE_URL}/spaces`, {
       cache: "no-store",
+      credentials: "same-origin",
     });
     if (!response.ok) {
       return { data: [], unavailable: true };
@@ -927,17 +1024,20 @@ export async function createDocument(input: {
   spaceId: string;
   parentId?: string | null;
   documentType?: string;
+  visibility?: "private" | "public";
 }) {
-  const response = await fetch(`${API_BASE_URL}/documents`, {
+  const response = await apiFetch(`${API_BASE_URL}/documents`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
+    credentials: "same-origin",
     body: JSON.stringify({
       title: input.title,
       space_id: input.spaceId,
       parent_id: input.parentId ?? null,
       document_type: input.documentType ?? "doc",
+      visibility: input.visibility ?? "private",
     }),
   });
 
@@ -962,8 +1062,9 @@ export async function uploadPdfDocument(input: {
   formData.append("title", input.title ?? "");
   formData.append("file", input.file);
 
-  const response = await fetch(`${API_BASE_URL}/documents/upload-pdf`, {
+  const response = await apiFetch(`${API_BASE_URL}/documents/upload-pdf`, {
     method: "POST",
+    credentials: "same-origin",
     body: formData,
   });
 
@@ -982,8 +1083,9 @@ export async function uploadImageAsset(file: File) {
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${API_BASE_URL}/documents/upload-image`, {
+  const response = await apiFetch(`${API_BASE_URL}/documents/upload-image`, {
     method: "POST",
+    credentials: "same-origin",
     body: formData,
   });
 
@@ -1010,11 +1112,12 @@ export async function updateDocumentContent(input: {
   plainText: string;
   baseVersionNo?: number | null;
 }) {
-  const response = await fetch(`${API_BASE_URL}/documents/${input.docId}/content`, {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${input.docId}/content`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
     },
+    credentials: "same-origin",
     body: JSON.stringify({
       schema_version: input.schemaVersion ?? 1,
       content_json: input.contentJson,
@@ -1035,8 +1138,9 @@ export async function updateDocumentContent(input: {
 }
 
 export async function softDeleteDocument(docId: string) {
-  const response = await fetch(`${API_BASE_URL}/documents/${docId}`, {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}`, {
     method: "DELETE",
+    credentials: "same-origin",
   });
 
   if (!response.ok) {
@@ -1047,8 +1151,9 @@ export async function softDeleteDocument(docId: string) {
 }
 
 export async function restoreDocument(docId: string) {
-  const response = await fetch(`${API_BASE_URL}/documents/${docId}/restore`, {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/restore`, {
     method: "POST",
+    credentials: "same-origin",
   });
 
   if (!response.ok) {
@@ -1059,8 +1164,9 @@ export async function restoreDocument(docId: string) {
 }
 
 export async function favoriteDocument(docId: string) {
-  const response = await fetch(`${API_BASE_URL}/documents/${docId}/favorite`, {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/favorite`, {
     method: "POST",
+    credentials: "same-origin",
   });
 
   if (!response.ok) {
@@ -1071,8 +1177,9 @@ export async function favoriteDocument(docId: string) {
 }
 
 export async function unfavoriteDocument(docId: string) {
-  const response = await fetch(`${API_BASE_URL}/documents/${docId}/favorite`, {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/favorite`, {
     method: "DELETE",
+    credentials: "same-origin",
   });
 
   if (!response.ok) {
@@ -1083,11 +1190,12 @@ export async function unfavoriteDocument(docId: string) {
 }
 
 export async function fetchLinkPreview(url: string): Promise<LinkPreviewPayload> {
-  const response = await fetch(`${API_BASE_URL}/documents/link-preview`, {
+  const response = await apiFetch(`${API_BASE_URL}/documents/link-preview`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
+    credentials: "same-origin",
     body: JSON.stringify({ url }),
   });
 
@@ -1117,5 +1225,131 @@ export async function fetchLinkPreview(url: string): Promise<LinkPreviewPayload>
     image: resolveApiAssetUrl(data.image) ?? data.image,
     view: data.view,
     status: data.status,
+  };
+}
+
+export async function fetchDocumentShareSettings(docId: string): Promise<ApiItemResult<ShareLinkSettings>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/share`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (response.status === 401 || response.status === 403 || response.status === 404) {
+      return { data: null, unavailable: false };
+    }
+    if (!response.ok) {
+      return { data: null, unavailable: true };
+    }
+    return { data: buildShareLinkSettings(await response.json()), unavailable: false };
+  } catch {
+    return { data: null, unavailable: true };
+  }
+}
+
+export async function updateDocumentVisibility(docId: string, visibility: "private" | "public") {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/access`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ visibility }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to update document visibility");
+  }
+  return response.json() as Promise<{ visibility: string }>;
+}
+
+export async function upsertDocumentShare(
+  docId: string,
+  input: {
+    enabled: boolean;
+    expiresAt?: string | null;
+    password?: string | null;
+    allowCopy?: boolean;
+    allowExport?: boolean;
+  },
+) {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/share`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      enabled: input.enabled,
+      expires_at: input.expiresAt ?? null,
+      password: input.password ?? null,
+      allow_copy: Boolean(input.allowCopy),
+      allow_export: Boolean(input.allowExport),
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to update sharing settings");
+  }
+  return buildShareLinkSettings(await response.json());
+}
+
+export async function rotateDocumentShare(docId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/share/rotate`, {
+    method: "POST",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error("Failed to rotate share link");
+  }
+  return buildShareLinkSettings(await response.json());
+}
+
+export async function disableDocumentShare(docId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/share`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error("Failed to disable share link");
+  }
+  return buildShareLinkSettings(await response.json());
+}
+
+export async function fetchSharedDocument(token: string): Promise<ApiItemResult<SharedDocumentResponse>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/share/${token}`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: null, unavailable: response.status >= 500 };
+    }
+    const data = await response.json();
+    return {
+      data: {
+        status: data.status,
+        document: data.document
+          ? buildDocumentViewModel({ ...data.document, file_url: resolveApiAssetUrl(data.document.file_url) })
+          : null,
+        share: data.share ? buildShareLinkSettings(data.share) : null,
+      },
+      unavailable: false,
+    };
+  } catch {
+    return { data: null, unavailable: true };
+  }
+}
+
+export async function verifySharedDocumentPassword(token: string, password: string): Promise<SharedDocumentResponse> {
+  const response = await apiFetch(`${API_BASE_URL}/share/${token}/verify-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ password }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to verify share password");
+  }
+  const data = await response.json();
+  return {
+    status: data.status,
+    document: data.document
+      ? buildDocumentViewModel({ ...data.document, file_url: resolveApiAssetUrl(data.document.file_url) })
+      : null,
+    share: data.share ? buildShareLinkSettings(data.share) : null,
   };
 }

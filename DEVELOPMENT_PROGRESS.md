@@ -1234,3 +1234,11 @@
  - 2026-04-09 09:41 CST: extended test cleanup for document fixtures to delete comment notifications, comments, and threads before removing the document record.
  - 2026-04-09 09:41 CST: completed the notification UX loop so opening a notification marks it as read before navigating to the target document thread.
  - 2026-04-09 09:41 CST: automated checks after notification cleanup and read-on-open flow: `apps/api .venv/bin/pytest -q` => 19 passed; `apps/web npm run build` => passed.
+ - 2026-04-09 15:48 CST: implemented the document permission and sharing flow from `document-permission-sharing-prd.md`, including backend `visibility` handling, share-link state/password/expiry management, and a dedicated `/share/[token]` route that reuses the same document page surface in forced read-only mode.
+ - 2026-04-09 15:48 CST: refactored backend document detail construction into a shared helper so normal document access, deleted-document access, and share-token access all reuse the same payload builder without diverging capability flags.
+ - 2026-04-09 15:48 CST: added the frontend permission/share dialog with visibility toggles, share enable/disable, expiry, password, rotate-link, and copy-link controls, and wired `DocumentPage` to capability flags (`canEdit`, `canManage`, `canComment`, `isSharedView`) instead of static buttons.
+ - 2026-04-09 15:48 CST: added backend coverage for anonymous public access and password-protected share access; updated API tests to bootstrap an authenticated default session explicitly now that document read routes no longer rely on development fallback.
+ - 2026-04-09 15:48 CST: restarted local frontend/backend services onto the latest code and verified runtime smoke checks for `3100`, `8000`, and `/share/[token]`.
+ - 2026-04-09 15:48 CST: automated checks after the permissions/sharing rollout: `apps/api .venv/bin/pytest -q` => 21 passed; `apps/web npm run build` => passed.
+ - 2026-04-09 16:03 CST: added explicit backend coverage for share-link rotation, disabled-share responses, and expired-share responses, and aligned successful password verification with access-count / last-access tracking.
+ - 2026-04-09 16:03 CST: final automated checks after the full permissions/sharing implementation: `apps/api .venv/bin/pytest -q` => 22 passed; `apps/web npm run build` => passed.

@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -10,12 +11,14 @@ from app.models.comment import Comment, CommentThread
 from app.models.document import Document, DocumentContent, DocumentPermission, DocumentVersion
 from app.models.notification import UserNotification
 from app.models.organization import Organization, OrganizationInvitation, OrganizationMember
+from app.models.share import ShareLink
 from app.models.session import UserSession
 from app.models.space import Space
 from app.models.user import User
 
 
 client = TestClient(app)
+client.get("/api/auth/me")
 
 
 def cleanup_document(document_id: str) -> None:
@@ -49,6 +52,7 @@ def cleanup_document(document_id: str) -> None:
         db.execute(delete(Comment).where(Comment.document_id == document_id))
         db.execute(delete(CommentThread).where(CommentThread.document_id == document_id))
         db.execute(delete(DocumentPermission).where(DocumentPermission.document_id == document_id))
+        db.execute(delete(ShareLink).where(ShareLink.document_id == document_id))
         db.execute(delete(DocumentVersion).where(DocumentVersion.document_id == document_id))
         db.execute(delete(DocumentContent).where(DocumentContent.document_id == document_id))
         db.execute(delete(Document).where(Document.id == document_id))
@@ -84,6 +88,24 @@ def cleanup_user(email: str) -> None:
         db.execute(delete(OrganizationMember).where(OrganizationMember.user_id == user.id))
         db.execute(delete(Organization).where(Organization.owner_id == user.id))
         db.execute(delete(User).where(User.id == user.id))
+        db.commit()
+    finally:
+        db.close()
+
+
+def grant_document_edit_permission(document_id: str, user_email: str) -> None:
+    db = SessionLocal()
+    try:
+        user = db.scalar(select(User).where(User.email == user_email))
+        assert user is not None
+        db.add(
+            DocumentPermission(
+                document_id=document_id,
+                subject_type="user",
+                subject_id=user.id,
+                permission_level="edit",
+            )
+        )
         db.commit()
     finally:
         db.close()
@@ -399,6 +421,177 @@ def test_comment_thread_removed_when_quoted_text_deleted() -> None:
         cleanup_document(document_id)
 
 
+def test_public_document_is_accessible_without_auth() -> None:
+    db = SessionLocal()
+    try:
+        space = db.scalar(select(Space).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    title = f"pytest-public-{uuid4()}"
+    create_response = client.post(
+        "/api/documents",
+        json={
+            "title": title,
+            "space_id": space_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    document_id = create_response.json()["id"]
+    anonymous_client = TestClient(app)
+
+    try:
+        private_detail = anonymous_client.get(f"/api/documents/{document_id}")
+        assert private_detail.status_code == 404
+
+        update_response = client.patch(
+            f"/api/documents/{document_id}/access",
+            json={"visibility": "public"},
+        )
+        assert update_response.status_code == 200
+        assert update_response.json()["visibility"] == "public"
+
+        public_detail = anonymous_client.get(f"/api/documents/{document_id}")
+        assert public_detail.status_code == 200
+        assert public_detail.json()["visibility"] == "public"
+        assert public_detail.json()["can_edit"] is False
+        assert public_detail.json()["is_shared_view"] is False
+    finally:
+        cleanup_document(document_id)
+
+
+def test_private_document_share_password_flow() -> None:
+    db = SessionLocal()
+    try:
+        space = db.scalar(select(Space).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    title = f"pytest-share-{uuid4()}"
+    create_response = client.post(
+        "/api/documents",
+        json={
+            "title": title,
+            "space_id": space_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    document_id = create_response.json()["id"]
+
+    try:
+        share_response = client.put(
+            f"/api/documents/{document_id}/share",
+            json={
+                "enabled": True,
+                "password": "share-pass",
+                "allow_copy": False,
+                "allow_export": False,
+            },
+        )
+        assert share_response.status_code == 200
+        token = share_response.json()["token"]
+        assert token
+
+        anonymous_client = TestClient(app)
+        pending_response = anonymous_client.get(f"/api/share/{token}")
+        assert pending_response.status_code == 200
+        assert pending_response.json()["status"] == "password_required"
+
+        invalid_password_response = anonymous_client.post(
+            f"/api/share/{token}/verify-password",
+            json={"password": "wrong"},
+        )
+        assert invalid_password_response.status_code == 403
+
+        verified_response = anonymous_client.post(
+            f"/api/share/{token}/verify-password",
+            json={"password": "share-pass"},
+        )
+        assert verified_response.status_code == 200
+        assert verified_response.json()["status"] == "ok"
+        assert verified_response.json()["document"]["is_shared_view"] is True
+        assert verified_response.json()["document"]["can_edit"] is False
+        assert verified_response.json()["document"]["can_manage"] is False
+        assert verified_response.json()["document"]["can_comment"] is False
+
+        followup_response = anonymous_client.get(f"/api/share/{token}")
+        assert followup_response.status_code == 200
+        assert followup_response.json()["status"] == "ok"
+    finally:
+        cleanup_document(document_id)
+
+
+def test_share_rotate_disable_and_expire_flow() -> None:
+    db = SessionLocal()
+    try:
+        space = db.scalar(select(Space).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    title = f"pytest-share-rotate-{uuid4()}"
+    create_response = client.post(
+        "/api/documents",
+        json={
+            "title": title,
+            "space_id": space_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    document_id = create_response.json()["id"]
+
+    try:
+        first_share = client.put(
+            f"/api/documents/{document_id}/share",
+            json={"enabled": True},
+        )
+        assert first_share.status_code == 200
+        first_token = first_share.json()["token"]
+        assert first_token
+
+        rotated_share = client.post(f"/api/documents/{document_id}/share/rotate")
+        assert rotated_share.status_code == 200
+        second_token = rotated_share.json()["token"]
+        assert second_token and second_token != first_token
+
+        anonymous_client = TestClient(app)
+        old_token_response = anonymous_client.get(f"/api/share/{first_token}")
+        assert old_token_response.status_code == 200
+        assert old_token_response.json()["status"] == "not_found"
+
+        disabled_share = client.delete(f"/api/documents/{document_id}/share")
+        assert disabled_share.status_code == 200
+        disabled_response = anonymous_client.get(f"/api/share/{second_token}")
+        assert disabled_response.status_code == 200
+        assert disabled_response.json()["status"] == "disabled"
+
+        expired_share = client.put(
+            f"/api/documents/{document_id}/share",
+            json={
+                "enabled": True,
+                "expires_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+            },
+        )
+        assert expired_share.status_code == 200
+        expired_token = expired_share.json()["token"]
+        expired_response = anonymous_client.get(f"/api/share/{expired_token}")
+        assert expired_response.status_code == 200
+        assert expired_response.json()["status"] == "expired"
+    finally:
+        cleanup_document(document_id)
+
+
 def test_comment_delete_permissions_for_author_and_document_owner() -> None:
     owner_email = f"pytest-owner-{uuid4()}@example.com"
     commenter_email = f"pytest-commenter-{uuid4()}@example.com"
@@ -431,6 +624,7 @@ def test_comment_delete_permissions_for_author_and_document_owner() -> None:
     document_id = create_response.json()["id"]
 
     try:
+        grant_document_edit_permission(document_id, commenter_email)
         thread_response = commenter_client.post(
             f"/api/documents/{document_id}/comments",
             json={
@@ -512,6 +706,7 @@ def test_comment_notifications_flow() -> None:
     document_id = create_response.json()["id"]
 
     try:
+        grant_document_edit_permission(document_id, commenter_email)
         thread_response = commenter_client.post(
             f"/api/documents/{document_id}/comments",
             json={

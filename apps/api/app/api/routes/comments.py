@@ -10,7 +10,7 @@ from app.schemas.document import (
     CommentStatusUpdateRequest,
     CommentThreadResponse,
 )
-from app.services.auth_service import optional_current_user_dependency, require_current_user_dependency
+from app.services.auth_service import optional_current_user_no_fallback_dependency, require_current_user_dependency
 from app.services.comment_service import (
     create_comment_thread,
     delete_comment,
@@ -26,9 +26,9 @@ router = APIRouter()
 def list_comments_route(
     doc_id: str,
     db: Session = Depends(get_db),
-    _: User | None = Depends(optional_current_user_dependency),
+    current_user: User | None = Depends(optional_current_user_no_fallback_dependency),
 ) -> list[CommentThreadResponse]:
-    return list_comment_threads(db, doc_id)
+    return list_comment_threads(db, doc_id, current_user.id if current_user else None)
 
 
 @router.post("/documents/{doc_id}/comments", response_model=CommentThreadResponse)
@@ -40,6 +40,8 @@ def create_comment_route(
 ) -> CommentThreadResponse:
     try:
         return create_comment_thread(db, doc_id, payload, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -62,10 +64,10 @@ def update_comment_status_route(
     thread_id: str,
     payload: CommentStatusUpdateRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(require_current_user_dependency),
+    current_user: User = Depends(require_current_user_dependency),
 ) -> CommentThreadResponse:
     try:
-        thread = update_comment_thread_status(db, thread_id, payload)
+        thread = update_comment_thread_status(db, thread_id, payload, current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if thread is None:
@@ -81,5 +83,5 @@ def delete_comment_route(
 ) -> CommentDeleteResponse:
     result = delete_comment(db, comment_id=comment_id, current_user_id=current_user.id)
     if result is None:
-      raise HTTPException(status_code=404, detail="Comment not found")
+        raise HTTPException(status_code=404, detail="Comment not found")
     return result

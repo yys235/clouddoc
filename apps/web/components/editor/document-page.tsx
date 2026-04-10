@@ -8,6 +8,7 @@ import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { DocumentViewModel } from "@/lib/mock-document";
 import { BlockEditor, EditableBlock } from "@/components/editor/block-editor";
 import { CommentSidebar } from "@/components/editor/comment-sidebar";
+import { DocumentShareDialog } from "@/components/editor/document-share-dialog";
 import {
   createCommentThread,
   deleteComment,
@@ -18,6 +19,7 @@ import {
   type CommentAnchor,
   type CommentThread,
   type OrganizationMember,
+  type ShareLinkSettings,
   replyCommentThread,
   softDeleteDocument,
   unfavoriteDocument,
@@ -693,10 +695,12 @@ export function DocumentPage({
   document,
   mentionCandidates,
   initialActiveThreadId,
+  shareSettings,
 }: {
   document: DocumentViewModel;
   mentionCandidates: OrganizationMember[];
   initialActiveThreadId?: string | null;
+  shareSettings?: ShareLinkSettings | null;
 }) {
   const router = useRouter();
   const [currentDocument, setCurrentDocument] = useState(document);
@@ -711,7 +715,9 @@ export function DocumentPage({
   const [notice, setNotice] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showShareDialog, setShowShareDialog] = useState(false);
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
+  const [currentShareSettings, setCurrentShareSettings] = useState<ShareLinkSettings | null>(shareSettings ?? null);
   const modeMenuRef = useRef<HTMLDivElement | null>(null);
   const modeMenuHideTimerRef = useRef<number | null>(null);
   const [isMutating, startTransition] = useTransition();
@@ -720,6 +726,10 @@ export function DocumentPage({
   const savePromiseRef = useRef<Promise<boolean> | null>(null);
   const titleTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const isPdfDocument = currentDocument.documentType === "pdf";
+  const canManageDocument = currentDocument.canManage && !currentDocument.isSharedView;
+  const canEditDocument = currentDocument.canEdit && !currentDocument.isSharedView && !isPdfDocument;
+  const canCommentDocument = currentDocument.canComment && !currentDocument.isSharedView;
+  const showCommentSidebar = !isPdfDocument && !currentDocument.isSharedView;
 
   const modeOptions = [
     {
@@ -745,13 +755,19 @@ export function DocumentPage({
     setModeLoadedForDocId(null);
     setNotice("");
     setShowDeleteConfirm(false);
+    setShowShareDialog(false);
     setIsModeMenuOpen(false);
     setPendingCommentAnchor(null);
     setActiveCommentThreadId(initialActiveThreadId ?? null);
     setHoveredCommentThreadId(null);
-  }, [document, initialActiveThreadId]);
+    setCurrentShareSettings(shareSettings ?? null);
+  }, [document, initialActiveThreadId, shareSettings]);
 
   useEffect(() => {
+    if (!showCommentSidebar) {
+      setCurrentUserId(null);
+      return;
+    }
     let disposed = false;
     const loadCurrentUser = async () => {
       const result = await fetchCurrentUser();
@@ -764,9 +780,14 @@ export function DocumentPage({
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [showCommentSidebar]);
 
   useEffect(() => {
+    if (!showCommentSidebar) {
+      setCommentThreads([]);
+      setCommentsUnavailable(false);
+      return;
+    }
     let disposed = false;
     const loadComments = async () => {
       const result = await fetchCommentThreads(document.id);
@@ -780,10 +801,10 @@ export function DocumentPage({
     return () => {
       disposed = true;
     };
-  }, [document.id]);
+  }, [document.id, showCommentSidebar]);
 
   useEffect(() => {
-    if (isPdfDocument) {
+    if (isPdfDocument || !canEditDocument) {
       setIsEditing(false);
       setModeLoadedForDocId(currentDocument.id);
       return;
@@ -797,10 +818,10 @@ export function DocumentPage({
     } finally {
       setModeLoadedForDocId(currentDocument.id);
     }
-  }, [currentDocument.id, isPdfDocument]);
+  }, [canEditDocument, currentDocument.id, isPdfDocument]);
 
   useEffect(() => {
-    if (isPdfDocument || modeLoadedForDocId !== currentDocument.id) {
+    if (isPdfDocument || !canEditDocument || modeLoadedForDocId !== currentDocument.id) {
       return;
     }
 
@@ -809,7 +830,7 @@ export function DocumentPage({
     } catch {
       // Ignore browser storage failures and keep in-memory mode state.
     }
-  }, [currentDocument.id, isEditing, isPdfDocument, modeLoadedForDocId]);
+  }, [canEditDocument, currentDocument.id, isEditing, isPdfDocument, modeLoadedForDocId]);
 
   useEffect(() => {
     return () => {
@@ -874,7 +895,7 @@ export function DocumentPage({
   };
 
   useEffect(() => {
-    if (!isEditing || isPdfDocument || draftBlocks.length === 0) {
+    if (!isEditing || !canEditDocument || isPdfDocument || draftBlocks.length === 0) {
       return;
     }
 
@@ -898,14 +919,7 @@ export function DocumentPage({
         },
       ];
     });
-  }, [draftBlocks, isEditing, isPdfDocument]);
-
-  const shareUrl = useMemo(() => {
-    if (typeof window === "undefined") {
-      return "";
-    }
-    return `${window.location.origin}/docs/${currentDocument.id}`;
-  }, [currentDocument.id]);
+  }, [canEditDocument, draftBlocks, isEditing, isPdfDocument]);
 
   const summaryLabel = useMemo(() => {
     return (
@@ -948,7 +962,7 @@ export function DocumentPage({
     () => JSON.stringify({ title: currentDocument.title.trim(), blocks: normalizedSavedBlocks }),
     [currentDocument.title, normalizedSavedBlocks],
   );
-  const isDirty = !isPdfDocument && draftSignature != savedSignature;
+  const isDirty = canEditDocument && draftSignature != savedSignature;
 
   const latestRef = useRef({
     draftTitle,
@@ -1048,7 +1062,7 @@ export function DocumentPage({
   };
 
   const handleCreateCommentThread = async (body: string) => {
-    if (!pendingCommentAnchor) {
+    if (!pendingCommentAnchor || !canCommentDocument) {
       return;
     }
     try {
@@ -1067,6 +1081,9 @@ export function DocumentPage({
   };
 
   const handleReplyCommentThread = async (threadId: string, body: string, parentCommentId?: string | null) => {
+    if (!canCommentDocument) {
+      return;
+    }
     try {
       const nextThread = await replyCommentThread(threadId, body, parentCommentId);
       setCommentThreads((current) => current.map((thread) => (thread.id === threadId ? nextThread : thread)));
@@ -1079,6 +1096,9 @@ export function DocumentPage({
   };
 
   const handleCommentStatusChange = async (threadId: string, status: "open" | "resolved") => {
+    if (!canCommentDocument) {
+      return;
+    }
     try {
       const nextThread = await updateCommentThreadStatus(threadId, status);
       setCommentThreads((current) => current.map((thread) => (thread.id === threadId ? nextThread : thread)));
@@ -1091,6 +1111,9 @@ export function DocumentPage({
   };
 
   const handleDeleteComment = async (commentId: string) => {
+    if (!canCommentDocument && !canManageDocument) {
+      return;
+    }
     try {
       const result = await deleteComment(commentId);
       setCommentThreads((current) => {
@@ -1110,7 +1133,7 @@ export function DocumentPage({
   };
 
   const persistDraft = async (source: "auto" | "mode") => {
-    if (isPdfDocument) {
+    if (isPdfDocument || !canEditDocument) {
       return true;
     }
 
@@ -1163,7 +1186,7 @@ export function DocumentPage({
   };
 
   useEffect(() => {
-    if (!isEditing || isPdfDocument || !isDirty) {
+    if (!isEditing || !canEditDocument || isPdfDocument || !isDirty) {
       return;
     }
 
@@ -1172,7 +1195,7 @@ export function DocumentPage({
     }, 1200);
 
     return () => window.clearTimeout(timer);
-  }, [draftSignature, isDirty, isEditing, isPdfDocument]);
+  }, [canEditDocument, draftSignature, isDirty, isEditing, isPdfDocument]);
 
   const flushPendingChanges = async () => {
     while (true) {
@@ -1190,6 +1213,10 @@ export function DocumentPage({
 
   const handleModeChange = async (nextMode: "read" | "edit") => {
     setIsModeMenuOpen(false);
+    if (!canEditDocument) {
+      setIsEditing(false);
+      return;
+    }
     if (nextMode === "edit") {
       setIsEditing(true);
       setNotice("");
@@ -1209,6 +1236,9 @@ export function DocumentPage({
   };
 
   const confirmDelete = () => {
+    if (!canManageDocument) {
+      return;
+    }
     startTransition(async () => {
       try {
         await softDeleteDocument(currentDocument.id);
@@ -1222,6 +1252,9 @@ export function DocumentPage({
   };
 
   const toggleFavorite = () => {
+    if (currentDocument.isSharedView) {
+      return;
+    }
     startTransition(async () => {
       try {
         if (currentDocument.isFavorited) {
@@ -1240,17 +1273,16 @@ export function DocumentPage({
     });
   };
 
-  const copyShareLink = async () => {
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setNotice("链接已复制");
-    } catch {
-      setNotice("复制失败");
-    }
-  };
+  const visibilityLabel = currentDocument.visibility === "public" ? "公开文档" : "私有文档";
+  const visibilityHint =
+    currentDocument.visibility === "public" ? "所有人可访问原文档链接" : "仅作者与授权用户可访问原文档链接";
 
   return (
-    <div className="grid min-h-screen grid-cols-1 xl:grid-cols-[260px_minmax(0,1fr)_340px]">
+    <div
+      className={`grid min-h-screen grid-cols-1 ${
+        showCommentSidebar ? "xl:grid-cols-[260px_minmax(0,1fr)_340px]" : "xl:grid-cols-[260px_minmax(0,1fr)]"
+      }`}
+    >
       <aside className="hidden border-r border-slate-200/80 bg-white/55 px-5 py-5 xl:block">
         <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">页面目录</div>
         <div className="mt-3 space-y-1">
@@ -1280,33 +1312,39 @@ export function DocumentPage({
                 </Link>
               </nav>
               <div className="flex flex-wrap items-center justify-end gap-1.5">
-                <button
-                  type="button"
-                  onClick={toggleFavorite}
-                  className={`rounded-lg border px-3 py-1.5 text-sm ${
-                    currentDocument.isFavorited
-                      ? "border-amber-200 bg-amber-50 text-amber-700"
-                      : "border-slate-200 bg-white/80 text-slate-600"
-                  }`}
-                >
-                  {currentDocument.isFavorited ? "已收藏" : "收藏"}
-                </button>
-                <button
-                  type="button"
-                  onClick={copyShareLink}
-                  className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-600"
-                >
-                  分享
-                </button>
-                <button
-                  type="button"
-                  disabled={isMutating || isSaving}
-                  onClick={() => setShowDeleteConfirm(true)}
-                  className="rounded-lg border border-rose-200 bg-white/80 px-3 py-1.5 text-sm text-rose-600 disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  删除
-                </button>
-                {!isPdfDocument ? (
+                {!currentDocument.isSharedView ? (
+                  <button
+                    type="button"
+                    onClick={toggleFavorite}
+                    className={`rounded-lg border px-3 py-1.5 text-sm ${
+                      currentDocument.isFavorited
+                        ? "border-amber-200 bg-amber-50 text-amber-700"
+                        : "border-slate-200 bg-white/80 text-slate-600"
+                    }`}
+                  >
+                    {currentDocument.isFavorited ? "已收藏" : "收藏"}
+                  </button>
+                ) : null}
+                {canManageDocument ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowShareDialog(true)}
+                    className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-600"
+                  >
+                    权限/分享
+                  </button>
+                ) : null}
+                {canManageDocument ? (
+                  <button
+                    type="button"
+                    disabled={isMutating || isSaving}
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="rounded-lg border border-rose-200 bg-white/80 px-3 py-1.5 text-sm text-rose-600 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    删除
+                  </button>
+                ) : null}
+                {canEditDocument ? (
                   <div
                     ref={modeMenuRef}
                     className="relative"
@@ -1370,9 +1408,13 @@ export function DocumentPage({
                       })}
                     </div>
                   </div>
-                ) : (
+                ) : isPdfDocument ? (
                   <span className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-500">
                     PDF 暂不支持编辑
+                  </span>
+                ) : (
+                  <span className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-500">
+                    {currentDocument.isSharedView ? "分享只读视图" : "只读"}
                   </span>
                 )}
               </div>
@@ -1383,12 +1425,12 @@ export function DocumentPage({
                   ref={titleTextareaRef}
                   value={draftTitle}
                   onChange={(event) => setDraftTitle(event.target.value)}
-                  readOnly={!isEditing}
+                  readOnly={!isEditing || !canEditDocument}
                   rows={1}
-                  spellCheck={isEditing}
-                  aria-readonly={!isEditing}
+                  spellCheck={isEditing && canEditDocument}
+                  aria-readonly={!isEditing || !canEditDocument}
                   className={`block w-full resize-none overflow-hidden border-0 bg-transparent px-0 py-0 text-[2.1rem] font-semibold leading-tight tracking-tight text-slate-950 outline-none ring-0 placeholder:text-slate-300 ${
-                    !isEditing ? "cursor-text caret-transparent" : ""
+                    !isEditing || !canEditDocument ? "cursor-text caret-transparent" : ""
                   }`}
                 />
               ) : (
@@ -1414,8 +1456,21 @@ export function DocumentPage({
             <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">
               {currentDocument.documentType}
             </span>
-            <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">仅团队成员可编辑</span>
-            <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">当前为草稿头版本</span>
+            <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1" title={visibilityHint}>
+              {visibilityLabel}
+            </span>
+            {currentDocument.isSharedView ? (
+              <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">独立分享链接访问</span>
+            ) : (
+              <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">
+                {canEditDocument ? "可编辑" : "只读"}
+              </span>
+            )}
+            {currentShareSettings?.isEnabled ? (
+              <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">
+                已启用分享
+              </span>
+            ) : null}
             {summaryLabel ? (
               <span className="max-w-full truncate rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">
                 {summaryLabel}
@@ -1442,11 +1497,23 @@ export function DocumentPage({
               hoveredCommentThreadId={hoveredCommentThreadId}
               onActivateCommentThread={setActiveCommentThreadId}
               onHoverCommentThread={setHoveredCommentThreadId}
-              onCreateCommentSelection={setPendingCommentAnchor}
-              readOnly={!isEditing}
+              onCreateCommentSelection={canCommentDocument ? setPendingCommentAnchor : undefined}
+              readOnly={!isEditing || !canEditDocument}
             />
           )}
         </article>
+        {canManageDocument ? (
+          <DocumentShareDialog
+            open={showShareDialog}
+            documentId={currentDocument.id}
+            currentVisibility={(currentDocument.visibility === "public" ? "public" : "private")}
+            onClose={() => setShowShareDialog(false)}
+            onSaved={({ visibility, share }) => {
+              setCurrentDocument((value) => ({ ...value, visibility }));
+              setCurrentShareSettings(share);
+            }}
+          />
+        ) : null}
         <ConfirmDialog
           open={showDeleteConfirm}
           title="确认删除文档"
@@ -1459,7 +1526,7 @@ export function DocumentPage({
           onConfirm={confirmDelete}
         />
       </section>
-      {!isPdfDocument ? (
+      {showCommentSidebar ? (
         <CommentSidebar
           threads={commentThreads}
           blockOrder={draftBlocks.map((block) => block.id)}

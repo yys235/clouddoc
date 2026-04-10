@@ -16,6 +16,7 @@ from app.models.space import Space
 
 
 client = TestClient(app)
+client.get("/api/auth/me")
 
 
 def cleanup_document(document_id: str) -> None:

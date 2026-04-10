@@ -70,7 +70,12 @@ def _thread_response(db: Session, thread: CommentThread) -> CommentThreadRespons
     )
 
 
-def list_comment_threads(db: Session, document_id: str) -> list[CommentThreadResponse]:
+def list_comment_threads(db: Session, document_id: str, user_id: str | None = None) -> list[CommentThreadResponse]:
+    from app.services.document_service import can_view_document
+
+    document = db.get(Document, document_id)
+    if document is None or not can_view_document(db, document, user_id):
+        return []
     threads = db.scalars(
         select(CommentThread)
         .where(CommentThread.document_id == document_id)
@@ -88,6 +93,9 @@ def create_comment_thread(
     document = db.get(Document, document_id)
     if document is None or document.is_deleted:
         raise ValueError("Document not found")
+    from app.services.document_service import can_comment_document
+    if not can_comment_document(db, document, author_id):
+        raise PermissionError("Not allowed to comment on document")
 
     anchor = payload.anchor
     thread = CommentThread(
@@ -134,6 +142,9 @@ def reply_comment_thread(
     document = db.get(Document, thread.document_id)
     if document is None:
         return None
+    from app.services.document_service import can_comment_document
+    if not can_comment_document(db, document, author_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed to reply to comment")
 
     parent_comment_id = payload.parent_comment_id
     parent_comment = None
@@ -172,10 +183,18 @@ def update_comment_thread_status(
     db: Session,
     thread_id: str,
     payload: CommentStatusUpdateRequest,
+    current_user_id: str,
 ) -> CommentThreadResponse | None:
+    from app.services.document_service import can_comment_document
+
     thread = db.get(CommentThread, thread_id)
     if thread is None:
         return None
+    document = db.get(Document, thread.document_id)
+    if document is None:
+        return None
+    if not can_comment_document(db, document, current_user_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed to update comment status")
     next_status = payload.status.strip().lower()
     if next_status not in {"open", "resolved"}:
         raise ValueError("Invalid comment thread status")

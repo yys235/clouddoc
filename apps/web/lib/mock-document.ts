@@ -11,9 +11,14 @@ export type DocumentViewModel = {
   title: string;
   ownerId: string;
   documentType: string;
+  visibility: string;
   updatedAt: string;
   saveStatus: string;
   isFavorited: boolean;
+  canEdit: boolean;
+  canManage: boolean;
+  canComment: boolean;
+  isSharedView: boolean;
   outline: Array<{ id: string; title: string; level: number }>;
   content: RichTextNode[];
   summary?: string;
@@ -46,8 +51,13 @@ export function buildDocumentViewModel(data: {
   title: string;
   owner_id: string;
   document_type?: string;
+  visibility?: string;
   updated_at?: string;
   is_favorited?: boolean;
+  can_edit?: boolean;
+  can_manage?: boolean;
+  can_comment?: boolean;
+  is_shared_view?: boolean;
   content?: { content_json?: { content?: RichTextNode[] } };
   summary?: string | null;
   file_url?: string | null;
@@ -61,6 +71,7 @@ export function buildDocumentViewModel(data: {
     title: data.title || "未命名文档",
     ownerId: data.owner_id,
     documentType: data.document_type || "doc",
+    visibility: data.visibility || "private",
     updatedAt: data.updated_at
       ? new Intl.DateTimeFormat("zh-CN", {
           month: "2-digit",
@@ -71,6 +82,10 @@ export function buildDocumentViewModel(data: {
       : "--",
     saveStatus: "已同步",
     isFavorited: Boolean(data.is_favorited),
+    canEdit: Boolean(data.can_edit),
+    canManage: Boolean(data.can_manage),
+    canComment: Boolean(data.can_comment),
+    isSharedView: Boolean(data.is_shared_view),
     outline: buildOutline(content),
     content,
     summary: data.summary ?? undefined,

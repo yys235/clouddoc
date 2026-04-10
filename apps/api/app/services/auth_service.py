@@ -185,6 +185,21 @@ def optional_current_user_dependency(
     return get_optional_current_user(request, response, db)
 
 
+def optional_current_user_no_fallback_dependency(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> User | None:
+    return resolve_current_user(
+        db,
+        request,
+        response,
+        require_authenticated=False,
+        allow_dev_fallback=False,
+        persist_dev_session=False,
+    )
+
+
 def register_user(db: Session, payload: RegisterRequest) -> User:
     email = payload.email.strip().lower()
     if "@" not in email:

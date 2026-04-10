@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     session_ttl_days: int = 14
     session_cookie_secure: bool = False
     session_cookie_samesite: str = 'lax'
+    app_secret_key: str = 'change-me-in-production'
+    share_cookie_prefix: str = 'clouddoc_share'
 
     model_config = SettingsConfigDict(env_file=str(ENV_FILE), extra='ignore')
 

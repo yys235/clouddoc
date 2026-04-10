@@ -28,7 +28,7 @@ export default async function DocumentDetailPage({
           <section className="rounded-3xl bg-white p-6 shadow-panel">
             <div className="text-sm font-medium text-accent">Document</div>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-              {unavailable ? "文档暂时不可用" : "文档不存在或已删除"}
+              {unavailable ? "文档暂时不可用" : "文档不存在、已删除或无权限访问"}
             </h1>
             <p className="mt-3 text-sm leading-6 text-slate-600">
               {unavailable

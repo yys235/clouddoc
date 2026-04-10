@@ -16,6 +16,7 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(255), default="Untitled")
     document_type: Mapped[str] = mapped_column(String(32), default="doc")
     status: Mapped[str] = mapped_column(String(32), default="draft")
+    visibility: Mapped[str] = mapped_column(String(16), default="private", index=True)
     icon: Mapped[str | None] = mapped_column(String(32), nullable=True)
     cover_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
