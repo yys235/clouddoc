@@ -1,25 +1,35 @@
 import { AppShell } from "@/components/layout/app-shell";
-import { DashboardPageFrame, DocumentListSection } from "@/components/dashboard/dashboard-sections";
-import { fetchDocuments } from "@/lib/api";
+import { FolderWorkspaceView } from "@/components/folders/folder-workspace-view";
+import { fetchSpaceRootChildren, fetchSpaces, fetchSpaceTree } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
-export default async function DocumentsPage() {
-  const { data: documents, unavailable } = await fetchDocuments("active");
+export default async function DocumentsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ space?: string }>;
+}) {
+  const { space: requestedSpaceId } = await searchParams;
+  const { data: spaces, unavailable: spacesUnavailable } = await fetchSpaces();
+  const selectedSpace = spaces.find((space) => space.id === requestedSpaceId) ?? spaces[0] ?? null;
+  const { data: rootChildren, unavailable: rootUnavailable } = selectedSpace
+    ? await fetchSpaceRootChildren(selectedSpace.id)
+    : { data: null, unavailable: false };
+  const { data: tree, unavailable: treeUnavailable } = selectedSpace
+    ? await fetchSpaceTree(selectedSpace.id)
+    : { data: [], unavailable: false };
 
   return (
     <AppShell>
-      <DashboardPageFrame
-        title="我的文档"
-        description="集中查看当前可用的活跃文档，并从这里进入文档详情页。"
-        apiUnavailable={unavailable}
-      >
-        <DocumentListSection
-          title="文档列表"
-          documents={documents}
-          emptyText="当前还没有可用文档。"
-        />
-      </DashboardPageFrame>
+      <FolderWorkspaceView
+        spaces={spaces}
+        selectedSpace={selectedSpace}
+        tree={tree}
+        currentChildren={rootChildren}
+        currentFolder={null}
+        ancestors={[]}
+        apiUnavailable={spacesUnavailable || rootUnavailable || treeUnavailable}
+      />
     </AppShell>
   );
 }

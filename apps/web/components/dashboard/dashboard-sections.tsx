@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
-import { CurrentOrganization, DashboardDocument, OrganizationMember, SpaceSummary } from "@/lib/api";
+import { CurrentOrganization, DashboardDocument, OrganizationMember, SpaceSummary, TreeNode } from "@/lib/api";
 
 function statusLabel(status: string) {
   return status === "published" ? "已发布" : "草稿";
@@ -105,6 +105,77 @@ export function SpacesSection({ spaces }: { spaces: SpaceSummary[] }) {
               <div className="rounded-lg bg-mist px-3 py-1 text-xs font-medium text-slate-600">
                 {space.updatedAt}
               </div>
+            </div>
+          ))
+        ) : (
+          <p className="text-sm leading-6 text-slate-600">当前还没有可用空间。</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SpaceTreeNodes({ nodes, level = 0 }: { nodes: TreeNode[]; level?: number }) {
+  if (nodes.length === 0) {
+    return <p className="text-xs leading-5 text-slate-500">当前空间暂无目录内容。</p>;
+  }
+
+  return (
+    <div className="space-y-1">
+      {nodes.map((node) => (
+        <div key={`${node.nodeType}-${node.id}`} style={{ paddingLeft: level * 14 }}>
+          <Link
+            href={node.nodeType === "folder" ? `/folders/${node.id}` : `/docs/${node.id}`}
+            className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50 hover:text-accent"
+          >
+            <span className="text-slate-400">{node.nodeType === "folder" ? "📁" : "📄"}</span>
+            <span className="min-w-0 flex-1 truncate">{node.title}</span>
+            <span className="shrink-0 text-xs text-slate-400">
+              {node.nodeType === "folder" ? "文件夹" : node.documentType || "文档"}
+            </span>
+          </Link>
+          {node.children.length > 0 ? <SpaceTreeNodes nodes={node.children} level={level + 1} /> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function SpacesDirectorySection({
+  items,
+}: {
+  items: Array<{ space: SpaceSummary; tree: TreeNode[] }>;
+}) {
+  return (
+    <section className="rounded-3xl bg-white p-5 shadow-panel">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold">空间目录</h2>
+          <p className="mt-1 text-sm text-slate-500">按空间查看当前文件夹和文档层级。</p>
+        </div>
+        <Link href="/documents" className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+          打开我的文档
+        </Link>
+      </div>
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        {items.length > 0 ? (
+          items.map((item) => (
+            <div key={item.space.id} className="rounded-2xl border border-slate-100 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-slate-900">{item.space.name}</div>
+                  <div className="mt-0.5 text-xs text-slate-500">
+                    {item.space.spaceType === "team" ? "团队空间" : "个人空间"} · {item.space.visibility}
+                  </div>
+                </div>
+                <Link
+                  href={`/documents?space=${item.space.id}`}
+                  className="shrink-0 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                >
+                  进入
+                </Link>
+              </div>
+              <SpaceTreeNodes nodes={item.tree} />
             </div>
           ))
         ) : (

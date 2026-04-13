@@ -6,6 +6,8 @@ from app.models.document import (
     DocumentPermission,
     DocumentVersion,
 )
+from app.models.folder import Folder
+from app.models.mcp import MCPAuditLog
 from app.models.notification import UserNotification
 from app.models.organization import Organization, OrganizationInvitation, OrganizationMember
 from app.models.session import UserSession
@@ -22,6 +24,8 @@ __all__ = [
     "DocumentFavorite",
     "DocumentPermission",
     "DocumentVersion",
+    "Folder",
+    "MCPAuditLog",
     "UserNotification",
     "Organization",
     "OrganizationInvitation",

@@ -421,7 +421,7 @@ def test_comment_thread_removed_when_quoted_text_deleted() -> None:
         cleanup_document(document_id)
 
 
-def test_public_document_is_accessible_without_auth() -> None:
+def test_public_document_is_not_accessible_through_normal_api_without_owner_session() -> None:
     db = SessionLocal()
     try:
         space = db.scalar(select(Space).limit(1))
@@ -456,10 +456,12 @@ def test_public_document_is_accessible_without_auth() -> None:
         assert update_response.json()["visibility"] == "public"
 
         public_detail = anonymous_client.get(f"/api/documents/{document_id}")
-        assert public_detail.status_code == 200
-        assert public_detail.json()["visibility"] == "public"
-        assert public_detail.json()["can_edit"] is False
-        assert public_detail.json()["is_shared_view"] is False
+        assert public_detail.status_code == 404
+
+        owner_detail = client.get(f"/api/documents/{document_id}")
+        assert owner_detail.status_code == 200
+        assert owner_detail.json()["visibility"] == "public"
+        assert owner_detail.json()["is_shared_view"] is False
     finally:
         cleanup_document(document_id)
 
@@ -592,7 +594,7 @@ def test_share_rotate_disable_and_expire_flow() -> None:
         cleanup_document(document_id)
 
 
-def test_comment_delete_permissions_for_author_and_document_owner() -> None:
+def test_comment_delete_permissions_for_author_only() -> None:
     owner_email = f"pytest-owner-{uuid4()}@example.com"
     commenter_email = f"pytest-commenter-{uuid4()}@example.com"
     outsider_email = f"pytest-outsider-{uuid4()}@example.com"
@@ -625,7 +627,7 @@ def test_comment_delete_permissions_for_author_and_document_owner() -> None:
 
     try:
         grant_document_edit_permission(document_id, commenter_email)
-        thread_response = commenter_client.post(
+        forbidden_comment_response = commenter_client.post(
             f"/api/documents/{document_id}/comments",
             json={
                 "anchor": {
@@ -636,7 +638,23 @@ def test_comment_delete_permissions_for_author_and_document_owner() -> None:
                     "prefix_text": "",
                     "suffix_text": "",
                 },
-                "body": "owner can delete this",
+                "body": "commenter cannot comment on another user's document",
+            },
+        )
+        assert forbidden_comment_response.status_code == 403
+
+        thread_response = owner_client.post(
+            f"/api/documents/{document_id}/comments",
+            json={
+                "anchor": {
+                    "block_id": "block-a",
+                    "start_offset": 0,
+                    "end_offset": 4,
+                    "quote_text": "test",
+                    "prefix_text": "",
+                    "suffix_text": "",
+                },
+                "body": "author can delete this",
             },
         )
         assert thread_response.status_code == 200
@@ -645,30 +663,12 @@ def test_comment_delete_permissions_for_author_and_document_owner() -> None:
         forbidden_response = outsider_client.delete(f"/api/comments/{first_comment_id}")
         assert forbidden_response.status_code == 403
 
-        owner_delete_response = owner_client.delete(f"/api/comments/{first_comment_id}")
-        assert owner_delete_response.status_code == 200
-        assert owner_delete_response.json()["thread_deleted"] is True
+        commenter_delete_response = commenter_client.delete(f"/api/comments/{first_comment_id}")
+        assert commenter_delete_response.status_code == 403
 
-        second_thread_response = commenter_client.post(
-            f"/api/documents/{document_id}/comments",
-            json={
-                "anchor": {
-                    "block_id": "block-b",
-                    "start_offset": 0,
-                    "end_offset": 4,
-                    "quote_text": "self",
-                    "prefix_text": "",
-                    "suffix_text": "",
-                },
-                "body": "self delete",
-            },
-        )
-        assert second_thread_response.status_code == 200
-        second_comment_id = second_thread_response.json()["comments"][0]["id"]
-
-        self_delete_response = commenter_client.delete(f"/api/comments/{second_comment_id}")
-        assert self_delete_response.status_code == 200
-        assert self_delete_response.json()["thread_deleted"] is True
+        author_delete_response = owner_client.delete(f"/api/comments/{first_comment_id}")
+        assert author_delete_response.status_code == 200
+        assert author_delete_response.json()["thread_deleted"] is True
     finally:
         cleanup_document(document_id)
         cleanup_user(owner_email)
@@ -676,7 +676,7 @@ def test_comment_delete_permissions_for_author_and_document_owner() -> None:
         cleanup_user(outsider_email)
 
 
-def test_comment_notifications_flow() -> None:
+def test_cross_user_comment_is_blocked_by_owner_only_document_api() -> None:
     owner_email = f"pytest-notify-owner-{uuid4()}@example.com"
     commenter_email = f"pytest-notify-commenter-{uuid4()}@example.com"
     password = "pytest-pass-123"
@@ -721,27 +721,11 @@ def test_comment_notifications_flow() -> None:
                 "body": "@Notify Owner 请处理这个评论",
             },
         )
-        assert thread_response.status_code == 200
-        thread_id = thread_response.json()["id"]
+        assert thread_response.status_code == 403
 
-        list_response = owner_client.get("/api/notifications")
+        list_response = commenter_client.get(f"/api/documents/{document_id}/comments")
         assert list_response.status_code == 200
-        notifications = list_response.json()
-        assert len(notifications) >= 1
-        assert notifications[0]["thread_id"] == thread_id
-        assert notifications[0]["document_id"] == document_id
-
-        unread_response = owner_client.get("/api/notifications/unread-count")
-        assert unread_response.status_code == 200
-        assert unread_response.json()["unread_count"] >= 1
-
-        notification_id = notifications[0]["id"]
-        mark_read_response = owner_client.post(f"/api/notifications/{notification_id}/read")
-        assert mark_read_response.status_code == 200
-        assert mark_read_response.json()["is_read"] is True
-
-        mark_all_response = owner_client.post("/api/notifications/read-all")
-        assert mark_all_response.status_code == 204
+        assert list_response.json() == []
     finally:
         cleanup_document(document_id)
         cleanup_user(owner_email)

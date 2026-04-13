@@ -14,7 +14,9 @@ from app.schemas.document import (
     SearchResult,
     UploadedAssetResponse,
 )
+from app.schemas.folder import AncestorItem
 from app.services.auth_service import (
+    optional_current_user_dependency,
     optional_current_user_no_fallback_dependency,
     require_current_user_dependency,
 )
@@ -24,7 +26,9 @@ from app.services.document_service import (
     favorite_document,
     fetch_link_preview,
     get_document_detail,
+    list_document_ancestors,
     list_documents,
+    move_document,
     restore_document,
     search_documents,
     soft_delete_document,
@@ -40,7 +44,7 @@ router = APIRouter()
 def list_documents_route(
     state: str = Query(default="active", pattern="^(active|trash|all)$"),
     db: Session = Depends(get_db),
-    current_user: User | None = Depends(optional_current_user_no_fallback_dependency),
+    current_user: User | None = Depends(optional_current_user_dependency),
 ) -> list[DocumentSummary]:
     return list_documents(db, state=state, user_id=current_user.id if current_user else None)
 
@@ -49,7 +53,7 @@ def list_documents_route(
 def search_documents_route(
     q: str = Query(default="", min_length=0),
     db: Session = Depends(get_db),
-    current_user: User | None = Depends(optional_current_user_no_fallback_dependency),
+    current_user: User | None = Depends(optional_current_user_dependency),
 ) -> list[SearchResult]:
     return search_documents(db, q, user_id=current_user.id if current_user else None)
 
@@ -71,6 +75,7 @@ def create_document_route(
 @router.post("/upload-pdf", response_model=DocumentDetail)
 async def upload_pdf_document_route(
     space_id: str = Form(...),
+    folder_id: str | None = Form(default=None),
     title: str | None = Form(default=None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -89,6 +94,7 @@ async def upload_pdf_document_route(
             current_user_id=current_user.id,
             title=title or "",
             space_id=space_id,
+            folder_id=folder_id,
             file_name=file.filename or "upload.pdf",
             file_bytes=file_bytes,
         )
@@ -152,6 +158,38 @@ def update_document_content_route(
         document = update_document_content(db, doc_id, payload, current_user.id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return document
+
+
+@router.get("/{doc_id}/ancestors", response_model=list[AncestorItem])
+def document_ancestors_route(
+    doc_id: str,
+    db: Session = Depends(get_db),
+    current_user: User | None = Depends(optional_current_user_dependency),
+) -> list[AncestorItem]:
+    return list_document_ancestors(db, doc_id, current_user.id if current_user else None)
+
+
+@router.post("/{doc_id}/move", response_model=DocumentDetail)
+def move_document_route(
+    doc_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> DocumentDetail:
+    try:
+        document = move_document(
+            db,
+            doc_id,
+            folder_id=payload.get("folder_id"),
+            current_user_id=current_user.id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return document

@@ -57,10 +57,26 @@ CREATE TABLE IF NOT EXISTS spaces (
     CONSTRAINT chk_space_visibility CHECK (visibility IN ('private', 'organization', 'public'))
 );
 
+CREATE TABLE IF NOT EXISTS folders (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    space_id UUID NOT NULL REFERENCES spaces(id),
+    parent_folder_id UUID REFERENCES folders(id),
+    creator_id UUID NOT NULL REFERENCES users(id),
+    owner_id UUID NOT NULL REFERENCES users(id),
+    title VARCHAR(255) NOT NULL DEFAULT '未命名文件夹',
+    visibility VARCHAR(16) NOT NULL DEFAULT 'private',
+    icon VARCHAR(32),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     space_id UUID NOT NULL REFERENCES spaces(id),
     parent_id UUID REFERENCES documents(id),
+    folder_id UUID REFERENCES folders(id),
     creator_id UUID NOT NULL REFERENCES users(id),
     owner_id UUID NOT NULL REFERENCES users(id),
     title VARCHAR(255) NOT NULL DEFAULT 'Untitled',
@@ -68,6 +84,7 @@ CREATE TABLE IF NOT EXISTS documents (
     status VARCHAR(32) NOT NULL DEFAULT 'draft',
     visibility VARCHAR(16) NOT NULL DEFAULT 'private',
     icon VARCHAR(32),
+    sort_order INTEGER NOT NULL DEFAULT 0,
     cover_url VARCHAR(512),
     summary TEXT,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
@@ -217,6 +234,20 @@ CREATE TABLE IF NOT EXISTS templates (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS mcp_audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_type VARCHAR(32) NOT NULL DEFAULT 'user',
+    actor_id UUID REFERENCES users(id),
+    tool_name VARCHAR(128) NOT NULL,
+    target_type VARCHAR(64),
+    target_id VARCHAR(128),
+    request_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    response_status VARCHAR(32) NOT NULL DEFAULT 'success',
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_org_members_org ON organization_members(organization_id);
 CREATE INDEX IF NOT EXISTS idx_org_members_user ON organization_members(user_id);
@@ -225,6 +256,10 @@ CREATE INDEX IF NOT EXISTS idx_org_invitations_email ON organization_invitations
 CREATE INDEX IF NOT EXISTS idx_spaces_owner ON spaces(owner_id);
 CREATE INDEX IF NOT EXISTS idx_documents_space ON documents(space_id);
 CREATE INDEX IF NOT EXISTS idx_documents_parent ON documents(parent_id);
+CREATE INDEX IF NOT EXISTS idx_documents_folder ON documents(folder_id);
+CREATE INDEX IF NOT EXISTS idx_documents_sort_order ON documents(sort_order);
+CREATE INDEX IF NOT EXISTS idx_folders_space ON folders(space_id);
+CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_folder_id);
 CREATE INDEX IF NOT EXISTS idx_documents_owner ON documents(owner_id);
 CREATE INDEX IF NOT EXISTS idx_documents_visibility ON documents(visibility);
 CREATE INDEX IF NOT EXISTS idx_documents_deleted ON documents(is_deleted);
@@ -247,4 +282,7 @@ CREATE INDEX IF NOT EXISTS idx_user_notifications_read ON user_notifications(is_
 CREATE INDEX IF NOT EXISTS idx_user_notifications_thread ON user_notifications(thread_id);
 CREATE INDEX IF NOT EXISTS idx_share_links_document ON share_links(document_id);
 CREATE INDEX IF NOT EXISTS idx_templates_org ON templates(organization_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_actor ON mcp_audit_logs(actor_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_tool ON mcp_audit_logs(tool_name);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_target ON mcp_audit_logs(target_id);
 CREATE INDEX IF NOT EXISTS idx_document_contents_search ON document_contents USING GIN (to_tsvector('simple', plain_text));

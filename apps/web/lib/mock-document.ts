@@ -13,6 +13,9 @@ export type DocumentViewModel = {
   documentType: string;
   visibility: string;
   updatedAt: string;
+  spaceId?: string;
+  folderId?: string;
+  sortOrder?: number;
   saveStatus: string;
   isFavorited: boolean;
   canEdit: boolean;
@@ -53,6 +56,9 @@ export function buildDocumentViewModel(data: {
   document_type?: string;
   visibility?: string;
   updated_at?: string;
+  space_id?: string;
+  folder_id?: string | null;
+  sort_order?: number;
   is_favorited?: boolean;
   can_edit?: boolean;
   can_manage?: boolean;
@@ -72,6 +78,9 @@ export function buildDocumentViewModel(data: {
     ownerId: data.owner_id,
     documentType: data.document_type || "doc",
     visibility: data.visibility || "private",
+    spaceId: data.space_id ?? undefined,
+    folderId: data.folder_id ?? undefined,
+    sortOrder: data.sort_order ?? 0,
     updatedAt: data.updated_at
       ? new Intl.DateTimeFormat("zh-CN", {
           month: "2-digit",

@@ -17,6 +17,7 @@ export function CommentSelectionToolbar({
 
   return (
     <div
+      data-editor-floating-window="true"
       className="fixed z-40"
       style={{
         top: selection.top,

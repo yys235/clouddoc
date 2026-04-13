@@ -205,7 +205,7 @@ def update_comment_thread_status(
 
 
 def _can_manage_comment(db: Session, document: Document, current_user_id: str, comment: Comment) -> bool:
-    return comment.author_id == current_user_id or document.owner_id == current_user_id
+    return comment.author_id == current_user_id
 
 
 def _delete_thread_notifications(db: Session, thread_id: str) -> None:

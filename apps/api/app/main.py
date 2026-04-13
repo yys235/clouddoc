@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.core.db import SessionLocal, init_db
 from app.services.bootstrap_service import ensure_runtime_schema, seed_demo_data
 from app.services.document_service import ensure_supported_document_types
+from app.services.folder_service import ensure_default_newdoc_folders
 
 
 @asynccontextmanager
@@ -21,6 +22,7 @@ async def lifespan(_: FastAPI):
         ensure_runtime_schema(db)
         ensure_supported_document_types(db)
         seed_demo_data(db)
+        ensure_default_newdoc_folders(db)
     finally:
         db.close()
     yield

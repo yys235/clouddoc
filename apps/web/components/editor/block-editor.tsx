@@ -463,10 +463,9 @@ function LinkPreviewBlock({ block, readOnly }: { block: EditableBlock; readOnly:
           href={preview.href || undefined}
           target="_blank"
           rel="noreferrer"
-          className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white/85 px-4 py-3 text-sm text-slate-700 transition hover:border-slate-300"
+          className="inline text-base leading-8 text-sky-600 underline underline-offset-2 transition hover:text-sky-700"
         >
-          <span className="text-base text-sky-600">🔗</span>
-          <span className="truncate">{preview.href || preview.title}</span>
+          {preview.title || preview.href}
         </a>
       );
     }
@@ -526,7 +525,7 @@ function LinkPreviewBlock({ block, readOnly }: { block: EditableBlock; readOnly:
   })();
 
   return (
-    <div className={`${readOnly ? "" : "mb-2"}`}>
+    <div>
       {previewBody}
       {preview.status === "error" ? (
         <div className="mt-2 text-xs text-rose-500">链接信息抓取失败，可点击刷新重试。</div>
@@ -806,6 +805,47 @@ export function BlockEditor({
       window.removeEventListener("keydown", handleEscape);
     };
   }, [commandMenu]);
+
+  useEffect(() => {
+    if (!commandMenu && !linkViewMenuBlockId && !visibleToolbarBlockId && !selectionToolbar) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+
+      if (target.closest('[data-editor-floating-window="true"]')) {
+        return;
+      }
+
+      const isBlockHandleClick = Object.values(handleButtonRefs.current).some((element) =>
+        element?.contains(target),
+      );
+      if (isBlockHandleClick) {
+        return;
+      }
+
+      if (commandMenu) {
+        closeCommandMenuWithFade(commandMenu.blockId);
+      }
+      if (linkViewMenuBlockId) {
+        setLinkViewMenuBlockId(null);
+      }
+      if (visibleToolbarBlockId) {
+        setVisibleToolbarBlockId(null);
+      }
+      if (selectionToolbar) {
+        setSelectionToolbar(null);
+      }
+      setPinnedCommandMenuBlockId(null);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [commandMenu, linkViewMenuBlockId, selectionToolbar, visibleToolbarBlockId]);
 
   useEffect(() => {
     if (!commandMenu || commandMenu.mode !== "actions") {
@@ -1565,6 +1605,7 @@ export function BlockEditor({
         }));
         return (
           <div
+            id={block.id}
             key={block.id}
             data-block-id={block.id}
             className={`group relative ${
@@ -1702,9 +1743,10 @@ export function BlockEditor({
                   {blockThreads.length}评
                 </button>
               ) : null}
-            {showLinkToolbar ? (
+              {showLinkToolbar ? (
                 <div
-                  className="mb-2 flex items-center gap-1.5"
+                  data-editor-floating-window="true"
+                  className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded-lg border border-slate-200 bg-white/95 p-1 shadow-[0_12px_30px_rgba(15,23,42,0.12)] backdrop-blur-sm"
                   onPointerEnter={() => showToolbar(block.id)}
                   onPointerLeave={() => hideToolbarWithDelay(block.id)}
                 >
@@ -1726,7 +1768,7 @@ export function BlockEditor({
                       onClick={() =>
                         setLinkViewMenuBlockId((current) => (current === block.id ? null : block.id))
                       }
-                      className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 transition hover:border-slate-300"
+                      className="flex h-8 items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-700 transition hover:border-slate-300"
                     >
                       <span>{LINK_VIEW_OPTIONS.find((option) => option.value === preview?.view)?.label ?? "链接视图"}</span>
                       <span className={`text-xs text-slate-400 transition ${linkViewMenuBlockId === block.id ? "rotate-180" : ""}`}>
@@ -1734,7 +1776,7 @@ export function BlockEditor({
                       </span>
                     </button>
                     {linkViewMenuBlockId === block.id ? (
-                      <div className="absolute left-0 top-[calc(100%+6px)] z-30 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
+                      <div className="absolute right-0 top-[calc(100%+8px)] z-30 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
                         {LINK_VIEW_OPTIONS.map((option) => (
                           <button
                             key={option.value}
@@ -1828,6 +1870,7 @@ export function BlockEditor({
               {!readOnly && commandMenu?.blockId === block.id ? (
                 <div
                   ref={commandMenuRef}
+                  data-editor-floating-window="true"
                   className={`fixed z-30 w-[228px] overflow-hidden rounded-lg border border-slate-200 bg-white p-0 shadow-[0_18px_45px_rgba(15,23,42,0.12)] transition duration-180 ease-out ${
                     closingCommandMenuBlockId === block.id
                       ? "pointer-events-none -translate-y-1 opacity-0"

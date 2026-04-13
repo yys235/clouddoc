@@ -62,6 +62,7 @@ export type DashboardDocument = {
   isFavorited: boolean;
   visibility: string;
   canManage: boolean;
+  folderId?: string;
 };
 
 export type SearchDocument = {
@@ -166,6 +167,45 @@ export type SpaceSummary = {
   spaceType: string;
   visibility: string;
   updatedAt: string;
+};
+
+export type FolderSummary = {
+  id: string;
+  spaceId: string;
+  parentFolderId?: string;
+  title: string;
+  visibility: string;
+  icon?: string;
+  sortOrder: number;
+  isDeleted: boolean;
+  updatedAt: string;
+  canManage: boolean;
+};
+
+export type TreeNode = {
+  id: string;
+  nodeType: "folder" | "document";
+  title: string;
+  spaceId: string;
+  parentFolderId?: string;
+  sortOrder: number;
+  visibility: string;
+  updatedAt: string;
+  canManage: boolean;
+  documentType?: string;
+  isDeleted: boolean;
+  children: TreeNode[];
+};
+
+export type FolderChildrenResult = {
+  folder: FolderSummary | null;
+  children: TreeNode[];
+};
+
+export type AncestorItem = {
+  id: string;
+  nodeType: "folder";
+  title: string;
 };
 
 export type ApiListResult<T> = {
@@ -841,6 +881,7 @@ export async function fetchDocuments(state = "active"): Promise<ApiListResult<Da
       is_favorited: boolean;
       visibility: string;
       can_manage: boolean;
+      folder_id?: string | null;
     }>;
 
     return {
@@ -852,6 +893,7 @@ export async function fetchDocuments(state = "active"): Promise<ApiListResult<Da
         isFavorited: item.is_favorited,
         visibility: item.visibility,
         canManage: Boolean(item.can_manage),
+        folderId: item.folder_id ?? undefined,
         updatedAt: new Intl.DateTimeFormat("zh-CN", {
           month: "2-digit",
           day: "2-digit",
@@ -1019,10 +1061,200 @@ export async function fetchSpaces(): Promise<ApiListResult<SpaceSummary>> {
   }
 }
 
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function buildTreeNode(item: {
+  id: string;
+  node_type: "folder" | "document";
+  title: string;
+  space_id: string;
+  parent_folder_id?: string | null;
+  sort_order?: number;
+  visibility: string;
+  updated_at: string;
+  can_manage: boolean;
+  document_type?: string | null;
+  is_deleted: boolean;
+  children?: Array<any>;
+}): TreeNode {
+  return {
+    id: item.id,
+    nodeType: item.node_type,
+    title: item.title,
+    spaceId: item.space_id,
+    parentFolderId: item.parent_folder_id ?? undefined,
+    sortOrder: item.sort_order ?? 0,
+    visibility: item.visibility,
+    updatedAt: formatDateTime(item.updated_at),
+    canManage: Boolean(item.can_manage),
+    documentType: item.document_type ?? undefined,
+    isDeleted: Boolean(item.is_deleted),
+    children: (item.children ?? []).map(buildTreeNode),
+  };
+}
+
+function buildFolderSummary(item: {
+  id: string;
+  space_id: string;
+  parent_folder_id?: string | null;
+  title: string;
+  visibility: string;
+  icon?: string | null;
+  sort_order: number;
+  is_deleted: boolean;
+  updated_at: string;
+  can_manage: boolean;
+}): FolderSummary {
+  return {
+    id: item.id,
+    spaceId: item.space_id,
+    parentFolderId: item.parent_folder_id ?? undefined,
+    title: item.title,
+    visibility: item.visibility,
+    icon: item.icon ?? undefined,
+    sortOrder: item.sort_order,
+    isDeleted: Boolean(item.is_deleted),
+    updatedAt: formatDateTime(item.updated_at),
+    canManage: Boolean(item.can_manage),
+  };
+}
+
+export async function fetchSpaceRootChildren(spaceId: string): Promise<ApiItemResult<FolderChildrenResult>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/spaces/${spaceId}/root-children`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: null, unavailable: true };
+    }
+    const data = await response.json();
+    return {
+      data: {
+        folder: data.folder ? buildFolderSummary(data.folder) : null,
+        children: (data.children ?? []).map(buildTreeNode),
+      },
+      unavailable: false,
+    };
+  } catch {
+    return { data: null, unavailable: true };
+  }
+}
+
+export async function fetchSpaceTree(spaceId: string): Promise<ApiListResult<TreeNode>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/spaces/${spaceId}/tree`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return {
+      data: (data ?? []).map(buildTreeNode),
+      unavailable: false,
+    };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
+export async function fetchFolder(folderId: string): Promise<ApiItemResult<FolderSummary>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/folders/${folderId}`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: null, unavailable: true };
+    }
+    return { data: buildFolderSummary(await response.json()), unavailable: false };
+  } catch {
+    return { data: null, unavailable: true };
+  }
+}
+
+export async function fetchFolderChildren(folderId: string): Promise<ApiItemResult<FolderChildrenResult>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/folders/${folderId}/children`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: null, unavailable: true };
+    }
+    const data = await response.json();
+    return {
+      data: {
+        folder: data.folder ? buildFolderSummary(data.folder) : null,
+        children: (data.children ?? []).map(buildTreeNode),
+      },
+      unavailable: false,
+    };
+  } catch {
+    return { data: null, unavailable: true };
+  }
+}
+
+export async function fetchFolderAncestors(folderId: string): Promise<ApiListResult<AncestorItem>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/folders/${folderId}/ancestors`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return {
+      data: (data ?? []).map((item: { id: string; node_type: "folder"; title: string }) => ({
+        id: item.id,
+        nodeType: item.node_type,
+        title: item.title,
+      })),
+      unavailable: false,
+    };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
+export async function fetchDocumentAncestors(docId: string): Promise<ApiListResult<AncestorItem>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/ancestors`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return {
+      data: (data ?? []).map((item: { id: string; node_type: "folder"; title: string }) => ({
+        id: item.id,
+        nodeType: item.node_type,
+        title: item.title,
+      })),
+      unavailable: false,
+    };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
 export async function createDocument(input: {
   title: string;
   spaceId: string;
   parentId?: string | null;
+  folderId?: string | null;
   documentType?: string;
   visibility?: "private" | "public";
 }) {
@@ -1036,6 +1268,7 @@ export async function createDocument(input: {
       title: input.title,
       space_id: input.spaceId,
       parent_id: input.parentId ?? null,
+      folder_id: input.folderId ?? null,
       document_type: input.documentType ?? "doc",
       visibility: input.visibility ?? "private",
     }),
@@ -1055,10 +1288,12 @@ export async function createDocument(input: {
 export async function uploadPdfDocument(input: {
   title?: string;
   spaceId: string;
+  folderId?: string | null;
   file: File;
 }) {
   const formData = new FormData();
   formData.append("space_id", input.spaceId);
+  formData.append("folder_id", input.folderId ?? "");
   formData.append("title", input.title ?? "");
   formData.append("file", input.file);
 
@@ -1077,6 +1312,127 @@ export async function uploadPdfDocument(input: {
     ...data,
     file_url: resolveApiAssetUrl(data.file_url),
   });
+}
+
+export async function createFolder(input: {
+  title: string;
+  spaceId: string;
+  parentFolderId?: string | null;
+  visibility?: "private" | "public";
+}) {
+  const response = await apiFetch(`${API_BASE_URL}/folders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      title: input.title,
+      space_id: input.spaceId,
+      parent_folder_id: input.parentFolderId ?? null,
+      visibility: input.visibility ?? "private",
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to create folder");
+  }
+  return buildFolderSummary(await response.json());
+}
+
+export async function renameFolder(folderId: string, title: string, visibility?: "private" | "public") {
+  const response = await apiFetch(`${API_BASE_URL}/folders/${folderId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ title, visibility }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to rename folder");
+  }
+  return buildFolderSummary(await response.json());
+}
+
+export async function deleteFolder(folderId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/folders/${folderId}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error("Failed to delete folder");
+  }
+  return buildFolderSummary(await response.json());
+}
+
+export async function moveFolder(folderId: string, parentFolderId?: string | null) {
+  const response = await apiFetch(`${API_BASE_URL}/folders/${folderId}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ parent_folder_id: parentFolderId ?? null }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to move folder");
+  }
+  return buildFolderSummary(await response.json());
+}
+
+export async function moveDocumentToFolder(docId: string, folderId?: string | null) {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ folder_id: folderId ?? null }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to move document");
+  }
+  const data = await response.json();
+  return buildDocumentViewModel({
+    ...data,
+    file_url: resolveApiAssetUrl(data.file_url),
+  });
+}
+
+export async function bulkMoveNodes(input: {
+  spaceId: string;
+  targetFolderId?: string | null;
+  folderIds?: string[];
+  documentIds?: string[];
+}) {
+  const response = await apiFetch(`${API_BASE_URL}/folders/bulk-move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      space_id: input.spaceId,
+      target_folder_id: input.targetFolderId ?? null,
+      folder_ids: input.folderIds ?? [],
+      document_ids: input.documentIds ?? [],
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to bulk move nodes");
+  }
+  return response.json();
+}
+
+export async function reorderFolderChildren(input: {
+  spaceId: string;
+  parentFolderId?: string | null;
+  items: Array<{ id: string; nodeType: "folder" | "document" }>;
+}) {
+  const response = await apiFetch(`${API_BASE_URL}/folders/reorder`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      space_id: input.spaceId,
+      parent_folder_id: input.parentFolderId ?? null,
+      items: input.items.map((item) => ({ id: item.id, node_type: item.nodeType })),
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to reorder nodes");
+  }
+  return response.json();
 }
 
 export async function uploadImageAsset(file: File) {

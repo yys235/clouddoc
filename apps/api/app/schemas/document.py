@@ -15,6 +15,8 @@ class DocumentSummary(BaseModel):
     visibility: str
     updated_at: datetime
     space_id: str
+    folder_id: str | None = None
+    sort_order: int = 0
     is_deleted: bool = False
     is_favorited: bool = False
     can_edit: bool = False
@@ -43,6 +45,7 @@ class DocumentCreateRequest(BaseModel):
     title: str = "Untitled"
     space_id: str
     parent_id: str | None = None
+    folder_id: str | None = None
     document_type: str = "doc"
     visibility: str = "private"
 
@@ -145,6 +148,8 @@ class SearchResult(BaseModel):
     status: str
     document_type: str
     space_id: str
+    folder_id: str | None = None
+    sort_order: int = 0
     updated_at: datetime
     excerpt: str
     is_favorited: bool = False

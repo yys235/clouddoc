@@ -6,6 +6,7 @@ build
 *.pyc
 __pycache__
 .pytest_cache
+*.egg-info
 .venv
 .env
 apps/api/.env
@@ -16,4 +17,3 @@ uploads
 preview
 output/video_review_frames
 *.mp4
-

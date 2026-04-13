@@ -13,21 +13,21 @@ function sanitizeHeadingLevel(level: number | undefined) {
 function headingTextClassName(level: number | undefined) {
   const currentLevel = sanitizeHeadingLevel(level);
   if (currentLevel === 1) {
-    return "text-3xl font-semibold leading-tight tracking-tight text-slate-900";
+    return "text-[2rem] font-bold leading-[2.55rem] tracking-tight text-slate-950";
   }
   if (currentLevel === 2) {
-    return "text-[1.75rem] font-semibold leading-tight tracking-tight text-slate-900";
+    return "text-[1.65rem] font-bold leading-[2.25rem] tracking-tight text-slate-900";
   }
   if (currentLevel === 3) {
-    return "text-[1.45rem] font-semibold leading-tight tracking-tight text-slate-900";
+    return "text-[1.35rem] font-semibold leading-[2rem] tracking-tight text-slate-900";
   }
   if (currentLevel === 4) {
-    return "text-[1.2rem] font-semibold leading-8 tracking-tight text-slate-900";
+    return "text-[1.12rem] font-semibold leading-8 tracking-tight text-slate-800";
   }
   if (currentLevel === 5) {
-    return "text-[1.05rem] font-semibold leading-8 text-slate-800";
+    return "text-[0.98rem] font-semibold leading-7 text-slate-700";
   }
-  return "text-base font-semibold leading-8 text-slate-800";
+  return "text-[0.9rem] font-semibold uppercase leading-7 tracking-[0.12em] text-slate-500";
 }
 
 export function textAreaClassName(block: EditableBlock) {
@@ -63,6 +63,19 @@ export function textAreaClassName(block: EditableBlock) {
 }
 
 export function textSurfacePaddingClassName(block: EditableBlock) {
+  if (block.type === "heading") {
+    const level = sanitizeHeadingLevel(block.headingLevel);
+    if (level === 1) {
+      return "pt-5 pb-2";
+    }
+    if (level === 2) {
+      return "pt-4 pb-1.5";
+    }
+    if (level === 3) {
+      return "pt-3 pb-1";
+    }
+    return "pt-2 pb-0.5";
+  }
   return "";
 }
 
@@ -133,7 +146,13 @@ export function displayTextForBlock(block: EditableBlock) {
 }
 
 export function showsUnifiedTextSurface(block: EditableBlock, readOnly: boolean) {
-  return block.type !== "image" && block.type !== "divider" && !(readOnly && block.type === "link");
+  if (block.type === "image" || block.type === "divider") {
+    return false;
+  }
+  if (block.type === "link") {
+    return !block.text.trim() && !block.meta?.href && !block.meta?.title;
+  }
+  return true;
 }
 
 function readOnlyLineHeightRem(block: EditableBlock) {

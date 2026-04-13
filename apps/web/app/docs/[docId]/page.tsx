@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { DocumentPage } from "@/components/editor/document-page";
-import { fetchCurrentOrganization, fetchDocument, fetchOrganizationMembers } from "@/lib/api";
+import { fetchCurrentOrganization, fetchDocument, fetchDocumentAncestors, fetchOrganizationMembers, fetchSpaces } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -17,9 +17,12 @@ export default async function DocumentDetailPage({
   const { thread } = await searchParams;
   const { data: document, unavailable } = await fetchDocument(docId);
   const { data: currentOrganization } = await fetchCurrentOrganization();
+  const { data: spaces } = await fetchSpaces();
   const { data: organizationMembers } = currentOrganization
     ? await fetchOrganizationMembers(currentOrganization.id)
     : { data: [] };
+  const { data: ancestors } = document ? await fetchDocumentAncestors(docId) : { data: [] };
+  const currentSpaceName = document ? spaces.find((space) => space.id === document.spaceId)?.name ?? "空间" : "空间";
 
   if (!document) {
     return (
@@ -60,6 +63,8 @@ export default async function DocumentDetailPage({
       document={document}
       mentionCandidates={organizationMembers}
       initialActiveThreadId={thread ?? null}
+      breadcrumbs={ancestors}
+      spaceName={currentSpaceName}
     />
   );
 }

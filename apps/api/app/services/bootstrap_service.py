@@ -1,4 +1,4 @@
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from app.models.document import Document, DocumentContent, DocumentPermission, DocumentVersion
@@ -10,10 +10,12 @@ from app.services.auth_service import hash_password, is_password_hash_supported
 from app.services.document_service import build_default_content, extract_plain_text
 
 DEMO_DOCUMENT_ID = "11111111-1111-1111-1111-111111111111"
+MCP_GUEST_EMAIL = "guest@clouddoc.local"
 
 
 def seed_demo_data(db: Session) -> None:
-    existing_user = db.scalar(select(User).limit(1))
+    ensure_mcp_guest_user(db)
+    existing_user = db.scalar(select(User).where(User.email != MCP_GUEST_EMAIL).limit(1))
     if existing_user:
         if existing_user.email == "demo@clouddoc.local" and not is_password_hash_supported(existing_user.password_hash):
             existing_user.password_hash = hash_password("demo123456")
@@ -71,6 +73,7 @@ def seed_demo_data(db: Session) -> None:
         status="draft",
         visibility="private",
         icon="doc",
+        sort_order=1,
         summary="Structured cloud document with continuous document presentation.",
     )
     db.add(document)
@@ -106,6 +109,48 @@ def seed_demo_data(db: Session) -> None:
     )
     db.add_all(templates)
     db.commit()
+
+
+def ensure_mcp_guest_user(db: Session) -> User:
+    guest = db.scalar(select(User).where(User.email == MCP_GUEST_EMAIL).limit(1))
+    if guest is not None:
+        changed = False
+        if guest.name != "CloudDoc Guest":
+            guest.name = "CloudDoc Guest"
+            changed = True
+        if not guest.is_active:
+            guest.is_active = True
+            changed = True
+        if not is_password_hash_supported(guest.password_hash):
+            guest.password_hash = hash_password("guest-disabled-login")
+            changed = True
+        membership_delete = db.execute(delete(OrganizationMember).where(OrganizationMember.user_id == guest.id))
+        permission_delete = db.execute(
+            delete(DocumentPermission)
+            .where(DocumentPermission.subject_type == "user")
+            .where(DocumentPermission.subject_id == guest.id)
+        )
+        if changed or membership_delete.rowcount or permission_delete.rowcount:
+            db.commit()
+        return guest
+
+    guest = User(
+        name="CloudDoc Guest",
+        email=MCP_GUEST_EMAIL,
+        password_hash=hash_password("guest-disabled-login"),
+        is_active=True,
+    )
+    db.add(guest)
+    db.flush()
+    db.execute(delete(OrganizationMember).where(OrganizationMember.user_id == guest.id))
+    db.execute(
+        delete(DocumentPermission)
+        .where(DocumentPermission.subject_type == "user")
+        .where(DocumentPermission.subject_id == guest.id)
+    )
+    db.commit()
+    db.refresh(guest)
+    return guest
 
 
 def build_demo_templates(organization_id: str, source_document_id: str, created_by: str) -> list[Template]:
@@ -208,12 +253,62 @@ def seed_templates_if_missing(db: Session) -> None:
 
 
 def ensure_runtime_schema(db: Session) -> None:
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS folders (
+                id UUID PRIMARY KEY,
+                space_id UUID NOT NULL REFERENCES spaces(id),
+                parent_folder_id UUID REFERENCES folders(id),
+                creator_id UUID NOT NULL REFERENCES users(id),
+                owner_id UUID NOT NULL REFERENCES users(id),
+                title VARCHAR(255) NOT NULL DEFAULT '未命名文件夹',
+                visibility VARCHAR(16) NOT NULL DEFAULT 'private',
+                icon VARCHAR(32),
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_folders_space ON folders(space_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_folder_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_folders_deleted ON folders(is_deleted)"))
     db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'private'"))
+    db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0"))
+    db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS folder_id UUID REFERENCES folders(id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_visibility ON documents(visibility)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_folder ON documents(folder_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_sort_order ON documents(sort_order)"))
     db.execute(text("ALTER TABLE comments ADD COLUMN IF NOT EXISTS parent_comment_id UUID REFERENCES comments(id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id)"))
     db.execute(text("ALTER TABLE share_links ADD COLUMN IF NOT EXISTS password_hash TEXT"))
     db.execute(text("ALTER TABLE share_links ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE"))
     db.execute(text("ALTER TABLE share_links ADD COLUMN IF NOT EXISTS access_count INTEGER NOT NULL DEFAULT 0"))
     db.execute(text("ALTER TABLE share_links ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS mcp_audit_logs (
+                id UUID PRIMARY KEY,
+                actor_type VARCHAR(32) NOT NULL DEFAULT 'user',
+                actor_id UUID REFERENCES users(id),
+                tool_name VARCHAR(128) NOT NULL,
+                target_type VARCHAR(64),
+                target_id VARCHAR(128),
+                request_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                response_status VARCHAR(32) NOT NULL DEFAULT 'success',
+                error_message TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_mcp_audit_actor ON mcp_audit_logs(actor_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_mcp_audit_tool ON mcp_audit_logs(tool_name)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_mcp_audit_target ON mcp_audit_logs(target_id)"))
     db.commit()
+    ensure_mcp_guest_user(db)

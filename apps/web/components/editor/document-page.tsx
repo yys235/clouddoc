@@ -10,6 +10,7 @@ import { BlockEditor, EditableBlock } from "@/components/editor/block-editor";
 import { CommentSidebar } from "@/components/editor/comment-sidebar";
 import { DocumentShareDialog } from "@/components/editor/document-share-dialog";
 import {
+  type AncestorItem,
   createCommentThread,
   deleteComment,
   fetchCommentThreads,
@@ -691,16 +692,53 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
   };
 }
 
+type DraftHistorySnapshot = {
+  title: string;
+  blocks: EditableBlock[];
+};
+
+type DraftHistoryState = {
+  past: DraftHistorySnapshot[];
+  future: DraftHistorySnapshot[];
+};
+
+const DRAFT_HISTORY_LIMIT = 100;
+
+function cloneDraftBlocks(blocks: EditableBlock[]) {
+  return blocks.map((block) => ({
+    ...block,
+    meta: block.meta ? { ...block.meta } : undefined,
+  }));
+}
+
+function draftHistorySignature(snapshot: DraftHistorySnapshot) {
+  return JSON.stringify({
+    title: snapshot.title,
+    blocks: snapshot.blocks.map((block) => ({
+      id: block.id,
+      type: block.type,
+      text: block.text,
+      headingLevel: block.headingLevel ?? null,
+      imageAlign: block.imageAlign ?? null,
+      meta: block.meta ?? null,
+    })),
+  });
+}
+
 export function DocumentPage({
   document,
   mentionCandidates,
   initialActiveThreadId,
   shareSettings,
+  breadcrumbs,
+  spaceName,
 }: {
   document: DocumentViewModel;
   mentionCandidates: OrganizationMember[];
   initialActiveThreadId?: string | null;
   shareSettings?: ShareLinkSettings | null;
+  breadcrumbs?: AncestorItem[];
+  spaceName?: string;
 }) {
   const router = useRouter();
   const [currentDocument, setCurrentDocument] = useState(document);
@@ -723,6 +761,7 @@ export function DocumentPage({
   const [isMutating, startTransition] = useTransition();
   const [draftTitle, setDraftTitle] = useState(document.title);
   const [draftBlocks, setDraftBlocks] = useState(() => blocksFromDocument(document));
+  const [draftHistory, setDraftHistory] = useState<DraftHistoryState>({ past: [], future: [] });
   const savePromiseRef = useRef<Promise<boolean> | null>(null);
   const titleTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const isPdfDocument = currentDocument.documentType === "pdf";
@@ -752,6 +791,7 @@ export function DocumentPage({
     setCurrentDocument(document);
     setDraftTitle(document.title);
     setDraftBlocks(blocksFromDocument(document));
+    setDraftHistory({ past: [], future: [] });
     setModeLoadedForDocId(null);
     setNotice("");
     setShowDeleteConfirm(false);
@@ -978,6 +1018,107 @@ export function DocumentPage({
     savedSignature,
     isDirty,
   };
+
+  const captureDraftSnapshot = () => ({
+    title: latestRef.current.draftTitle,
+    blocks: cloneDraftBlocks(latestRef.current.draftBlocks),
+  });
+
+  const pushDraftHistory = (snapshot: DraftHistorySnapshot) => {
+    const signature = draftHistorySignature(snapshot);
+    setDraftHistory((current) => {
+      const lastSnapshot = current.past[current.past.length - 1];
+      if (lastSnapshot && draftHistorySignature(lastSnapshot) === signature) {
+        return { ...current, future: [] };
+      }
+      return {
+        past: [...current.past, snapshot].slice(-DRAFT_HISTORY_LIMIT),
+        future: [],
+      };
+    });
+  };
+
+  const applyDraftTitleChange = (nextTitle: string) => {
+    const previous = captureDraftSnapshot();
+    if (previous.title === nextTitle) {
+      return;
+    }
+    pushDraftHistory(previous);
+    setDraftTitle(nextTitle);
+  };
+
+  const applyDraftBlocksChange = (nextBlocks: EditableBlock[]) => {
+    const previous = captureDraftSnapshot();
+    const nextSnapshot = { title: previous.title, blocks: cloneDraftBlocks(nextBlocks) };
+    if (draftHistorySignature(previous) === draftHistorySignature(nextSnapshot)) {
+      return;
+    }
+    pushDraftHistory(previous);
+    setDraftBlocks(nextBlocks);
+  };
+
+  const undoDraftChange = () => {
+    const previous = draftHistory.past[draftHistory.past.length - 1];
+    if (!previous) {
+      return;
+    }
+
+    const currentSnapshot = captureDraftSnapshot();
+    setDraftTitle(previous.title);
+    setDraftBlocks(cloneDraftBlocks(previous.blocks));
+    setDraftHistory({
+      past: draftHistory.past.slice(0, -1),
+      future: [currentSnapshot, ...draftHistory.future].slice(0, DRAFT_HISTORY_LIMIT),
+    });
+  };
+
+  const redoDraftChange = () => {
+    const next = draftHistory.future[0];
+    if (!next) {
+      return;
+    }
+
+    const currentSnapshot = captureDraftSnapshot();
+    setDraftTitle(next.title);
+    setDraftBlocks(cloneDraftBlocks(next.blocks));
+    setDraftHistory({
+      past: [...draftHistory.past, currentSnapshot].slice(-DRAFT_HISTORY_LIMIT),
+      future: draftHistory.future.slice(1),
+    });
+  };
+
+  useEffect(() => {
+    const handleKeyboardHistory = (event: KeyboardEvent) => {
+      if (!isEditing || !canEditDocument || isPdfDocument) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      const isModifierPressed = event.metaKey || event.ctrlKey;
+      if (!isModifierPressed || event.altKey) {
+        return;
+      }
+
+      if (key === "z" && !event.shiftKey && draftHistory.past.length > 0) {
+        event.preventDefault();
+        undoDraftChange();
+        setNotice("已撤销");
+        return;
+      }
+
+      if ((key === "z" && event.shiftKey) || key === "y") {
+        if (draftHistory.future.length === 0) {
+          return;
+        }
+        event.preventDefault();
+        redoDraftChange();
+        setNotice("已重做");
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyboardHistory);
+    return () => window.removeEventListener("keydown", handleKeyboardHistory);
+  }, [canEditDocument, draftHistory.future.length, draftHistory.past.length, isEditing, isPdfDocument]);
 
   const resolveLinkPreview = async (blockId: string, rawUrl: string) => {
     const normalizedHref = normalizeExternalHref(rawUrl);
@@ -1290,7 +1431,16 @@ export function DocumentPage({
             <a
               key={item.id}
               href={`#${item.id}`}
-              className="block rounded-lg px-2.5 py-1.5 text-sm text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
+              style={{
+                paddingLeft: `${0.625 + Math.max(0, Math.min(5, item.level - 1)) * 0.75}rem`,
+              }}
+              className={`block rounded-lg py-1.5 pr-2.5 transition hover:bg-slate-100 hover:text-slate-800 ${
+                item.level <= 1
+                  ? "text-sm font-medium text-slate-600"
+                  : item.level === 2
+                    ? "text-sm text-slate-500"
+                    : "text-xs text-slate-400"
+              }`}
             >
               {item.title}
             </a>
@@ -1303,12 +1453,20 @@ export function DocumentPage({
           <div className="space-y-3">
             <div className="flex items-start justify-between gap-4">
               <nav className="flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-slate-400">
-                <Link href="/" className="transition hover:text-slate-700">
-                  产品空间
+                <Link href={`/documents${currentDocument.spaceId ? `?space=${currentDocument.spaceId}` : ""}`} className="transition hover:text-slate-700">
+                  {spaceName ?? "空间"}
                 </Link>
+                {(breadcrumbs ?? []).map((item) => (
+                  <div key={item.id} className="contents">
+                    <span>/</span>
+                    <Link href={`/folders/${item.id}`} className="transition hover:text-slate-700">
+                      {item.title}
+                    </Link>
+                  </div>
+                ))}
                 <span>/</span>
                 <Link href={`/docs/${currentDocument.id}`} className="transition hover:text-slate-700">
-                  云文档
+                  {currentDocument.title}
                 </Link>
               </nav>
               <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -1343,6 +1501,34 @@ export function DocumentPage({
                   >
                     删除
                   </button>
+                ) : null}
+                {canEditDocument ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={!isEditing || draftHistory.past.length === 0 || isSaving}
+                      onClick={() => {
+                        undoDraftChange();
+                        setNotice("已撤销");
+                      }}
+                      className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:opacity-45"
+                      title="撤销（⌘Z / Ctrl+Z）"
+                    >
+                      撤销
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!isEditing || draftHistory.future.length === 0 || isSaving}
+                      onClick={() => {
+                        redoDraftChange();
+                        setNotice("已重做");
+                      }}
+                      className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:opacity-45"
+                      title="重做（⌘⇧Z / Ctrl+Shift+Z / Ctrl+Y）"
+                    >
+                      重做
+                    </button>
+                  </div>
                 ) : null}
                 {canEditDocument ? (
                   <div
@@ -1424,7 +1610,7 @@ export function DocumentPage({
                 <textarea
                   ref={titleTextareaRef}
                   value={draftTitle}
-                  onChange={(event) => setDraftTitle(event.target.value)}
+                  onChange={(event) => applyDraftTitleChange(event.target.value)}
                   readOnly={!isEditing || !canEditDocument}
                   rows={1}
                   spellCheck={isEditing && canEditDocument}
@@ -1489,7 +1675,7 @@ export function DocumentPage({
           ) : (
             <BlockEditor
               blocks={draftBlocks}
-              onChange={setDraftBlocks}
+              onChange={applyDraftBlocksChange}
               onResolveLinkPreview={resolveLinkPreview}
               onUploadImage={uploadImages}
               commentThreads={commentThreads}

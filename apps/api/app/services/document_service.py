@@ -16,10 +16,17 @@ from app.models.document import (
     DocumentPermission,
     DocumentVersion,
 )
+from app.models.folder import Folder
 from app.models.organization import OrganizationMember
 from app.models.space import Space
 from app.models.user import User
+from app.schemas.folder import AncestorItem
 from app.services.comment_service import sync_comment_threads_with_content
+from app.services.folder_service import (
+    ensure_parent_folder_valid,
+    get_document_ancestors as get_document_folder_ancestors,
+    get_next_document_sort_order,
+)
 from app.schemas.document import (
     DocumentContentPayload,
     DocumentContentUpdateRequest,
@@ -266,32 +273,21 @@ def get_document_permission_levels(db: Session, document_id: str, user_id: str |
 def can_view_document(db: Session, document: Document, user_id: str | None) -> bool:
     if document.is_deleted:
         return False
-    if document.visibility == "public":
-        return True
     if user_id is None:
         return False
-    if document.owner_id == user_id or document.creator_id == user_id:
-        return True
-    permission_levels = get_document_permission_levels(db, document.id, user_id)
-    return bool(permission_levels & {"view", "edit", "manage"})
+    return document.owner_id == user_id or document.creator_id == user_id
 
 
 def can_edit_document(db: Session, document: Document, user_id: str | None) -> bool:
     if user_id is None:
         return False
-    if document.owner_id == user_id or document.creator_id == user_id:
-        return True
-    permission_levels = get_document_permission_levels(db, document.id, user_id)
-    return bool(permission_levels & {"edit", "manage"})
+    return document.owner_id == user_id or document.creator_id == user_id
 
 
 def can_manage_document(db: Session, document: Document, user_id: str | None) -> bool:
     if user_id is None:
         return False
-    if document.owner_id == user_id:
-        return True
-    permission_levels = get_document_permission_levels(db, document.id, user_id)
-    return "manage" in permission_levels
+    return document.owner_id == user_id or document.creator_id == user_id
 
 
 def can_comment_document(db: Session, document: Document, user_id: str | None) -> bool:
@@ -387,6 +383,8 @@ def build_document_detail_payload(
         visibility=document.visibility,
         updated_at=document.updated_at,
         space_id=document.space_id,
+        folder_id=document.folder_id,
+        sort_order=document.sort_order,
         is_deleted=document.is_deleted,
         is_favorited=document.id in get_favorite_document_ids(db, user_id),
         can_edit=can_edit,
@@ -423,7 +421,7 @@ def list_documents(db: Session, state: str = "active", user_id: str | None = Non
     elif state == "trash":
         statement = statement.where(Document.is_deleted.is_(True))
 
-    statement = statement.order_by(Document.updated_at.desc())
+    statement = statement.order_by(Document.sort_order.asc(), Document.updated_at.desc())
     return [
         DocumentSummary(
             id=doc.id,
@@ -434,6 +432,8 @@ def list_documents(db: Session, state: str = "active", user_id: str | None = Non
             visibility=doc.visibility,
             updated_at=doc.updated_at,
             space_id=doc.space_id,
+            folder_id=doc.folder_id,
+            sort_order=doc.sort_order,
             is_deleted=doc.is_deleted,
             is_favorited=doc.id in favorite_ids,
             can_edit=can_edit_document(db, doc, user_id),
@@ -479,7 +479,7 @@ def search_documents(db: Session, query: str, user_id: str | None = None) -> lis
                 DocumentContent.plain_text.ilike(f"%{normalized_query}%"),
             )
         )
-        .order_by(Document.updated_at.desc())
+        .order_by(Document.sort_order.asc(), Document.updated_at.desc())
     )
 
     results: list[SearchResult] = []
@@ -495,6 +495,8 @@ def search_documents(db: Session, query: str, user_id: str | None = None) -> lis
                 status=document.status,
                 document_type=document.document_type,
                 space_id=document.space_id,
+                folder_id=document.folder_id,
+                sort_order=document.sort_order,
                 updated_at=document.updated_at,
                 excerpt=build_search_excerpt(excerpt_source, normalized_query),
                 is_favorited=document.id in favorite_ids,
@@ -558,18 +560,22 @@ def create_document(db: Session, payload: DocumentCreateRequest, current_user_id
         raise ValueError("Unsupported document type")
     if payload.document_type != "doc":
         raise ValueError("Use the PDF upload endpoint for PDF documents")
+    ensure_parent_folder_valid(db, payload.space_id, payload.folder_id, current_user_id)
 
     owner_id = current_user_id
+    parent_folder = db.get(Folder, payload.folder_id) if payload.folder_id else None
     document = Document(
         space_id=payload.space_id,
         parent_id=payload.parent_id,
+        folder_id=payload.folder_id,
         creator_id=owner_id,
         owner_id=owner_id,
         title=payload.title or "Untitled",
         document_type=payload.document_type,
         status="draft",
-        visibility=payload.visibility if payload.visibility in {"private", "public"} else "private",
+        visibility=parent_folder.visibility if parent_folder else (payload.visibility if payload.visibility in {"private", "public"} else "private"),
         icon=payload.document_type,
+        sort_order=get_next_document_sort_order(db, payload.space_id, payload.folder_id),
     )
     db.add(document)
     db.flush()
@@ -609,6 +615,7 @@ def create_pdf_document(
     current_user_id: str,
     title: str,
     space_id: str,
+    folder_id: str | None,
     file_name: str,
     file_bytes: bytes,
 ) -> DocumentDetail:
@@ -617,6 +624,8 @@ def create_pdf_document(
         raise ValueError("Space not found")
     if not can_create_document_in_space(db, space, current_user_id):
         raise PermissionError("Not allowed to upload PDF to this space")
+
+    ensure_parent_folder_valid(db, space_id, folder_id, current_user_id)
 
     owner_id = current_user_id
     safe_name = Path(file_name).name
@@ -632,14 +641,16 @@ def create_pdf_document(
     document = Document(
         space_id=space_id,
         parent_id=None,
+        folder_id=folder_id,
         creator_id=owner_id,
         owner_id=owner_id,
         title=title or Path(safe_name).stem or "未命名 PDF",
         document_type="pdf",
         status="uploaded",
-        visibility="private",
+        visibility=parent_folder.visibility if folder_id and (parent_folder := db.get(Folder, folder_id)) else "private",
         icon="pdf",
         summary=safe_name,
+        sort_order=get_next_document_sort_order(db, space_id, folder_id),
     )
     db.add(document)
     db.flush()
@@ -671,6 +682,42 @@ def create_pdf_document(
     db.commit()
     db.refresh(document)
     return get_document_detail(db, document.id, owner_id)  # type: ignore[return-value]
+
+
+def move_document(
+    db: Session,
+    doc_id: str,
+    *,
+    folder_id: str | None,
+    current_user_id: str,
+) -> DocumentDetail | None:
+    document = db.get(Document, doc_id)
+    if document is None or document.is_deleted:
+        return None
+    if not can_manage_document(db, document, current_user_id):
+        raise PermissionError("Not allowed to move document")
+    if folder_id is not None:
+        target_folder = db.get(Folder, folder_id)
+        if target_folder is None or target_folder.is_deleted:
+            raise ValueError("Target folder not found")
+        if target_folder.space_id != document.space_id:
+            raise ValueError("Target folder is outside of the document space")
+        if not can_view_document(db, document, current_user_id):
+            raise PermissionError("Not allowed to move document")
+        document.visibility = target_folder.visibility
+    document.folder_id = folder_id
+    document.sort_order = get_next_document_sort_order(db, document.space_id, folder_id)
+    document.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(document)
+    return get_document_detail(db, document.id, current_user_id)
+
+
+def list_document_ancestors(db: Session, doc_id: str, user_id: str | None = None) -> list[AncestorItem]:
+    document = db.get(Document, doc_id)
+    if document is None or document.is_deleted or not can_view_document(db, document, user_id):
+        return []
+    return get_document_folder_ancestors(db, document, user_id)
 
 
 def upload_image_asset(*, file_name: str, file_bytes: bytes, content_type: str) -> dict[str, str | int]:

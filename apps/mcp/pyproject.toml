@@ -1,0 +1,14 @@
+[project]
+name = "clouddoc-mcp"
+version = "0.1.0"
+description = "Streamable HTTP MCP server for CloudDoc"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=1.0.0",
+]
+
+[project.scripts]
+clouddoc-mcp = "clouddoc_mcp.server:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

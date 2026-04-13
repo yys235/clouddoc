@@ -11,6 +11,7 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     space_id: Mapped[str] = mapped_column(ForeignKey("spaces.id"), index=True)
     parent_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id"), nullable=True, index=True)
+    folder_id: Mapped[str | None] = mapped_column(ForeignKey("folders.id"), nullable=True, index=True)
     creator_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     title: Mapped[str] = mapped_column(String(255), default="Untitled")
@@ -18,6 +19,7 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(32), default="draft")
     visibility: Mapped[str] = mapped_column(String(16), default="private", index=True)
     icon: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     cover_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
