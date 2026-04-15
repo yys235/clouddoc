@@ -475,10 +475,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
         attrs: {
           level,
           block_id: block.id,
-          anchor: text
-            .trim()
-            .toLowerCase()
-            .replace(/\s+/g, "-"),
+          anchor: block.id,
         },
         content: [{ type: "text", text }],
       });
@@ -1417,6 +1414,14 @@ export function DocumentPage({
   const visibilityLabel = currentDocument.visibility === "public" ? "公开文档" : "私有文档";
   const visibilityHint =
     currentDocument.visibility === "public" ? "所有人可访问原文档链接" : "仅作者与授权用户可访问原文档链接";
+  const scrollToOutlineTarget = (targetId: string) => {
+    const target = window.document.getElementById(targetId);
+    if (!target) {
+      return;
+    }
+    target.scrollIntoView({ block: "start", behavior: "smooth" });
+    window.history.replaceState(null, "", `#${targetId}`);
+  };
 
   return (
     <div
@@ -1425,26 +1430,32 @@ export function DocumentPage({
       }`}
     >
       <aside className="hidden border-r border-slate-200/80 bg-white/55 px-5 py-5 xl:block">
-        <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">页面目录</div>
-        <div className="mt-3 space-y-1">
-          {currentDocument.outline.map((item) => (
-            <a
-              key={item.id}
-              href={`#${item.id}`}
-              style={{
-                paddingLeft: `${0.625 + Math.max(0, Math.min(5, item.level - 1)) * 0.75}rem`,
-              }}
-              className={`block rounded-lg py-1.5 pr-2.5 transition hover:bg-slate-100 hover:text-slate-800 ${
-                item.level <= 1
-                  ? "text-sm font-medium text-slate-600"
-                  : item.level === 2
-                    ? "text-sm text-slate-500"
-                    : "text-xs text-slate-400"
-              }`}
-            >
-              {item.title}
-            </a>
-          ))}
+        <div className="sticky top-5 max-h-[calc(100vh-2.5rem)] overflow-y-auto pr-1">
+          <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">页面目录</div>
+          <div className="mt-3 space-y-1">
+            {currentDocument.outline.map((item) => (
+              <a
+                key={item.id}
+                href={`#${item.id}`}
+                onClick={(event) => {
+                  event.preventDefault();
+                  scrollToOutlineTarget(item.id);
+                }}
+                style={{
+                  paddingLeft: `${0.625 + Math.max(0, Math.min(5, item.level - 1)) * 0.75}rem`,
+                }}
+                className={`block rounded-lg py-1.5 pr-2.5 transition hover:bg-slate-100 hover:text-slate-800 ${
+                  item.level <= 1
+                    ? "text-sm font-medium text-slate-600"
+                    : item.level === 2
+                      ? "text-sm text-slate-500"
+                      : "text-xs text-slate-400"
+                }`}
+              >
+                {item.title}
+              </a>
+            ))}
+          </div>
         </div>
       </aside>
 
@@ -1608,6 +1619,7 @@ export function DocumentPage({
             <div className="min-w-0">
               {!isPdfDocument ? (
                 <textarea
+                  id="intro"
                   ref={titleTextareaRef}
                   value={draftTitle}
                   onChange={(event) => applyDraftTitleChange(event.target.value)}
@@ -1620,7 +1632,7 @@ export function DocumentPage({
                   }`}
                 />
               ) : (
-                <h1 className="text-[2.1rem] font-semibold leading-tight tracking-tight text-slate-950">
+                <h1 id="intro" className="text-[2.1rem] font-semibold leading-tight tracking-tight text-slate-950">
                   {currentDocument.title}
                 </h1>
               )}

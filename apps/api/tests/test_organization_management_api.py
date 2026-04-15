@@ -25,7 +25,7 @@ def cleanup_organization(organization_id: str) -> None:
 
 
 def test_create_organization_and_manage_members() -> None:
-    me_response = client.get("/api/auth/me")
+    me_response = client.get("/api/auth/me?bootstrap=true")
     assert me_response.status_code == 200
 
     authed_client = TestClient(app)

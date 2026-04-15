@@ -1,11 +1,10 @@
 from datetime import timezone, datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.document import Document, DocumentPermission
+from app.models.document import Document
 from app.models.folder import Folder
-from app.models.organization import OrganizationMember
 from app.models.space import Space
 from app.schemas.folder import (
     AncestorItem,
@@ -15,6 +14,14 @@ from app.schemas.folder import (
     FolderReorderRequest,
     FolderSummary,
     TreeNodeSummary,
+)
+from app.services.permission_service import (
+    can_access_space as permission_can_access_space,
+    can_manage_document as permission_can_manage_document,
+    can_manage_folder as permission_can_manage_folder,
+    can_manage_space as permission_can_manage_space,
+    can_view_document as permission_can_view_document,
+    can_view_folder as permission_can_view_folder,
 )
 
 
@@ -71,98 +78,28 @@ def is_descendant_folder(db: Session, *, folder_id: str, candidate_parent_id: st
     return False
 
 
-def get_user_organization_ids(db: Session, user_id: str | None) -> set[str]:
-    if not user_id:
-        return set()
-    return set(
-        db.scalars(
-            select(OrganizationMember.organization_id)
-            .where(OrganizationMember.user_id == user_id)
-            .where(OrganizationMember.status == "active")
-        ).all()
-    )
-
-
 def can_access_space(db: Session, space: Space, user_id: str | None) -> bool:
-    if space.visibility == "public":
-        return True
-    if user_id is None:
-        return False
-    if space.owner_id == user_id:
-        return True
-    if space.organization_id is None:
-        return False
-    membership = db.scalar(
-        select(OrganizationMember.id)
-        .where(OrganizationMember.organization_id == space.organization_id)
-        .where(OrganizationMember.user_id == user_id)
-        .where(OrganizationMember.status == "active")
-        .limit(1)
-    )
-    return membership is not None
+    return permission_can_access_space(db, space, user_id)
 
 
 def can_manage_space(db: Session, space: Space, user_id: str | None) -> bool:
-    if user_id is None:
-        return False
-    if space.owner_id == user_id:
-        return True
-    if space.organization_id is None:
-        return False
-    membership = db.scalar(
-        select(OrganizationMember.role)
-        .where(OrganizationMember.organization_id == space.organization_id)
-        .where(OrganizationMember.user_id == user_id)
-        .where(OrganizationMember.status == "active")
-        .limit(1)
-    )
-    return membership in {"owner", "admin", "member"}
-
-
-def get_document_permission_levels(db: Session, document_id: str, user_id: str | None) -> set[str]:
-    if not user_id:
-        return set()
-    organization_ids = get_user_organization_ids(db, user_id)
-    statement = select(DocumentPermission.permission_level).where(DocumentPermission.document_id == document_id)
-    filters = [(DocumentPermission.subject_type == "user") & (DocumentPermission.subject_id == user_id)]
-    if organization_ids:
-        filters.append(
-            (DocumentPermission.subject_type == "organization")
-            & (DocumentPermission.subject_id.in_(organization_ids))
-        )
-    return set(db.scalars(statement.where(or_(*filters))).all())
+    return permission_can_manage_space(db, space, user_id)
 
 
 def can_view_document(db: Session, document: Document, user_id: str | None) -> bool:
-    if document.is_deleted:
-        return False
-    if user_id is None:
-        return False
-    return document.owner_id == user_id or document.creator_id == user_id
+    return permission_can_view_document(db, document, user_id)
 
 
 def can_manage_document(db: Session, document: Document, user_id: str | None) -> bool:
-    if user_id is None:
-        return False
-    return document.owner_id == user_id or document.creator_id == user_id
+    return permission_can_manage_document(db, document, user_id)
 
 
 def can_view_folder(db: Session, folder: Folder, user_id: str | None) -> bool:
-    if folder.is_deleted:
-        return False
-    if folder.visibility == "public":
-        return True
-    space = db.get(Space, folder.space_id)
-    return can_access_space(db, space, user_id) if space else False
+    return permission_can_view_folder(db, folder, user_id)
 
 
 def can_manage_folder(db: Session, folder: Folder, user_id: str | None) -> bool:
-    if user_id is None:
-        return False
-    if folder.owner_id == user_id:
-        return True
-    space = db.get(Space, folder.space_id)
-    return can_manage_space(db, space, user_id) if space else False
+    return permission_can_manage_folder(db, folder, user_id)
 
 
 def build_folder_summary(db: Session, folder: Folder, user_id: str | None) -> FolderSummary:

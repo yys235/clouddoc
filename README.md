@@ -152,6 +152,7 @@ MCP 文档读取工具可以访问 actor 自己创建或拥有的文档，以及
 
 已开放受控写入/删除工具：
 - `clouddoc.create_document`
+- `clouddoc.create_folder`
 - `clouddoc.update_document_content`
 - `clouddoc.delete_document`
 - `clouddoc.restore_document`
@@ -263,10 +264,10 @@ npm run build
 
 ## 11. 其他文档
 
-如果你要继续开发，而不是只部署，可以看这些文档：
-- 产品需求：[cloud-doc-prd.md](/Users/yys235/projects/clouddoc/cloud-doc-prd.md)
-- 功能与 UI：[cloud-doc-feature-ui-design.md](/Users/yys235/projects/clouddoc/cloud-doc-feature-ui-design.md)
-- 内容模型：[cloud-doc-content-model.md](/Users/yys235/projects/clouddoc/cloud-doc-content-model.md)
-- 用户系统：[user-system-design.md](/Users/yys235/projects/clouddoc/user-system-design.md)
-- 权限与分享：[document-permission-sharing-prd.md](/Users/yys235/projects/clouddoc/document-permission-sharing-prd.md)
-- MCP 接入：[clouddoc-mcp-design.md](/Users/yys235/projects/clouddoc/clouddoc-mcp-design.md)
+如果你要继续开发，而不是只部署，可以看归档文档：
+- 产品需求：[cloud-doc-prd.md](/Users/yys235/projects/clouddoc/已归档/cloud-doc-prd.md)
+- 功能与 UI：[cloud-doc-feature-ui-design.md](/Users/yys235/projects/clouddoc/已归档/cloud-doc-feature-ui-design.md)
+- 内容模型：[cloud-doc-content-model.md](/Users/yys235/projects/clouddoc/已归档/cloud-doc-content-model.md)
+- 用户系统：[user-system-design.md](/Users/yys235/projects/clouddoc/已归档/user-system-design.md)
+- 权限与分享：[document-permission-sharing-prd.md](/Users/yys235/projects/clouddoc/已归档/document-permission-sharing-prd.md)
+- MCP 接入：[clouddoc-mcp-design.md](/Users/yys235/projects/clouddoc/已归档/clouddoc-mcp-design.md)

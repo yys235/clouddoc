@@ -30,8 +30,15 @@ def cleanup_user(email: str) -> None:
         db.close()
 
 
-def test_auth_me_bootstraps_demo_session_in_development() -> None:
+def test_auth_me_does_not_bootstrap_demo_session_by_default() -> None:
     response = client.get("/api/auth/me")
+    assert response.status_code == 200
+    assert response.json() is None
+    assert "clouddoc_session" not in response.cookies
+
+
+def test_auth_me_can_explicitly_bootstrap_demo_session_in_development() -> None:
+    response = client.get("/api/auth/me?bootstrap=true")
     assert response.status_code == 200
     payload = response.json()
     assert payload["email"] == "demo@clouddoc.local"

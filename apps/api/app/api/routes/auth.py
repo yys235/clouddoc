@@ -22,7 +22,7 @@ router = APIRouter(prefix="/auth")
 def current_user_route(
     request: Request,
     response: Response,
-    bootstrap: bool = Query(default=True),
+    bootstrap: bool = Query(default=False),
     db: Session = Depends(get_db),
 ) -> CurrentUserResponse | None:
     user = resolve_current_user(

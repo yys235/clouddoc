@@ -10,7 +10,7 @@ export function AuthSessionBootstrap() {
     if (pathname === "/login" || pathname === "/register") {
       return;
     }
-    void fetch("/api/auth/me", {
+    void fetch("/api/auth/me?bootstrap=false", {
       method: "GET",
       credentials: "same-origin",
       cache: "no-store",

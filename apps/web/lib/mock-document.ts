@@ -35,7 +35,7 @@ export function buildOutline(content: RichTextNode[]) {
   return content
     .filter((node) => node.type === "heading")
     .map((node, index) => {
-      const anchor = String(node.attrs?.anchor ?? `section-${index + 1}`);
+      const anchor = String(node.attrs?.block_id ?? node.attrs?.anchor ?? `section-${index + 1}`);
       const title =
         node.content
           ?.map((child) => child.text ?? "")

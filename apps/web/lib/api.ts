@@ -293,7 +293,7 @@ function buildCurrentUser(item: {
 
 export async function fetchCurrentUser(options?: { bootstrap?: boolean }): Promise<ApiItemResult<CurrentUser>> {
   try {
-    const bootstrap = options?.bootstrap ?? true;
+    const bootstrap = options?.bootstrap ?? false;
     const response = await apiFetch(`${API_BASE_URL}/auth/me?bootstrap=${bootstrap ? "true" : "false"}`, {
       cache: "no-store",
       credentials: "same-origin",

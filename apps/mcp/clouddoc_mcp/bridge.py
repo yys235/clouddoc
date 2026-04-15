@@ -11,12 +11,11 @@ if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import SessionLocal, init_db
 from app.models.comment import Comment, CommentThread
-from app.models.document import Document, DocumentContent
 from app.models.share import ShareLink
 from app.models.user import User
 from app.services.auth_service import verify_password
@@ -27,22 +26,32 @@ from app.schemas.document import (
     CommentReplyRequest,
     DocumentContentUpdateRequest,
     DocumentCreateRequest,
-    DocumentSummary,
-    SearchResult,
 )
+from app.schemas.folder import FolderCreateRequest
+from app.services.actor_context import ActorContext
 from app.services.comment_service import create_comment_thread, list_comment_threads, reply_comment_thread
 from app.services.comment_service import delete_comment as delete_comment_service
 from app.services.bootstrap_service import MCP_GUEST_EMAIL, ensure_mcp_guest_user
 from app.services.document_service import (
     build_document_detail_payload,
-    build_search_excerpt,
     create_document,
     favorite_document,
-    get_favorite_document_ids,
     get_document_detail_for_share,
+    get_document_detail_for_mcp,
+    list_documents_for_mcp,
     restore_document,
+    search_documents_for_mcp,
     soft_delete_document,
     update_document_content,
+)
+from app.services.folder_service import create_folder
+from app.services.permission_service import (
+    actor_user_id,
+    can_mcp_delete_comment,
+    can_mcp_manage_deleted_document,
+    can_mcp_read_document,
+    can_mcp_update_comment,
+    can_mcp_write_document,
 )
 from app.services.space_service import list_spaces
 
@@ -152,7 +161,7 @@ def _run_write_tool(
         raise mapped
 
 
-def _get_actor_user_id(db: Session, user_email: str | None = None) -> str | None:
+def _get_actor_context(db: Session, user_email: str | None = None) -> ActorContext:
     actor_email = (user_email or os.getenv("CLOUDDOC_MCP_ACTOR_EMAIL") or "").strip()
     if actor_email:
         user = db.scalar(
@@ -163,68 +172,17 @@ def _get_actor_user_id(db: Session, user_email: str | None = None) -> str | None
         )
         if user is None:
             raise MCPBridgeError("unauthenticated", "Configured MCP actor user was not found")
-        return user.id
+        actor_type = "guest" if user.email == MCP_GUEST_EMAIL else "user"
+        return ActorContext.from_user(user, actor_type=actor_type)
 
     guest = db.scalar(select(User).where(User.email == MCP_GUEST_EMAIL).where(User.is_active.is_(True)).limit(1))
     if guest is None:
         guest = ensure_mcp_guest_user(db)
-    return guest.id
+    return ActorContext.from_user(guest, actor_type="guest")
 
 
-def _ensure_mcp_owned_document(db: Session, document_id: str, actor_id: str) -> Document:
-    document = db.get(Document, document_id)
-    if document is None or document.is_deleted:
-        raise MCPBridgeError("not_found", "Document not found")
-    if document.owner_id != actor_id and document.creator_id != actor_id:
-        raise MCPBridgeError("unauthorized", "MCP tools can only access documents created or owned by the actor")
-    return document
-
-
-def _ensure_mcp_owned_document_including_deleted(db: Session, document_id: str, actor_id: str) -> Document:
-    document = db.get(Document, document_id)
-    if document is None:
-        raise MCPBridgeError("not_found", "Document not found")
-    if document.owner_id != actor_id and document.creator_id != actor_id:
-        raise MCPBridgeError("unauthorized", "MCP tools can only access documents created or owned by the actor")
-    return document
-
-
-def _is_mcp_readable_document(document: Document, actor_id: str | None) -> bool:
-    if document.is_deleted:
-        return bool(actor_id) and (document.owner_id == actor_id or document.creator_id == actor_id)
-    return document.visibility == "public" or (
-        bool(actor_id) and (document.owner_id == actor_id or document.creator_id == actor_id)
-    )
-
-
-def _ensure_mcp_readable_document(db: Session, document_id: str, actor_id: str | None) -> Document:
-    document = db.get(Document, document_id)
-    if document is None or not _is_mcp_readable_document(document, actor_id):
-        raise MCPBridgeError("unauthorized", "MCP tools can only read actor-owned documents or public documents")
-    return document
-
-
-def _document_summary_payload(db: Session, document: Document, actor_id: str | None, favorite_ids: set[str]) -> DocumentSummary:
-    is_owned = bool(actor_id) and (document.owner_id == actor_id or document.creator_id == actor_id)
-    can_edit = is_owned and document.document_type != "pdf"
-    return DocumentSummary(
-        id=document.id,
-        title=document.title,
-        owner_id=document.owner_id,
-        document_type=document.document_type,
-        status=document.status,
-        visibility=document.visibility,
-        updated_at=document.updated_at,
-        space_id=document.space_id,
-        folder_id=document.folder_id,
-        sort_order=document.sort_order,
-        is_deleted=document.is_deleted,
-        is_favorited=document.id in favorite_ids,
-        can_edit=can_edit,
-        can_manage=is_owned,
-        can_comment=is_owned,
-        is_shared_view=False,
-    )
+def _get_actor_user_id(db: Session, user_email: str | None = None) -> str | None:
+    return actor_user_id(_get_actor_context(db, user_email))
 
 
 def _comment_payload(db: Session, comment: Comment) -> dict[str, Any]:
@@ -274,20 +232,13 @@ def list_documents_tool(
     safe_limit = max(1, min(limit, 200))
     with SessionLocal() as db:
         user_id = _get_actor_user_id(db, user_email)
-        favorite_ids = get_favorite_document_ids(db, user_id)
-        statement = select(Document)
-        if normalized_state == "active":
-            statement = statement.where(Document.is_deleted.is_(False))
-        elif normalized_state == "trash":
-            statement = statement.where(Document.is_deleted.is_(True))
-        if folder_id:
-            statement = statement.where(Document.folder_id == folder_id)
-        statement = statement.order_by(Document.sort_order.asc(), Document.updated_at.desc())
-        items = [
-            _document_summary_payload(db, document, user_id, favorite_ids)
-            for document in db.scalars(statement).all()
-            if _is_mcp_readable_document(document, user_id)
-        ][:safe_limit]
+        items = list_documents_for_mcp(
+            db,
+            state=normalized_state,
+            user_id=user_id,
+            folder_id=folder_id,
+            limit=safe_limit,
+        )
         return {"documents": _dump(items), "state": normalized_state, "folder_id": folder_id, "count": len(items)}
 
 
@@ -302,69 +253,28 @@ def search_documents_tool(
     safe_limit = max(1, min(limit, 100))
     with SessionLocal() as db:
         user_id = _get_actor_user_id(db, user_email)
-        favorite_ids = get_favorite_document_ids(db, user_id)
-        normalized_query = query.strip()
-        latest_versions = (
-            select(
-                DocumentContent.document_id.label("document_id"),
-                func.max(DocumentContent.version_no).label("version_no"),
-            )
-            .group_by(DocumentContent.document_id)
-            .subquery()
+        items = search_documents_for_mcp(
+            db,
+            query,
+            user_id=user_id,
+            folder_id=folder_id,
+            limit=safe_limit,
         )
-        statement = (
-            select(Document, DocumentContent)
-            .join(latest_versions, latest_versions.c.document_id == Document.id)
-            .join(
-                DocumentContent,
-                (DocumentContent.document_id == latest_versions.c.document_id)
-                & (DocumentContent.version_no == latest_versions.c.version_no),
-            )
-            .where(Document.is_deleted.is_(False))
-            .where(
-                or_(
-                    Document.title.ilike(f"%{normalized_query}%"),
-                    Document.summary.ilike(f"%{normalized_query}%"),
-                    DocumentContent.plain_text.ilike(f"%{normalized_query}%"),
-                )
-            )
-            .order_by(Document.sort_order.asc(), Document.updated_at.desc())
-        )
-        if folder_id:
-            statement = statement.where(Document.folder_id == folder_id)
-        items = [
-            SearchResult(
-                id=document.id,
-                title=document.title,
-                status=document.status,
-                document_type=document.document_type,
-                space_id=document.space_id,
-                folder_id=document.folder_id,
-                sort_order=document.sort_order,
-                updated_at=document.updated_at,
-                excerpt=build_search_excerpt(content.plain_text or document.summary or document.title, normalized_query),
-                is_favorited=document.id in favorite_ids,
-            )
-            for document, content in db.execute(statement).all()
-            if _is_mcp_readable_document(document, user_id)
-        ][:safe_limit]
         return {"documents": _dump(items), "query": query, "folder_id": folder_id, "count": len(items)}
 
 
 def get_document_tool(document_id: str, user_email: str | None = None) -> dict[str, Any]:
     with SessionLocal() as db:
         user_id = _get_actor_user_id(db, user_email)
-        document_model = _ensure_mcp_readable_document(db, document_id, user_id)
-        document = build_document_detail_payload(db, document_model, user_id=user_id)
+        document = get_document_detail_for_mcp(db, document_id, user_id=user_id)
         if document is None:
-            raise MCPBridgeError("not_found", "Document not found or not visible")
+            raise MCPBridgeError("unauthorized", "MCP tools can only read actor-owned documents or public documents")
         return {"document": _dump(document)}
 
 
 def get_comments_tool(document_id: str, user_email: str | None = None) -> dict[str, Any]:
     with SessionLocal() as db:
         user_id = _get_actor_user_id(db, user_email)
-        _ensure_mcp_owned_document(db, document_id, user_id)
         threads = list_comment_threads(db, document_id, user_id=user_id)
         return {"threads": _dump(threads), "count": len(threads)}
 
@@ -428,6 +338,35 @@ def create_document_tool(
     )
 
 
+def create_folder_tool(
+    *,
+    space_id: str,
+    title: str,
+    parent_folder_id: str | None = None,
+    visibility: str = "private",
+    user_email: str | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "space_id": space_id,
+        "title": title,
+        "parent_folder_id": parent_folder_id,
+        "visibility": visibility,
+    }
+
+    def action(db: Session, actor_id: str):
+        folder = create_folder(db, FolderCreateRequest(**payload), actor_id)
+        return {"folder": folder}
+
+    return _run_write_tool(
+        tool_name="clouddoc.create_folder",
+        target_type="space",
+        target_id=space_id,
+        request_payload=payload,
+        user_email=user_email,
+        action=action,
+    )
+
+
 def update_document_content_tool(
     *,
     document_id: str,
@@ -446,7 +385,6 @@ def update_document_content_tool(
     }
 
     def action(db: Session, actor_id: str):
-        _ensure_mcp_owned_document(db, document_id, actor_id)
         document = update_document_content(
             db,
             document_id,
@@ -476,7 +414,6 @@ def delete_document_tool(document_id: str, user_email: str | None = None) -> dic
     payload = {"document_id": document_id}
 
     def action(db: Session, actor_id: str):
-        _ensure_mcp_owned_document(db, document_id, actor_id)
         document = soft_delete_document(db, document_id, actor_id)
         if document is None:
             raise MCPBridgeError("not_found", "Document not found")
@@ -496,7 +433,6 @@ def restore_document_tool(document_id: str, user_email: str | None = None) -> di
     payload = {"document_id": document_id}
 
     def action(db: Session, actor_id: str):
-        _ensure_mcp_owned_document_including_deleted(db, document_id, actor_id)
         document = restore_document(db, document_id, actor_id)
         if document is None:
             raise MCPBridgeError("not_found", "Document not found")
@@ -536,7 +472,6 @@ def create_comment_tool(
     }
 
     def action(db: Session, actor_id: str):
-        _ensure_mcp_owned_document(db, document_id, actor_id)
         thread = create_comment_thread(
             db,
             document_id,
@@ -582,7 +517,6 @@ def reply_comment_tool(
         thread_model = db.get(CommentThread, thread_id)
         if thread_model is None:
             raise MCPBridgeError("not_found", "Comment thread not found")
-        _ensure_mcp_owned_document(db, thread_model.document_id, actor_id)
         thread = reply_comment_thread(
             db,
             thread_id,
@@ -610,9 +544,8 @@ def update_comment_tool(comment_id: str, body: str, user_email: str | None = Non
         comment = db.get(Comment, comment_id)
         if comment is None or comment.is_deleted:
             raise MCPBridgeError("not_found", "Comment not found")
-        if comment.author_id != actor_id:
+        if not can_mcp_update_comment(db, comment, actor_id):
             raise MCPBridgeError("unauthorized", "MCP tools can only update comments created by the actor")
-        _ensure_mcp_owned_document(db, comment.document_id, actor_id)
         normalized_body = body.strip()
         if not normalized_body:
             raise MCPBridgeError("invalid_input", "Comment body is required")
@@ -638,9 +571,8 @@ def delete_comment_tool(comment_id: str, user_email: str | None = None) -> dict[
         comment = db.get(Comment, comment_id)
         if comment is None:
             raise MCPBridgeError("not_found", "Comment not found")
-        if comment.author_id != actor_id:
+        if not can_mcp_delete_comment(db, comment, actor_id):
             raise MCPBridgeError("unauthorized", "MCP tools can only delete comments created by the actor")
-        _ensure_mcp_owned_document(db, comment.document_id, actor_id)
         result = delete_comment_service(db, comment_id=comment_id, current_user_id=actor_id)
         if result is None:
             raise MCPBridgeError("not_found", "Comment not found")
@@ -660,7 +592,6 @@ def favorite_document_tool(document_id: str, user_email: str | None = None) -> d
     payload = {"document_id": document_id}
 
     def action(db: Session, actor_id: str):
-        _ensure_mcp_owned_document(db, document_id, actor_id)
         result = favorite_document(db, document_id, actor_id)
         if result is None:
             raise MCPBridgeError("not_found", "Document not found")

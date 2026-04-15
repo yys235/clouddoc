@@ -27,6 +27,14 @@ from app.services.folder_service import (
     get_document_ancestors as get_document_folder_ancestors,
     get_next_document_sort_order,
 )
+from app.services.permission_service import (
+    can_comment_document as permission_can_comment_document,
+    can_edit_document as permission_can_edit_document,
+    can_manage_document as permission_can_manage_document,
+    can_manage_space,
+    can_mcp_read_document,
+    can_view_document as permission_can_view_document,
+)
 from app.schemas.document import (
     DocumentContentPayload,
     DocumentContentUpdateRequest,
@@ -271,42 +279,23 @@ def get_document_permission_levels(db: Session, document_id: str, user_id: str |
 
 
 def can_view_document(db: Session, document: Document, user_id: str | None) -> bool:
-    if document.is_deleted:
-        return False
-    if user_id is None:
-        return False
-    return document.owner_id == user_id or document.creator_id == user_id
+    return permission_can_view_document(db, document, user_id)
 
 
 def can_edit_document(db: Session, document: Document, user_id: str | None) -> bool:
-    if user_id is None:
-        return False
-    return document.owner_id == user_id or document.creator_id == user_id
+    return permission_can_edit_document(db, document, user_id)
 
 
 def can_manage_document(db: Session, document: Document, user_id: str | None) -> bool:
-    if user_id is None:
-        return False
-    return document.owner_id == user_id or document.creator_id == user_id
+    return permission_can_manage_document(db, document, user_id)
 
 
 def can_comment_document(db: Session, document: Document, user_id: str | None) -> bool:
-    return can_edit_document(db, document, user_id)
+    return permission_can_comment_document(db, document, user_id)
 
 
 def can_create_document_in_space(db: Session, space: Space, user_id: str) -> bool:
-    if space.owner_id == user_id:
-        return True
-    if space.organization_id is None:
-        return False
-    membership = db.scalar(
-        select(OrganizationMember.id)
-        .where(OrganizationMember.organization_id == space.organization_id)
-        .where(OrganizationMember.user_id == user_id)
-        .where(OrganizationMember.status == "active")
-        .limit(1)
-    )
-    return membership is not None
+    return can_manage_space(db, space, user_id)
 
 
 def get_favorite_document_ids(db: Session, user_id: str | None) -> set[str]:
@@ -446,6 +435,56 @@ def list_documents(db: Session, state: str = "active", user_id: str | None = Non
     ]
 
 
+def list_documents_for_mcp(
+    db: Session,
+    *,
+    state: str = "active",
+    user_id: str | None = None,
+    folder_id: str | None = None,
+    limit: int = 50,
+) -> list[DocumentSummary]:
+    normalized_state = state if state in {"active", "trash", "all"} else "active"
+    safe_limit = max(1, min(limit, 200))
+    favorite_ids = get_favorite_document_ids(db, user_id)
+    statement = select(Document)
+    if normalized_state == "active":
+        statement = statement.where(Document.is_deleted.is_(False))
+    elif normalized_state == "trash":
+        statement = statement.where(Document.is_deleted.is_(True))
+    if folder_id:
+        statement = statement.where(Document.folder_id == folder_id)
+    statement = statement.order_by(Document.sort_order.asc(), Document.updated_at.desc())
+
+    items: list[DocumentSummary] = []
+    for document in db.scalars(statement).all():
+        if not can_mcp_read_document(db, document, user_id):
+            continue
+        is_owned = can_manage_document(db, document, user_id)
+        items.append(
+            DocumentSummary(
+                id=document.id,
+                title=document.title,
+                owner_id=document.owner_id,
+                document_type=document.document_type,
+                status=document.status,
+                visibility=document.visibility,
+                updated_at=document.updated_at,
+                space_id=document.space_id,
+                folder_id=document.folder_id,
+                sort_order=document.sort_order,
+                is_deleted=document.is_deleted,
+                is_favorited=document.id in favorite_ids,
+                can_edit=is_owned and document.document_type != "pdf",
+                can_manage=is_owned,
+                can_comment=is_owned,
+                is_shared_view=False,
+            )
+        )
+        if len(items) >= safe_limit:
+            break
+    return items
+
+
 def search_documents(db: Session, query: str, user_id: str | None = None) -> list[SearchResult]:
     normalized_query = query.strip()
     if not normalized_query:
@@ -506,6 +545,73 @@ def search_documents(db: Session, query: str, user_id: str | None = None) -> lis
     return results
 
 
+def search_documents_for_mcp(
+    db: Session,
+    query: str,
+    *,
+    user_id: str | None = None,
+    folder_id: str | None = None,
+    limit: int = 20,
+) -> list[SearchResult]:
+    normalized_query = query.strip()
+    if not normalized_query:
+        return []
+
+    safe_limit = max(1, min(limit, 100))
+    favorite_ids = get_favorite_document_ids(db, user_id)
+    latest_versions = (
+        select(
+            DocumentContent.document_id.label("document_id"),
+            func.max(DocumentContent.version_no).label("version_no"),
+        )
+        .group_by(DocumentContent.document_id)
+        .subquery()
+    )
+
+    statement = (
+        select(Document, DocumentContent)
+        .join(latest_versions, latest_versions.c.document_id == Document.id)
+        .join(
+            DocumentContent,
+            (DocumentContent.document_id == latest_versions.c.document_id)
+            & (DocumentContent.version_no == latest_versions.c.version_no),
+        )
+        .where(Document.is_deleted.is_(False))
+        .where(
+            or_(
+                Document.title.ilike(f"%{normalized_query}%"),
+                Document.summary.ilike(f"%{normalized_query}%"),
+                DocumentContent.plain_text.ilike(f"%{normalized_query}%"),
+            )
+        )
+        .order_by(Document.sort_order.asc(), Document.updated_at.desc())
+    )
+    if folder_id:
+        statement = statement.where(Document.folder_id == folder_id)
+
+    results: list[SearchResult] = []
+    for document, content in db.execute(statement).all():
+        if not can_mcp_read_document(db, document, user_id):
+            continue
+        results.append(
+            SearchResult(
+                id=document.id,
+                title=document.title,
+                status=document.status,
+                document_type=document.document_type,
+                space_id=document.space_id,
+                folder_id=document.folder_id,
+                sort_order=document.sort_order,
+                updated_at=document.updated_at,
+                excerpt=build_search_excerpt(content.plain_text or document.summary or document.title, normalized_query),
+                is_favorited=document.id in favorite_ids,
+            )
+        )
+        if len(results) >= safe_limit:
+            break
+    return results
+
+
 def build_search_excerpt(text: str, query: str) -> str:
     clean_text = " ".join(text.split())
     if not clean_text:
@@ -530,6 +636,13 @@ def build_search_excerpt(text: str, query: str) -> str:
 def get_document_detail(db: Session, doc_id: str, user_id: str | None = None) -> DocumentDetail | None:
     document = db.get(Document, doc_id)
     if not document or document.is_deleted or not can_view_document(db, document, user_id):
+        return None
+    return build_document_detail_payload(db, document, user_id=user_id)
+
+
+def get_document_detail_for_mcp(db: Session, doc_id: str, user_id: str | None = None) -> DocumentDetail | None:
+    document = db.get(Document, doc_id)
+    if not document or not can_mcp_read_document(db, document, user_id):
         return None
     return build_document_detail_payload(db, document, user_id=user_id)
 

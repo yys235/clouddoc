@@ -18,6 +18,7 @@
   - `clouddoc.get_shared_document`
 - 当前已开放受控写入工具：
   - `clouddoc.create_document`
+  - `clouddoc.create_folder`
   - `clouddoc.update_document_content`
   - `clouddoc.delete_document`
   - `clouddoc.restore_document`
@@ -28,6 +29,14 @@
   - `clouddoc.favorite_document`
 - 写入工具会写入 `mcp_audit_logs` 审计记录。
 - 普通 MCP 文档/评论工具只能访问 actor 自己创建或拥有的文档；评论更新和删除只能操作 actor 自己写的评论。分享 token 读取工具保持只读例外。
+- 当前结构约束目标：
+  - `apps/api` 继续作为主业务后端，保留 REST API。
+  - `apps/mcp` 继续作为独立 MCP 协议服务，只负责 MCP transport、工具参数适配、工具返回格式和 MCP 审计。
+  - REST API 与 MCP 工具必须共享 `apps/api/app/services/*` 中的业务服务。
+  - 权限判断集中到 `apps/api/app/services/permission_service.py`。
+  - REST 当前用户与 MCP actor 都统一收敛为 `ActorContext`，再交给权限服务判断。
+  - MCP bridge 不维护独立文档权限规则；“是否可读、是否可写、是否可删除”的条件不能散落在 bridge 中。
+  - MCP bridge 可以保留协议级错误映射、MCP 审计、MCP actor 解析，但复杂列表、搜索、详情读取和业务权限必须下沉到 API service 层。
 
 ## 1. 文档目标
 
@@ -108,6 +117,13 @@ MCP 工具不直接绕过权限判断。所有工具最终都调用后端 servic
 - 谁能写
 - 谁能删
 - 谁能管理分享
+
+实现约束：
+
+- 权限入口统一放在 `permission_service.py`。
+- 业务 service 可以提供兼容函数，例如 `can_view_document(db, document, user_id)`，但内部必须委托 `permission_service.py`。
+- MCP 独有读范围，例如“可读 actor 自己创建/拥有的文档和 public 文档”，也必须用 `permission_service.py` 中的明确函数表达，不能在 MCP bridge 中重复拼 `owner_id == actor_id`。
+- 分享链接读取是独立只读入口，成功分享访问不等于获得原文档编辑、评论、删除或管理权限。
 
 ### 4.3 不让 MCP 去调用本系统自己的 HTTP API
 
@@ -199,6 +215,29 @@ MCP Client
 - 共用用户上下文解析逻辑
 - 共用文档、评论、分享、权限 service
 
+当前落地结构：
+
+```text
+apps/api/app/services/
+  actor_context.py        # REST 用户、MCP 用户、guest/anonymous 的统一 actor 表达
+  permission_service.py   # 文档、评论、空间、文件夹权限判断
+  document_service.py     # 文档业务和 MCP 文档查询服务
+  comment_service.py      # 评论业务
+  folder_service.py       # 文件夹业务
+  share_service.py        # 分享业务
+
+apps/mcp/clouddoc_mcp/
+  server.py               # MCP transport 和工具注册
+  bridge.py               # MCP 参数适配、actor 解析、审计、错误映射
+```
+
+边界要求：
+
+- `server.py` 不包含业务逻辑。
+- `bridge.py` 不维护独立权限规则。
+- `bridge.py` 可以打开数据库 session，但查询文档/评论/权限时优先调用 API service。
+- `mcp_audit_logs` 只记录 MCP 写操作，不影响 REST API 审计策略。
+
 ---
 
 ## 6. MCP 能力分阶段设计
@@ -229,6 +268,7 @@ MCP Client
 建议工具：
 
 - `clouddoc.create_document`
+- `clouddoc.create_folder`
 - `clouddoc.update_document_content`
 - `clouddoc.delete_document`
 - `clouddoc.restore_document`
@@ -463,6 +503,28 @@ MCP 至少要支持两种身份模式。
 
 - 真实用户登录态映射
 
+## 8.4 ActorContext
+
+为了避免 REST API 和 MCP 使用两套身份语义，后端统一使用 `ActorContext` 表达调用者。
+
+字段：
+
+- `actor_type`: `user | guest | anonymous | service`
+- `user_id`: 关联 `users.id`，匿名时为空
+- `email`: 用户邮箱，可选
+- `is_authenticated`: 是否有有效身份
+- `is_guest`: 是否为内置访客身份
+
+转换规则：
+
+- REST 登录用户：`ActorContext.from_user(current_user)`
+- REST 未登录：`ActorContext.anonymous()`
+- MCP 显式 `user_email`：查找启用用户并生成 `ActorContext.from_user(user)`
+- MCP `CLOUDDOC_MCP_ACTOR_EMAIL`：同上
+- MCP 未指定用户：使用 `guest@clouddoc.local`，生成 guest actor；guest 不加入组织、不继承默认 demo 用户权限
+
+业务 service 仍可以在函数签名中接收 `user_id` 以兼容现有代码，但权限判断前必须转换为 `ActorContext` 或委托支持 actor 的权限函数。
+
 ---
 
 ## 9. 权限控制规则
@@ -482,6 +544,25 @@ MCP 工具必须复用 CloudDoc 后端已有权限判断。
 - 私有文档不能因为 MCP 工具存在而被绕过
 - `share` 相关工具不能返回编辑能力
 - 未显式传递 `CLOUDDOC_MCP_ACTOR_EMAIL` 时，只能使用内置 `guest@clouddoc.local` 访客身份；guest 不加入组织、不拥有文档授权，不能回退到数据库中的第一个启用用户
+
+### 9.1 REST 普通文档权限
+
+- 普通 REST 文档详情、编辑、删除、恢复、收藏：只允许文档 owner/creator。
+- 普通 REST 不因为 `visibility=public` 就开放原文档详情。公开对外访问必须使用分享链接，避免原链接泄漏绕过分享控制。
+- 评论创建与读取沿用普通文档访问权限。
+
+### 9.2 MCP 普通文档权限
+
+- MCP 读取文档：允许 actor 自己创建/拥有的文档，以及 `visibility=public` 的文档。
+- MCP 修改、删除、恢复、创建评论、回复评论、收藏：只允许 actor 自己创建/拥有的文档。
+- MCP 更新/删除评论：只允许评论作者本人，并且目标评论所在文档也必须是 actor 自己创建/拥有的文档。
+- MCP 未指定 actor 时使用 guest；guest 只能读取 public 文档和分享文档，不能写入普通文档。
+
+### 9.3 分享文档权限
+
+- 分享 token 读取只返回只读文档详情。
+- 分享 token 不授予普通文档权限。
+- 分享 token 访问结果必须强制 `can_edit=false`、`can_manage=false`、`can_comment=false`。
 
 ---
 

@@ -8,6 +8,7 @@ from typing import Any, Callable
 from .bridge import (
     MCPBridgeError,
     create_comment_tool,
+    create_folder_tool,
     create_document_tool,
     delete_comment_tool,
     delete_document_tool,
@@ -162,6 +163,23 @@ def build_server(config: MCPServerConfig | None = None):
             document_type=document_type,
             visibility=visibility,
             folder_id=folder_id,
+            user_email=user_email,
+        )
+
+    @mcp.tool(name="clouddoc.create_folder")
+    def create_folder(
+        space_id: str,
+        title: str,
+        parent_folder_id: str | None = None,
+        visibility: str = "private",
+        user_email: str | None = None,
+    ) -> dict[str, Any]:
+        return _wrap_tool(
+            create_folder_tool,
+            space_id=space_id,
+            title=title,
+            parent_folder_id=parent_folder_id,
+            visibility=visibility,
             user_email=user_email,
         )
 

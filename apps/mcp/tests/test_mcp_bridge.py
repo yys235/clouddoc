@@ -31,6 +31,7 @@ from clouddoc_mcp.bridge import (
     MCPBridgeError,
     create_comment_tool,
     create_document_tool,
+    create_folder_tool,
     delete_comment_tool,
     delete_document_tool,
     favorite_document_tool,
@@ -134,6 +135,28 @@ def test_read_only_mcp_space_tool() -> None:
     spaces = list_spaces_tool(user_email=DEMO_EMAIL)
     assert "spaces" in spaces
     assert isinstance(spaces["spaces"], list)
+
+
+def test_mcp_create_folder_tool() -> None:
+    space_id = _first_space_id()
+    payload = create_folder_tool(
+        space_id=space_id,
+        title="pytest-mcp-folder-create",
+        visibility="private",
+        user_email=DEMO_EMAIL,
+    )
+    folder_id = payload["folder"]["id"]
+    try:
+        assert payload["folder"]["title"] == "pytest-mcp-folder-create"
+        assert payload["folder"]["space_id"] == space_id
+        assert payload["folder"]["can_manage"] is True
+    finally:
+        db = SessionLocal()
+        try:
+            db.execute(delete(Folder).where(Folder.id == folder_id))
+            db.commit()
+        finally:
+            db.close()
 
 
 def test_default_mcp_actor_is_guest_without_extra_permissions(monkeypatch: pytest.MonkeyPatch) -> None:

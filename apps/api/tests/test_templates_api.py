@@ -8,6 +8,7 @@ from app.models.template import Template
 
 
 client = TestClient(app)
+client.get("/api/auth/me?bootstrap=true")
 
 
 def cleanup_document(document_id: str) -> None:

@@ -15,7 +15,7 @@ from app.models.space import Space
 
 
 client = TestClient(app)
-client.get("/api/auth/me")
+client.get("/api/auth/me?bootstrap=true")
 
 
 def cleanup_folder(folder_id: str) -> None:

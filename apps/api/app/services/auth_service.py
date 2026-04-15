@@ -151,7 +151,7 @@ def get_current_user(request: Request, response: Response, db: Session) -> User:
         request,
         response,
         require_authenticated=True,
-        allow_dev_fallback=True,
+        allow_dev_fallback=False,
         persist_dev_session=False,
     )
     assert user is not None
@@ -164,7 +164,7 @@ def get_optional_current_user(request: Request, response: Response, db: Session)
         request,
         response,
         require_authenticated=False,
-        allow_dev_fallback=True,
+        allow_dev_fallback=False,
         persist_dev_session=False,
     )
 

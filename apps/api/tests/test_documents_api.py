@@ -18,7 +18,7 @@ from app.models.user import User
 
 
 client = TestClient(app)
-client.get("/api/auth/me")
+client.get("/api/auth/me?bootstrap=true")
 
 
 def cleanup_document(document_id: str) -> None:
@@ -462,6 +462,41 @@ def test_public_document_is_not_accessible_through_normal_api_without_owner_sess
         assert owner_detail.status_code == 200
         assert owner_detail.json()["visibility"] == "public"
         assert owner_detail.json()["is_shared_view"] is False
+    finally:
+        cleanup_document(document_id)
+
+
+def test_auth_me_without_bootstrap_does_not_unlock_private_document_link() -> None:
+    db = SessionLocal()
+    try:
+        space = db.scalar(select(Space).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    title = f"pytest-private-link-{uuid4()}"
+    create_response = client.post(
+        "/api/documents",
+        json={
+            "title": title,
+            "space_id": space_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    document_id = create_response.json()["id"]
+
+    anonymous_client = TestClient(app)
+    try:
+        auth_probe = anonymous_client.get("/api/auth/me")
+        assert auth_probe.status_code == 200
+        assert auth_probe.json() is None
+        assert "clouddoc_session" not in auth_probe.cookies
+
+        leaked_link_response = anonymous_client.get(f"/api/documents/{document_id}")
+        assert leaked_link_response.status_code == 404
     finally:
         cleanup_document(document_id)
 
