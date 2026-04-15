@@ -350,21 +350,39 @@ apps/mcp/clouddoc_mcp/
 
 用途：
 
-- 获取文档完整内容
+- 获取文档内容，默认返回适合 AI 阅读的 Markdown
 
 输入：
 
 - `document_id`
+- `format` 可选，默认 `markdown`
 
 输出：
 
-- 文档详情：
+- `format=markdown`：
   - 元数据
-  - 内容 JSON
+  - `markdown`
   - 能力标志：
     - `can_edit`
     - `can_manage`
     - `can_comment`
+- `format=plain_text`：
+  - 元数据
+  - `plain_text`
+- `format=content_json`：
+  - 元数据
+  - `content_json`
+- `format=full`：
+  - 元数据
+  - 原始 `content`
+  - `markdown`
+
+格式选择原则：
+
+- AI 阅读、摘要、问答、上下文注入优先使用 `markdown`
+- 搜索、轻量摘要或低 token 上下文可使用 `plain_text`
+- AI 需要精确编辑、块级插入、保留评论锚点或保留结构时使用 `content_json`
+- 调试和兼容旧客户端时使用 `full`
 
 ## 7.4 `clouddoc.get_comments`
 
@@ -554,6 +572,7 @@ MCP 工具必须复用 CloudDoc 后端已有权限判断。
 ### 9.2 MCP 普通文档权限
 
 - MCP 读取文档：允许 actor 自己创建/拥有的文档，以及 `visibility=public` 的文档。
+- MCP 读取文档默认输出 `markdown`，外部 AI 可按需请求 `plain_text`、`content_json` 或 `full`。
 - MCP 修改、删除、恢复、创建评论、回复评论、收藏：只允许 actor 自己创建/拥有的文档。
 - MCP 更新/删除评论：只允许评论作者本人，并且目标评论所在文档也必须是 actor 自己创建/拥有的文档。
 - MCP 未指定 actor 时使用 guest；guest 只能读取 public 文档和分享文档，不能写入普通文档。

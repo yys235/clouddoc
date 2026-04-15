@@ -132,8 +132,12 @@ def build_server(config: MCPServerConfig | None = None):
         return _wrap_tool(search_documents_tool, query=query, limit=limit, folder_id=folder_id, user_email=user_email)
 
     @mcp.tool(name="clouddoc.get_document")
-    def get_document(document_id: str, user_email: str | None = None) -> dict[str, Any]:
-        return _wrap_tool(get_document_tool, document_id=document_id, user_email=user_email)
+    def get_document(
+        document_id: str,
+        user_email: str | None = None,
+        format: str = "markdown",
+    ) -> dict[str, Any]:
+        return _wrap_tool(get_document_tool, document_id=document_id, user_email=user_email, format=format)
 
     @mcp.tool(name="clouddoc.get_comments")
     def get_comments(document_id: str, user_email: str | None = None) -> dict[str, Any]:

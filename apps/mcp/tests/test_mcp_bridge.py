@@ -117,18 +117,132 @@ def _ensure_outsider_user() -> None:
         db.close()
 
 
+def _grant_outsider_org_admin_for_demo_space() -> None:
+    _ensure_outsider_user()
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == DEMO_EMAIL).limit(1))
+        outsider = db.scalar(select(User).where(User.email == OUTSIDER_EMAIL).limit(1))
+        assert owner is not None
+        assert outsider is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).where(Space.space_type == "team").limit(1))
+        assert space is not None
+        assert space.organization_id is not None
+        membership = db.scalar(
+            select(OrganizationMember)
+            .where(OrganizationMember.organization_id == space.organization_id)
+            .where(OrganizationMember.user_id == outsider.id)
+            .limit(1)
+        )
+        if membership is None:
+            db.add(
+                OrganizationMember(
+                    organization_id=space.organization_id,
+                    user_id=outsider.id,
+                    role="admin",
+                    status="active",
+                )
+            )
+        else:
+            membership.role = "admin"
+            membership.status = "active"
+        db.commit()
+    finally:
+        db.close()
+
+
+def _remove_outsider_memberships() -> None:
+    db = SessionLocal()
+    try:
+        outsider = db.scalar(select(User).where(User.email == OUTSIDER_EMAIL).limit(1))
+        if outsider is not None:
+            db.execute(delete(OrganizationMember).where(OrganizationMember.user_id == outsider.id))
+            outsider.is_super_admin = False
+            db.commit()
+    finally:
+        db.close()
+
+
 def test_read_only_mcp_document_tools() -> None:
     document_id = _first_visible_document_id()
 
     detail = get_document_tool(document_id, user_email=DEMO_EMAIL)
     assert detail["document"]["id"] == document_id
-    assert "content" in detail["document"]
+    assert detail["document"]["format"] == "markdown"
+    assert "markdown" in detail["document"]
+    assert "content" not in detail["document"]
+
+    full_detail = get_document_tool(document_id, user_email=DEMO_EMAIL, format="full")
+    assert full_detail["document"]["format"] == "full"
+    assert "content" in full_detail["document"]
+    assert "markdown" in full_detail["document"]
+
+    content_detail = get_document_tool(document_id, user_email=DEMO_EMAIL, format="content_json")
+    assert content_detail["document"]["format"] == "content_json"
+    assert "content_json" in content_detail["document"]
+
+    plain_detail = get_document_tool(document_id, user_email=DEMO_EMAIL, format="plain_text")
+    assert plain_detail["document"]["format"] == "plain_text"
+    assert "plain_text" in plain_detail["document"]
 
     comments = get_comments_tool(document_id, user_email=DEMO_EMAIL)
     assert "threads" in comments
 
     search = search_documents_tool(detail["document"]["title"][:4] or "CloudDoc", user_email=DEMO_EMAIL)
     assert "documents" in search
+
+
+def test_mcp_markdown_format_preserves_common_block_structure() -> None:
+    space_id = _first_space_id()
+    create_payload = create_document_tool(space_id=space_id, title="pytest-mcp-markdown-format", user_email=DEMO_EMAIL)
+    document_id = create_payload["document"]["id"]
+
+    try:
+        content_json = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "heading",
+                    "attrs": {"level": 1, "block_id": "h1"},
+                    "content": [{"type": "text", "text": "Markdown Export"}],
+                },
+                {
+                    "type": "paragraph",
+                    "attrs": {"block_id": "p1", "raw_text": "Paragraph line"},
+                    "content": [{"type": "text", "text": "Paragraph line"}],
+                },
+                {
+                    "type": "bullet_list",
+                    "attrs": {"block_id": "list1"},
+                    "content": [
+                        {"type": "list_item", "content": [{"type": "text", "text": "First item"}]},
+                        {"type": "list_item", "content": [{"type": "text", "text": "Second item"}]},
+                    ],
+                },
+                {
+                    "type": "link",
+                    "attrs": {"url": "https://example.com", "title": "Example"},
+                    "content": [{"type": "text", "text": "Example"}],
+                },
+            ],
+        }
+        update_document_content_tool(
+            document_id=document_id,
+            content_json=content_json,
+            plain_text="Markdown Export Paragraph line First item Second item Example",
+            user_email=DEMO_EMAIL,
+        )
+
+        payload = get_document_tool(document_id, user_email=DEMO_EMAIL, format="markdown")
+        markdown = payload["document"]["markdown"]
+        assert "# Markdown Export" in markdown
+        assert "Paragraph line" in markdown
+        assert "- First item" in markdown
+        assert "- Second item" in markdown
+        assert "[Example](https://example.com)" in markdown
+    finally:
+        _cleanup_document(document_id)
 
 
 def test_read_only_mcp_space_tool() -> None:
@@ -291,6 +405,43 @@ def test_mcp_document_read_scope_includes_public_and_folder_filter_while_writes_
                 db.commit()
             finally:
                 db.close()
+
+
+def test_mcp_organization_admin_can_read_private_document_but_not_write() -> None:
+    _grant_outsider_org_admin_for_demo_space()
+    space_id = _first_space_id()
+    create_payload = create_document_tool(
+        space_id=space_id,
+        title="pytest-mcp-org-admin-readable-private",
+        visibility="private",
+        user_email=DEMO_EMAIL,
+    )
+    document_id = create_payload["document"]["id"]
+
+    try:
+        detail = get_document_tool(document_id, user_email=OUTSIDER_EMAIL)
+        assert detail["document"]["id"] == document_id
+        assert detail["document"]["can_edit"] is False
+        assert detail["document"]["can_manage"] is False
+
+        list_payload = list_documents_tool(state="active", user_email=OUTSIDER_EMAIL)
+        assert any(item["id"] == document_id for item in list_payload["documents"])
+
+        with pytest.raises(MCPBridgeError) as exc_info:
+            update_document_content_tool(
+                document_id=document_id,
+                content_json={"type": "doc", "version": 1, "content": []},
+                plain_text="org admin write rejected",
+                user_email=OUTSIDER_EMAIL,
+            )
+        assert exc_info.value.code == "unauthorized"
+
+        with pytest.raises(MCPBridgeError) as exc_info:
+            delete_document_tool(document_id, user_email=OUTSIDER_EMAIL)
+        assert exc_info.value.code == "unauthorized"
+    finally:
+        _cleanup_document(document_id)
+        _remove_outsider_memberships()
 
 
 def test_read_only_mcp_shared_document_tool() -> None:

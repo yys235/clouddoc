@@ -142,6 +142,12 @@ CLOUDDOC_MCP_JSON_RESPONSE=true
 
 MCP 文档读取工具可以访问 actor 自己创建或拥有的文档，以及公开文档；`clouddoc.list_documents` 和 `clouddoc.search_documents` 支持传入 `folder_id` 限定目录范围。MCP 文档更新/删除仍只能操作 actor 自己创建或拥有的文档，评论更新/删除只能操作 actor 自己写的评论。分享 token 读取工具仍按分享链接规则只读访问。
 
+`clouddoc.get_document` 支持 `format` 参数，默认 `markdown`，方便 AI 直接阅读和摘要：
+- `markdown`：返回 Markdown 文本，推荐给 AI 阅读、总结、问答和上下文注入
+- `plain_text`：返回纯文本，适合搜索、摘要和低成本上下文
+- `content_json`：返回结构化块文档，适合 AI 精确编辑、块级插入、评论锚点和结构化处理
+- `full`：同时返回原始内容对象和 Markdown，适合调试或需要完整信息的客户端
+
 已开放读取工具：
 - `clouddoc.list_documents`
 - `clouddoc.search_documents`

@@ -80,6 +80,167 @@ def _dump(value: Any) -> Any:
     return value
 
 
+def _text_from_inline_nodes(nodes: list[Any]) -> str:
+    parts: list[str] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        text = node.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+        child_content = node.get("content")
+        if isinstance(child_content, list):
+            parts.append(_text_from_inline_nodes(child_content))
+    return "".join(parts)
+
+
+def _markdown_escape_table_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _content_node_to_markdown(node: Any, depth: int = 0) -> list[str]:
+    if not isinstance(node, dict):
+        return []
+
+    node_type = str(node.get("type") or "paragraph")
+    content = node.get("content")
+    children = content if isinstance(content, list) else []
+    attrs = node.get("attrs") if isinstance(node.get("attrs"), dict) else {}
+    text = _text_from_inline_nodes(children).strip()
+
+    if node_type == "heading":
+        level = attrs.get("level", 1)
+        try:
+            normalized_level = max(1, min(int(level), 6))
+        except (TypeError, ValueError):
+            normalized_level = 1
+        return [f"{'#' * normalized_level} {text}".rstrip()]
+
+    if node_type == "paragraph":
+        raw_text = attrs.get("raw_text")
+        if isinstance(raw_text, str) and raw_text:
+            return [raw_text]
+        return [text] if text else []
+
+    if node_type in {"bullet_list", "ordered_list", "task_list"}:
+        lines: list[str] = []
+        for index, child in enumerate(children, start=1):
+            child_text = _text_from_inline_nodes(child.get("content", []) if isinstance(child, dict) else []).strip()
+            nested_lines: list[str] = []
+            if isinstance(child, dict):
+                for nested in child.get("content", []):
+                    if isinstance(nested, dict) and nested.get("type") in {"bullet_list", "ordered_list", "task_list"}:
+                        nested_lines.extend(_content_node_to_markdown(nested, depth + 1))
+            indent = "  " * depth
+            if node_type == "ordered_list":
+                marker = f"{index}."
+            elif node_type == "task_list":
+                checked = bool(child.get("attrs", {}).get("checked")) if isinstance(child, dict) else False
+                marker = "[x]" if checked else "[ ]"
+            else:
+                marker = "-"
+            if child_text:
+                lines.append(f"{indent}{marker} {child_text}")
+            lines.extend(nested_lines)
+        return lines
+
+    if node_type == "blockquote":
+        quote_lines = []
+        for child in children:
+            quote_lines.extend(_content_node_to_markdown(child, depth))
+        if not quote_lines and text:
+            quote_lines = [text]
+        return [f"> {line}" if line else ">" for line in quote_lines]
+
+    if node_type == "code_block":
+        language = str(attrs.get("language") or "").strip()
+        return [f"```{language}", attrs.get("raw_text") or text, "```"]
+
+    if node_type == "divider":
+        return ["---"]
+
+    if node_type == "link":
+        url = str(attrs.get("url") or text or "").strip()
+        title = str(attrs.get("title") or text or url).strip()
+        return [f"[{title}]({url})" if url else title]
+
+    if node_type == "image":
+        url = str(attrs.get("url") or attrs.get("src") or "").strip()
+        alt = str(attrs.get("alt") or attrs.get("name") or "image").strip()
+        return [f"![{alt}]({url})" if url else f"![{alt}]"]
+
+    if node_type == "table":
+        rows = children
+        rendered_rows: list[list[str]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            cells = row.get("content") if isinstance(row.get("content"), list) else []
+            rendered_rows.append([_markdown_escape_table_cell(_text_from_inline_nodes(cell.get("content", []))) for cell in cells if isinstance(cell, dict)])
+        if not rendered_rows:
+            return []
+        width = max(len(row) for row in rendered_rows)
+        normalized_rows = [row + [""] * (width - len(row)) for row in rendered_rows]
+        header = normalized_rows[0]
+        lines = [
+            "| " + " | ".join(header) + " |",
+            "| " + " | ".join(["---"] * width) + " |",
+        ]
+        for row in normalized_rows[1:]:
+            lines.append("| " + " | ".join(row) + " |")
+        return lines
+
+    nested: list[str] = []
+    for child in children:
+        nested.extend(_content_node_to_markdown(child, depth))
+    return nested or ([text] if text else [])
+
+
+def content_json_to_markdown(content_json: dict[str, Any] | None, fallback_plain_text: str = "") -> str:
+    if not isinstance(content_json, dict):
+        return fallback_plain_text.strip()
+
+    blocks = content_json.get("content")
+    if not isinstance(blocks, list):
+        return fallback_plain_text.strip()
+
+    lines: list[str] = []
+    for block in blocks:
+        block_lines = _content_node_to_markdown(block)
+        if not block_lines:
+            continue
+        if lines:
+            lines.append("")
+        lines.extend(block_lines)
+    return "\n".join(lines).strip() or fallback_plain_text.strip()
+
+
+def _format_document_payload(document: Any, output_format: str) -> dict[str, Any]:
+    dumped = _dump(document)
+    normalized_format = output_format if output_format in {"markdown", "plain_text", "content_json", "full"} else "markdown"
+    content = dumped.get("content") if isinstance(dumped.get("content"), dict) else {}
+    content_json = content.get("content_json") if isinstance(content, dict) else {}
+    plain_text = str(content.get("plain_text") or "") if isinstance(content, dict) else ""
+    markdown = content_json_to_markdown(content_json, plain_text)
+
+    metadata = {key: value for key, value in dumped.items() if key != "content"}
+    metadata["format"] = normalized_format
+
+    if normalized_format == "full":
+        metadata["content"] = content
+        metadata["markdown"] = markdown
+        return metadata
+    if normalized_format == "content_json":
+        metadata["content_json"] = content_json
+        return metadata
+    if normalized_format == "plain_text":
+        metadata["plain_text"] = plain_text
+        return metadata
+
+    metadata["markdown"] = markdown
+    return metadata
+
+
 def _audit_write(
     *,
     actor_id: str | None,
@@ -263,13 +424,17 @@ def search_documents_tool(
         return {"documents": _dump(items), "query": query, "folder_id": folder_id, "count": len(items)}
 
 
-def get_document_tool(document_id: str, user_email: str | None = None) -> dict[str, Any]:
+def get_document_tool(
+    document_id: str,
+    user_email: str | None = None,
+    format: str = "markdown",
+) -> dict[str, Any]:
     with SessionLocal() as db:
         user_id = _get_actor_user_id(db, user_email)
         document = get_document_detail_for_mcp(db, document_id, user_id=user_id)
         if document is None:
             raise MCPBridgeError("unauthorized", "MCP tools can only read actor-owned documents or public documents")
-        return {"document": _dump(document)}
+        return {"document": _format_document_payload(document, format)}
 
 
 def get_comments_tool(document_id: str, user_email: str | None = None) -> dict[str, Any]:

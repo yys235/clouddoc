@@ -9,6 +9,7 @@ from app.core.db import SessionLocal
 from app.main import app
 from app.models.comment import Comment, CommentThread
 from app.models.document import Document, DocumentContent, DocumentPermission, DocumentVersion
+from app.models.folder import Folder
 from app.models.notification import UserNotification
 from app.models.organization import Organization, OrganizationInvitation, OrganizationMember
 from app.models.share import ShareLink
@@ -84,6 +85,7 @@ def cleanup_user(email: str) -> None:
         db.execute(delete(UserNotification).where(UserNotification.actor_id == user.id))
         db.execute(delete(UserSession).where(UserSession.user_id == user.id))
         db.execute(delete(OrganizationInvitation).where(OrganizationInvitation.invited_by == user.id))
+        db.execute(delete(Folder).where(Folder.owner_id == user.id))
         db.execute(delete(Space).where(Space.owner_id == user.id))
         db.execute(delete(OrganizationMember).where(OrganizationMember.user_id == user.id))
         db.execute(delete(Organization).where(Organization.owner_id == user.id))
@@ -111,8 +113,52 @@ def grant_document_edit_permission(document_id: str, user_email: str) -> None:
         db.close()
 
 
+def make_user_super_admin(email: str) -> None:
+    db = SessionLocal()
+    try:
+        user = db.scalar(select(User).where(User.email == email))
+        assert user is not None
+        user.is_super_admin = True
+        db.commit()
+    finally:
+        db.close()
+
+
+def add_user_as_organization_admin(owner_email: str, admin_email: str) -> None:
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == owner_email))
+        admin = db.scalar(select(User).where(User.email == admin_email))
+        assert owner is not None
+        assert admin is not None
+        organization = db.scalar(select(Organization).where(Organization.owner_id == owner.id).limit(1))
+        assert organization is not None
+        membership = db.scalar(
+            select(OrganizationMember)
+            .where(OrganizationMember.organization_id == organization.id)
+            .where(OrganizationMember.user_id == admin.id)
+            .limit(1)
+        )
+        if membership is None:
+            db.add(
+                OrganizationMember(
+                    organization_id=organization.id,
+                    user_id=admin.id,
+                    role="admin",
+                    status="active",
+                )
+            )
+        else:
+            membership.role = "admin"
+            membership.status = "active"
+        db.commit()
+    finally:
+        db.close()
+
+
 def register_user_client(name: str, email: str, password: str) -> TestClient:
-    response = client.post(
+    registration_client = TestClient(app)
+    response = registration_client.post(
         "/api/auth/register",
         json={
             "name": name,
@@ -125,6 +171,137 @@ def register_user_client(name: str, email: str, password: str) -> TestClient:
     authed_client = TestClient(app)
     authed_client.cookies = response.cookies
     return authed_client
+
+
+def test_system_admin_can_view_all_private_documents_but_not_edit_or_delete() -> None:
+    owner_email = f"pytest-owner-{uuid4()}@example.com"
+    admin_email = f"pytest-super-admin-{uuid4()}@example.com"
+    owner_client = register_user_client("Pytest Owner", owner_email, "owner-password")
+    admin_client = register_user_client("Pytest Super Admin", admin_email, "admin-password")
+    make_user_super_admin(admin_email)
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == owner_email))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    create_response = owner_client.post(
+        "/api/documents",
+        json={
+            "title": "pytest-system-admin-readable-private",
+            "space_id": space_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    document_id = create_response.json()["id"]
+
+    try:
+        list_response = admin_client.get("/api/documents?state=active")
+        assert list_response.status_code == 200
+        list_item = next(item for item in list_response.json() if item["id"] == document_id)
+        assert list_item["can_edit"] is False
+        assert list_item["can_manage"] is False
+
+        detail_response = admin_client.get(f"/api/documents/{document_id}")
+        assert detail_response.status_code == 200
+        detail_payload = detail_response.json()
+        assert detail_payload["id"] == document_id
+        assert detail_payload["can_edit"] is False
+        assert detail_payload["can_manage"] is False
+
+        search_response = admin_client.get("/api/documents/search", params={"q": "system-admin-readable"})
+        assert search_response.status_code == 200
+        assert any(item["id"] == document_id for item in search_response.json())
+
+        update_response = admin_client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "schema_version": 1,
+                "plain_text": "admin should not edit",
+                "content_json": {"type": "doc", "version": 1, "content": []},
+            },
+        )
+        assert update_response.status_code == 403
+
+        delete_response = admin_client.delete(f"/api/documents/{document_id}")
+        assert delete_response.status_code == 403
+
+        create_in_owner_space_response = admin_client.post(
+            "/api/documents",
+            json={
+                "title": "pytest-system-admin-create-rejected",
+                "space_id": space_id,
+                "document_type": "doc",
+                "visibility": "private",
+            },
+        )
+        assert create_in_owner_space_response.status_code == 403
+    finally:
+        cleanup_document(document_id)
+        cleanup_user(admin_email)
+        cleanup_user(owner_email)
+
+
+def test_organization_admin_can_view_team_private_documents_but_not_edit_or_delete() -> None:
+    owner_email = f"pytest-org-owner-{uuid4()}@example.com"
+    admin_email = f"pytest-org-admin-{uuid4()}@example.com"
+    owner_client = register_user_client("Pytest Org Owner", owner_email, "owner-password")
+    admin_client = register_user_client("Pytest Org Admin", admin_email, "admin-password")
+    add_user_as_organization_admin(owner_email, admin_email)
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == owner_email))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).where(Space.space_type == "team").limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    create_response = owner_client.post(
+        "/api/documents",
+        json={
+            "title": "pytest-organization-admin-readable-private",
+            "space_id": space_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    document_id = create_response.json()["id"]
+
+    try:
+        detail_response = admin_client.get(f"/api/documents/{document_id}")
+        assert detail_response.status_code == 200
+        detail_payload = detail_response.json()
+        assert detail_payload["id"] == document_id
+        assert detail_payload["can_edit"] is False
+        assert detail_payload["can_manage"] is False
+
+        update_response = admin_client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "schema_version": 1,
+                "plain_text": "org admin should not edit",
+                "content_json": {"type": "doc", "version": 1, "content": []},
+            },
+        )
+        assert update_response.status_code == 403
+
+        delete_response = admin_client.delete(f"/api/documents/{document_id}")
+        assert delete_response.status_code == 403
+    finally:
+        cleanup_document(document_id)
+        cleanup_user(admin_email)
+        cleanup_user(owner_email)
 
 
 def test_soft_delete_and_restore_document() -> None:

@@ -8,6 +8,7 @@ from app.models.document import Document
 from app.models.folder import Folder
 from app.models.organization import OrganizationMember
 from app.models.space import Space
+from app.models.user import User
 from app.services.actor_context import ActorContext, ensure_actor
 
 
@@ -23,6 +24,14 @@ def is_document_owner(document: Document, actor: ActorLike) -> bool:
     return bool(user_id) and (document.owner_id == user_id or document.creator_id == user_id)
 
 
+def is_system_admin(db: Session, actor: ActorLike) -> bool:
+    user_id = actor_user_id(actor)
+    if not user_id:
+        return False
+    user = db.get(User, user_id)
+    return bool(user and user.is_active and user.is_super_admin)
+
+
 def get_user_organization_ids(db: Session, actor: ActorLike) -> set[str]:
     user_id = actor_user_id(actor)
     if not user_id:
@@ -36,8 +45,38 @@ def get_user_organization_ids(db: Session, actor: ActorLike) -> set[str]:
     )
 
 
+def get_organization_role(db: Session, organization_id: str | None, actor: ActorLike) -> str | None:
+    user_id = actor_user_id(actor)
+    if not user_id or not organization_id:
+        return None
+    return db.scalar(
+        select(OrganizationMember.role)
+        .where(OrganizationMember.organization_id == organization_id)
+        .where(OrganizationMember.user_id == user_id)
+        .where(OrganizationMember.status == "active")
+        .limit(1)
+    )
+
+
+def is_organization_admin_for_space(db: Session, space: Space, actor: ActorLike) -> bool:
+    if is_system_admin(db, actor):
+        return True
+    return get_organization_role(db, space.organization_id, actor) in {"owner", "admin"}
+
+
+def is_organization_admin_for_document(db: Session, document: Document, actor: ActorLike) -> bool:
+    if is_system_admin(db, actor):
+        return True
+    space = db.get(Space, document.space_id)
+    if space is None:
+        return False
+    return is_organization_admin_for_space(db, space, actor)
+
+
 def can_access_space(db: Session, space: Space, actor: ActorLike) -> bool:
     user_id = actor_user_id(actor)
+    if is_system_admin(db, actor):
+        return True
     if space.visibility == "public":
         return True
     if user_id is None:
@@ -77,7 +116,7 @@ def can_manage_space(db: Session, space: Space, actor: ActorLike) -> bool:
 def can_view_document(db: Session, document: Document, actor: ActorLike) -> bool:
     if document.is_deleted:
         return False
-    return is_document_owner(document, actor)
+    return is_document_owner(document, actor) or is_organization_admin_for_document(db, document, actor)
 
 
 def can_edit_document(db: Session, document: Document, actor: ActorLike) -> bool:
@@ -94,8 +133,12 @@ def can_comment_document(db: Session, document: Document, actor: ActorLike) -> b
 
 def can_mcp_read_document(db: Session, document: Document, actor: ActorLike) -> bool:
     if document.is_deleted:
-        return is_document_owner(document, actor)
-    return document.visibility == "public" or is_document_owner(document, actor)
+        return is_document_owner(document, actor) or is_organization_admin_for_document(db, document, actor)
+    return (
+        document.visibility == "public"
+        or is_document_owner(document, actor)
+        or is_organization_admin_for_document(db, document, actor)
+    )
 
 
 def can_mcp_write_document(db: Session, document: Document, actor: ActorLike) -> bool:
@@ -121,6 +164,8 @@ def can_mcp_delete_comment(db: Session, comment: Comment, actor: ActorLike) -> b
 def can_view_folder(db: Session, folder: Folder, actor: ActorLike) -> bool:
     if folder.is_deleted:
         return False
+    if is_system_admin(db, actor):
+        return True
     if folder.visibility == "public":
         return True
     space = db.get(Space, folder.space_id)

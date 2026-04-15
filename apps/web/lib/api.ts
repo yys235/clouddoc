@@ -113,6 +113,7 @@ export type CurrentUser = {
   email: string;
   avatarUrl?: string;
   isActive: boolean;
+  isSuperAdmin: boolean;
 };
 
 export type CurrentOrganization = {
@@ -281,6 +282,7 @@ function buildCurrentUser(item: {
   email: string;
   avatar_url?: string | null;
   is_active: boolean;
+  is_super_admin?: boolean;
 }): CurrentUser {
   return {
     id: item.id,
@@ -288,6 +290,7 @@ function buildCurrentUser(item: {
     email: item.email,
     avatarUrl: item.avatar_url ?? undefined,
     isActive: item.is_active,
+    isSuperAdmin: Boolean(item.is_super_admin),
   };
 }
 

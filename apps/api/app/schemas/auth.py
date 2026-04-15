@@ -11,6 +11,7 @@ class CurrentUserResponse(BaseModel):
     email: str
     avatar_url: str | None = None
     is_active: bool
+    is_super_admin: bool = False
 
 
 class RegisterRequest(BaseModel):
