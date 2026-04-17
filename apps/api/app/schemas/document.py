@@ -22,6 +22,12 @@ class DocumentSummary(BaseModel):
     can_edit: bool = False
     can_manage: bool = False
     can_comment: bool = False
+    can_share: bool = False
+    can_copy: bool = False
+    can_export: bool = False
+    can_delete: bool = False
+    can_transfer_owner: bool = False
+    effective_role: str = "none"
     is_shared_view: bool = False
 
 

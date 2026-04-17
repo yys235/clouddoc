@@ -1,11 +1,14 @@
 from datetime import timezone, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.document import Document
+from app.models.document import Document, DocumentPermission
 from app.models.folder import Folder
+from app.models.organization import OrganizationMember
 from app.models.space import Space
+from app.models.user import User
 from app.schemas.folder import (
     AncestorItem,
     FolderBulkMoveRequest,
@@ -16,13 +19,16 @@ from app.schemas.folder import (
     TreeNodeSummary,
 )
 from app.services.permission_service import (
+    ROLE_RANK,
     can_access_space as permission_can_access_space,
     can_manage_document as permission_can_manage_document,
     can_manage_folder as permission_can_manage_folder,
     can_manage_space as permission_can_manage_space,
     can_view_document as permission_can_view_document,
     can_view_folder as permission_can_view_folder,
+    normalize_permission_level,
 )
+from app.services.event_stream_service import publish_document_event, publish_folder_event
 
 
 def get_next_folder_sort_order(db: Session, space_id: str, parent_folder_id: str | None) -> int:
@@ -102,6 +108,118 @@ def can_manage_folder(db: Session, folder: Folder, user_id: str | None) -> bool:
     return permission_can_manage_folder(db, folder, user_id)
 
 
+class SpaceTreePermissionResolver:
+    def __init__(self, db: Session, space: Space, user_id: str | None, documents: list[Document]) -> None:
+        self.db = db
+        self.space = space
+        self.user_id = user_id
+        self.is_system_admin = False
+        self.is_space_member = False
+        self.space_role: str | None = None
+        self.can_view_space = False
+        self.can_manage_space = False
+        self.organization_permission_enabled = False
+        self.document_roles: dict[str, str] = {}
+        self._prepare_actor()
+        self._prepare_document_roles(documents)
+
+    def _prepare_actor(self) -> None:
+        if not self.user_id:
+            self.can_view_space = self.space.visibility == "public"
+            self.can_manage_space = False
+            return
+
+        user = self.db.get(User, self.user_id)
+        self.is_system_admin = bool(user and user.is_active and user.is_super_admin)
+
+        if self.space.owner_id == self.user_id:
+            self.can_view_space = True
+            self.can_manage_space = True
+            self.space_role = "owner"
+            self.organization_permission_enabled = bool(self.space.organization_id)
+            return
+
+        if self.space.organization_id:
+            self.space_role = self.db.scalar(
+                select(OrganizationMember.role)
+                .where(OrganizationMember.organization_id == self.space.organization_id)
+                .where(OrganizationMember.user_id == self.user_id)
+                .where(OrganizationMember.status == "active")
+                .limit(1)
+            )
+            self.is_space_member = self.space_role is not None
+            self.organization_permission_enabled = self.is_space_member
+
+        self.can_view_space = self.is_system_admin or self.space.visibility == "public" or self.is_space_member
+        self.can_manage_space = self.space_role in {"owner", "admin", "member"}
+
+    def _prepare_document_roles(self, documents: list[Document]) -> None:
+        if not self.user_id or not documents:
+            return
+
+        document_ids = [document.id for document in documents]
+        conditions = [
+            (DocumentPermission.subject_type == "user") & (DocumentPermission.subject_id == self.user_id)
+        ]
+        if self.organization_permission_enabled and self.space.organization_id:
+            conditions.append(
+                (DocumentPermission.subject_type == "organization")
+                & (DocumentPermission.subject_id == self.space.organization_id)
+            )
+
+        rows = self.db.execute(
+            select(DocumentPermission.document_id, DocumentPermission.permission_level)
+            .where(DocumentPermission.document_id.in_(document_ids))
+            .where(or_(*conditions))
+        ).all()
+
+        best_roles: dict[str, str] = {}
+        for document_id, permission_level in rows:
+            normalized = normalize_permission_level(permission_level)
+            current = best_roles.get(document_id, "none")
+            if ROLE_RANK.get(normalized, 0) > ROLE_RANK.get(current, 0):
+                best_roles[document_id] = normalized
+        self.document_roles = best_roles
+
+    def can_view_folder(self, folder: Folder) -> bool:
+        if folder.is_deleted:
+            return False
+        if self.is_system_admin:
+            return True
+        if folder.visibility == "public":
+            return True
+        return self.can_view_space
+
+    def can_manage_folder(self, folder: Folder) -> bool:
+        if not self.user_id:
+            return False
+        if folder.owner_id == self.user_id:
+            return True
+        return self.can_manage_space
+
+    def can_view_document(self, document: Document) -> bool:
+        if document.is_deleted:
+            return False
+        if self.user_id and (document.owner_id == self.user_id or document.creator_id == self.user_id):
+            return True
+        if self.is_system_admin:
+            return True
+        if self.space_role in {"owner", "admin"}:
+            return True
+        if ROLE_RANK.get(self.document_roles.get(document.id, "none"), 0) >= ROLE_RANK["view"]:
+            return True
+        if document.visibility == "public":
+            return True
+        return False
+
+    def can_manage_document(self, document: Document) -> bool:
+        if document.is_deleted:
+            return False
+        if self.user_id and (document.owner_id == self.user_id or document.creator_id == self.user_id):
+            return True
+        return ROLE_RANK.get(self.document_roles.get(document.id, "none"), 0) >= ROLE_RANK["full_access"]
+
+
 def build_folder_summary(db: Session, folder: Folder, user_id: str | None) -> FolderSummary:
     return FolderSummary(
         id=folder.id,
@@ -117,7 +235,12 @@ def build_folder_summary(db: Session, folder: Folder, user_id: str | None) -> Fo
     )
 
 
-def build_folder_tree_node(db: Session, folder: Folder, user_id: str | None) -> TreeNodeSummary:
+def build_folder_tree_node(
+    db: Session,
+    folder: Folder,
+    user_id: str | None,
+    resolver: SpaceTreePermissionResolver | None = None,
+) -> TreeNodeSummary:
     return TreeNodeSummary(
         id=folder.id,
         node_type="folder",
@@ -127,14 +250,19 @@ def build_folder_tree_node(db: Session, folder: Folder, user_id: str | None) -> 
         sort_order=folder.sort_order,
         visibility=folder.visibility,
         updated_at=folder.updated_at,
-        can_manage=can_manage_folder(db, folder, user_id),
+        can_manage=resolver.can_manage_folder(folder) if resolver else can_manage_folder(db, folder, user_id),
         document_type=None,
         is_deleted=folder.is_deleted,
         children=[],
     )
 
 
-def build_document_tree_node(db: Session, document: Document, user_id: str | None) -> TreeNodeSummary:
+def build_document_tree_node(
+    db: Session,
+    document: Document,
+    user_id: str | None,
+    resolver: SpaceTreePermissionResolver | None = None,
+) -> TreeNodeSummary:
     return TreeNodeSummary(
         id=document.id,
         node_type="document",
@@ -144,11 +272,15 @@ def build_document_tree_node(db: Session, document: Document, user_id: str | Non
         sort_order=document.sort_order,
         visibility=document.visibility,
         updated_at=document.updated_at,
-        can_manage=can_manage_document(db, document, user_id),
+        can_manage=resolver.can_manage_document(document) if resolver else can_manage_document(db, document, user_id),
         document_type=document.document_type,
         is_deleted=document.is_deleted,
         children=[],
     )
+
+
+def sort_tree_nodes(nodes: list[TreeNodeSummary]) -> list[TreeNodeSummary]:
+    return sorted(nodes, key=lambda node: (node.sort_order, node.title.lower(), node.node_type, node.id))
 
 
 def get_folder_detail(db: Session, folder_id: str, user_id: str | None = None) -> FolderSummary | None:
@@ -196,6 +328,8 @@ def create_folder(db: Session, payload: FolderCreateRequest, current_user_id: st
     db.add(folder)
     db.commit()
     db.refresh(folder)
+    publish_folder_event(db, "folder.created", folder, current_user_id)
+    db.commit()
     return build_folder_summary(db, folder, current_user_id)
 
 
@@ -219,6 +353,8 @@ def rename_folder(
     folder.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(folder)
+    publish_folder_event(db, "folder.updated", folder, current_user_id)
+    db.commit()
     return build_folder_summary(db, folder, current_user_id)
 
 
@@ -248,11 +384,12 @@ def delete_folder(db: Session, folder_id: str, current_user_id: str) -> FolderSu
     folder.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(folder)
+    publish_folder_event(db, "folder.deleted", folder, current_user_id)
+    db.commit()
     return build_folder_summary(db, folder, current_user_id)
 
 
 def list_space_root_children(db: Session, space_id: str, user_id: str | None = None) -> FolderChildrenResponse:
-    ensure_default_newdoc_folders(db)
     space = db.get(Space, space_id)
     if space is None:
         raise ValueError("Space not found")
@@ -274,18 +411,19 @@ def list_space_root_children(db: Session, space_id: str, user_id: str | None = N
         .where(Document.is_deleted.is_(False))
         .order_by(Document.sort_order.asc(), Document.updated_at.desc())
     ).all()
+    resolver = SpaceTreePermissionResolver(db, space, user_id, documents)
 
     children: list[TreeNodeSummary] = [
-        build_folder_tree_node(db, folder, user_id)
+        build_folder_tree_node(db, folder, user_id, resolver)
         for folder in folders
-        if can_view_folder(db, folder, user_id)
+        if resolver.can_view_folder(folder)
     ]
     children.extend(
-        build_document_tree_node(db, document, user_id)
+        build_document_tree_node(db, document, user_id, resolver)
         for document in documents
-        if can_view_document(db, document, user_id)
+        if resolver.can_view_document(document)
     )
-    return FolderChildrenResponse(folder=None, children=children)
+    return FolderChildrenResponse(folder=None, children=sort_tree_nodes(children))
 
 
 def list_folder_children(db: Session, folder_id: str, user_id: str | None = None) -> FolderChildrenResponse | None:
@@ -294,6 +432,9 @@ def list_folder_children(db: Session, folder_id: str, user_id: str | None = None
         return None
     if not can_view_folder(db, folder, user_id):
         raise PermissionError("Not allowed to access this folder")
+    space = db.get(Space, folder.space_id)
+    if space is None:
+        return None
 
     folders = db.scalars(
         select(Folder)
@@ -307,39 +448,52 @@ def list_folder_children(db: Session, folder_id: str, user_id: str | None = None
         .where(Document.is_deleted.is_(False))
         .order_by(Document.sort_order.asc(), Document.updated_at.desc())
     ).all()
+    resolver = SpaceTreePermissionResolver(db, space, user_id, documents)
     children: list[TreeNodeSummary] = [
-        build_folder_tree_node(db, child, user_id)
+        build_folder_tree_node(db, child, user_id, resolver)
         for child in folders
-        if can_view_folder(db, child, user_id)
+        if resolver.can_view_folder(child)
     ]
     children.extend(
-        build_document_tree_node(db, document, user_id)
+        build_document_tree_node(db, document, user_id, resolver)
         for document in documents
-        if can_view_document(db, document, user_id)
+        if resolver.can_view_document(document)
     )
     return FolderChildrenResponse(
         folder=build_folder_summary(db, folder, user_id),
-        children=children,
+        children=sort_tree_nodes(children),
     )
 
 
-def _build_folder_tree(db: Session, folders_by_parent: dict[str | None, list[Folder]], docs_by_folder: dict[str | None, list[Document]], parent_id: str | None, user_id: str | None) -> list[TreeNodeSummary]:
+def _build_folder_tree(
+    db: Session,
+    folders_by_parent: dict[str | None, list[Folder]],
+    docs_by_folder: dict[str | None, list[Document]],
+    parent_id: str | None,
+    user_id: str | None,
+    resolver: SpaceTreePermissionResolver | None = None,
+) -> list[TreeNodeSummary]:
     nodes: list[TreeNodeSummary] = []
     for folder in folders_by_parent.get(parent_id, []):
-        if not can_view_folder(db, folder, user_id):
+        if resolver:
+            if not resolver.can_view_folder(folder):
+                continue
+        elif not can_view_folder(db, folder, user_id):
             continue
-        node = build_folder_tree_node(db, folder, user_id)
-        node.children = _build_folder_tree(db, folders_by_parent, docs_by_folder, folder.id, user_id)
+        node = build_folder_tree_node(db, folder, user_id, resolver)
+        node.children = _build_folder_tree(db, folders_by_parent, docs_by_folder, folder.id, user_id, resolver)
         nodes.append(node)
     for document in docs_by_folder.get(parent_id, []):
-        if not can_view_document(db, document, user_id):
+        if resolver:
+            if not resolver.can_view_document(document):
+                continue
+        elif not can_view_document(db, document, user_id):
             continue
-        nodes.append(build_document_tree_node(db, document, user_id))
-    return nodes
+        nodes.append(build_document_tree_node(db, document, user_id, resolver))
+    return sort_tree_nodes(nodes)
 
 
 def get_space_tree(db: Session, space_id: str, user_id: str | None = None) -> list[TreeNodeSummary]:
-    ensure_default_newdoc_folders(db)
     space = db.get(Space, space_id)
     if space is None:
         raise ValueError("Space not found")
@@ -363,7 +517,8 @@ def get_space_tree(db: Session, space_id: str, user_id: str | None = None) -> li
         folders_by_parent.setdefault(folder.parent_folder_id, []).append(folder)
     for document in documents:
         docs_by_folder.setdefault(document.folder_id, []).append(document)
-    return _build_folder_tree(db, folders_by_parent, docs_by_folder, None, user_id)
+    resolver = SpaceTreePermissionResolver(db, space, user_id, documents)
+    return _build_folder_tree(db, folders_by_parent, docs_by_folder, None, user_id, resolver)
 
 
 def get_folder_ancestors(db: Session, folder_id: str, user_id: str | None = None) -> list[AncestorItem]:
@@ -390,11 +545,15 @@ def get_document_ancestors(db: Session, document: Document, user_id: str | None 
 
 
 def ensure_default_newdoc_folders(db: Session) -> None:
-    spaces = db.scalars(select(Space)).all()
-    for space in spaces:
+    spaces = db.execute(select(Space.id, Space.owner_id)).all()
+    for space_id, owner_id in spaces:
+        if not db.scalar(select(Space.id).where(Space.id == space_id).limit(1)):
+            continue
+        if not db.scalar(select(User.id).where(User.id == owner_id).limit(1)):
+            continue
         root_folder = db.scalar(
             select(Folder)
-            .where(Folder.space_id == space.id)
+            .where(Folder.space_id == space_id)
             .where(Folder.parent_folder_id.is_(None))
             .where(Folder.title == "newdoc")
             .where(Folder.is_deleted.is_(False))
@@ -403,24 +562,28 @@ def ensure_default_newdoc_folders(db: Session) -> None:
         root_created_at = None
         if root_folder is None:
             root_folder = Folder(
-                space_id=space.id,
+                space_id=space_id,
                 parent_folder_id=None,
-                creator_id=space.owner_id,
-                owner_id=space.owner_id,
+                creator_id=owner_id,
+                owner_id=owner_id,
                 title="newdoc",
                 visibility="private",
                 icon="folder",
                 sort_order=1,
             )
             db.add(root_folder)
-            db.flush()
+            try:
+                db.flush()
+            except IntegrityError:
+                db.rollback()
+                continue
             root_created_at = root_folder.created_at
         else:
             root_created_at = root_folder.created_at
 
         root_documents = db.scalars(
             select(Document)
-            .where(Document.space_id == space.id)
+            .where(Document.space_id == space_id)
             .where(Document.folder_id.is_(None))
             .where(Document.is_deleted.is_(False))
         ).all()
@@ -428,7 +591,7 @@ def ensure_default_newdoc_folders(db: Session) -> None:
             if root_created_at and document.created_at and document.created_at > root_created_at:
                 continue
             document.folder_id = root_folder.id
-            document.sort_order = get_next_document_sort_order(db, space.id, root_folder.id)
+            document.sort_order = get_next_document_sort_order(db, space_id, root_folder.id)
     db.commit()
 
 
@@ -467,6 +630,8 @@ def move_folder(
     folder.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(folder)
+    publish_folder_event(db, "folder.moved", folder, current_user_id)
+    db.commit()
     return build_folder_summary(db, folder, current_user_id)
 
 
@@ -497,6 +662,15 @@ def bulk_move_nodes(db: Session, payload: FolderBulkMoveRequest, current_user_id
         document.updated_at = datetime.now(timezone.utc)
 
     db.commit()
+    for folder_id in payload.folder_ids:
+        folder = db.get(Folder, folder_id)
+        if folder is not None:
+            publish_folder_event(db, "folder.moved", folder, current_user_id)
+    for document_id in payload.document_ids:
+        document = db.get(Document, document_id)
+        if document is not None:
+            publish_document_event(db, "document.moved", document, current_user_id)
+    db.commit()
 
 
 def reorder_children(db: Session, payload: FolderReorderRequest, current_user_id: str) -> None:
@@ -514,24 +688,36 @@ def reorder_children(db: Session, payload: FolderReorderRequest, current_user_id
         if not can_manage_space(db, space, current_user_id):
             raise PermissionError("Not allowed to reorder this space")
 
-    next_order = 1
-    for item in payload.items:
-        if item.node_type == "folder":
-            folder = db.get(Folder, item.id)
-            if folder is None or folder.is_deleted:
-                continue
-            if folder.space_id != payload.space_id or folder.parent_folder_id != payload.parent_folder_id:
-                continue
-            folder.sort_order = next_order
-            folder.updated_at = datetime.now(timezone.utc)
-            next_order += 1
-        elif item.node_type == "document":
-            document = db.get(Document, item.id)
-            if document is None or document.is_deleted:
-                continue
-            if document.space_id != payload.space_id or document.folder_id != payload.parent_folder_id:
-                continue
-            document.sort_order = next_order
-            document.updated_at = datetime.now(timezone.utc)
-            next_order += 1
+    folder_statement = select(Folder).where(Folder.space_id == payload.space_id).where(Folder.is_deleted.is_(False))
+    document_statement = select(Document).where(Document.space_id == payload.space_id).where(Document.is_deleted.is_(False))
+    if payload.parent_folder_id is None:
+        folder_statement = folder_statement.where(Folder.parent_folder_id.is_(None))
+        document_statement = document_statement.where(Document.folder_id.is_(None))
+    else:
+        folder_statement = folder_statement.where(Folder.parent_folder_id == payload.parent_folder_id)
+        document_statement = document_statement.where(Document.folder_id == payload.parent_folder_id)
+
+    current_folders = db.scalars(folder_statement).all()
+    current_documents = db.scalars(document_statement).all()
+    current_nodes: dict[tuple[str, str], Folder | Document] = {
+        **{("folder", folder.id): folder for folder in current_folders},
+        **{("document", document.id): document for document in current_documents},
+    }
+    requested_keys = [(item.node_type, item.id) for item in payload.items]
+    if len(requested_keys) != len(set(requested_keys)):
+        raise ValueError("Duplicate reorder items")
+    if set(requested_keys) != set(current_nodes.keys()):
+        raise ValueError("Reorder items must exactly match the current folder children")
+
+    now = datetime.now(timezone.utc)
+    for next_order, key in enumerate(requested_keys, start=1):
+        node = current_nodes[key]
+        node.sort_order = next_order
+        node.updated_at = now
+    db.commit()
+    for node in current_nodes.values():
+        if isinstance(node, Folder):
+            publish_folder_event(db, "folder.reordered", node, current_user_id)
+        else:
+            publish_document_event(db, "document.reordered", node, current_user_id)
     db.commit()

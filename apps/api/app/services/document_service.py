@@ -27,9 +27,16 @@ from app.services.folder_service import (
     get_document_ancestors as get_document_folder_ancestors,
     get_next_document_sort_order,
 )
+from app.services.event_stream_service import publish_document_event
 from app.services.permission_service import (
     can_comment_document as permission_can_comment_document,
+    can_copy_document as permission_can_copy_document,
+    can_delete_document as permission_can_delete_document,
     can_edit_document as permission_can_edit_document,
+    can_export_document as permission_can_export_document,
+    can_share_document as permission_can_share_document,
+    can_transfer_document_owner as permission_can_transfer_document_owner,
+    get_effective_document_role,
     can_manage_document as permission_can_manage_document,
     can_manage_space,
     can_mcp_read_document,
@@ -294,6 +301,26 @@ def can_comment_document(db: Session, document: Document, user_id: str | None) -
     return permission_can_comment_document(db, document, user_id)
 
 
+def can_share_document(db: Session, document: Document, user_id: str | None) -> bool:
+    return permission_can_share_document(db, document, user_id)
+
+
+def can_copy_document(db: Session, document: Document, user_id: str | None) -> bool:
+    return permission_can_copy_document(db, document, user_id)
+
+
+def can_export_document(db: Session, document: Document, user_id: str | None) -> bool:
+    return permission_can_export_document(db, document, user_id)
+
+
+def can_delete_document(db: Session, document: Document, user_id: str | None) -> bool:
+    return permission_can_delete_document(db, document, user_id)
+
+
+def can_transfer_document_owner(db: Session, document: Document, user_id: str | None) -> bool:
+    return permission_can_transfer_document_owner(db, document, user_id)
+
+
 def can_create_document_in_space(db: Session, space: Space, user_id: str) -> bool:
     return can_manage_space(db, space, user_id)
 
@@ -352,6 +379,12 @@ def build_document_detail_payload(
     can_edit = can_edit_document(db, document, user_id) and document.document_type != "pdf"
     can_manage = can_manage_document(db, document, user_id)
     can_comment = can_comment_document(db, document, user_id)
+    can_share = can_share_document(db, document, user_id)
+    can_copy = can_copy_document(db, document, user_id)
+    can_export = can_export_document(db, document, user_id)
+    can_delete = can_delete_document(db, document, user_id)
+    can_transfer_owner = can_transfer_document_owner(db, document, user_id)
+    effective_role = get_effective_document_role(db, document, user_id)
     is_shared_view = False
 
     if force_can_edit is not None:
@@ -362,6 +395,11 @@ def build_document_detail_payload(
         can_comment = force_can_comment
     if force_is_shared_view is not None:
         is_shared_view = force_is_shared_view
+        if force_is_shared_view:
+            can_share = False
+            can_delete = False
+            can_transfer_owner = False
+            effective_role = "view"
 
     return DocumentDetail(
         id=document.id,
@@ -379,6 +417,12 @@ def build_document_detail_payload(
         can_edit=can_edit,
         can_manage=can_manage,
         can_comment=can_comment,
+        can_share=can_share,
+        can_copy=can_copy,
+        can_export=can_export,
+        can_delete=can_delete,
+        can_transfer_owner=can_transfer_owner,
+        effective_role=effective_role,
         is_shared_view=is_shared_view,
         icon=document.icon,
         summary=document.summary,
@@ -428,10 +472,16 @@ def list_documents(db: Session, state: str = "active", user_id: str | None = Non
             can_edit=can_edit_document(db, doc, user_id),
             can_manage=can_manage_document(db, doc, user_id),
             can_comment=can_comment_document(db, doc, user_id),
+            can_share=can_share_document(db, doc, user_id),
+            can_copy=can_copy_document(db, doc, user_id),
+            can_export=can_export_document(db, doc, user_id),
+            can_delete=can_delete_document(db, doc, user_id),
+            can_transfer_owner=can_transfer_document_owner(db, doc, user_id),
+            effective_role=get_effective_document_role(db, doc, user_id),
             is_shared_view=False,
         )
         for doc in db.scalars(statement).all()
-        if can_view_document(db, doc, user_id) or (state == "trash" and can_manage_document(db, doc, user_id))
+        if can_view_document(db, doc, user_id) or (state == "trash" and user_id in {doc.owner_id, doc.creator_id})
     ]
 
 
@@ -477,6 +527,12 @@ def list_documents_for_mcp(
                 can_edit=is_owned and document.document_type != "pdf",
                 can_manage=is_owned,
                 can_comment=is_owned,
+                can_share=is_owned,
+                can_copy=True,
+                can_export=is_owned,
+                can_delete=is_owned,
+                can_transfer_owner=is_owned,
+                effective_role=get_effective_document_role(db, document, user_id),
                 is_shared_view=False,
             )
         )
@@ -718,6 +774,8 @@ def create_document(db: Session, payload: DocumentCreateRequest, current_user_id
     document.current_version_id = version.id
     db.commit()
     db.refresh(document)
+    publish_document_event(db, "document.created", document, owner_id)
+    db.commit()
 
     return get_document_detail(db, document.id, owner_id)  # type: ignore[return-value]
 
@@ -794,6 +852,8 @@ def create_pdf_document(
     document.current_version_id = version.id
     db.commit()
     db.refresh(document)
+    publish_document_event(db, "document.created", document, owner_id)
+    db.commit()
     return get_document_detail(db, document.id, owner_id)  # type: ignore[return-value]
 
 
@@ -823,6 +883,8 @@ def move_document(
     document.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(document)
+    publish_document_event(db, "document.moved", document, current_user_id)
+    db.commit()
     return get_document_detail(db, document.id, current_user_id)
 
 
@@ -915,6 +977,8 @@ def update_document_content(
 
     db.commit()
     db.refresh(document)
+    publish_document_event(db, "document.content_updated", document, current_user_id)
+    db.commit()
     return get_document_detail(db, doc_id, current_user_id)
 
 
@@ -929,6 +993,8 @@ def soft_delete_document(db: Session, doc_id: str, user_id: str | None = None) -
     document.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(document)
+    publish_document_event(db, "document.deleted", document, user_id)
+    db.commit()
     return get_document_detail_including_deleted(db, doc_id, user_id)
 
 
@@ -936,13 +1002,15 @@ def restore_document(db: Session, doc_id: str, user_id: str | None = None) -> Do
     document = db.get(Document, doc_id)
     if not document:
         return None
-    if not can_manage_document(db, document, user_id):
+    if user_id not in {document.owner_id, document.creator_id}:
         raise PermissionError("Not allowed to restore document")
 
     document.is_deleted = False
     document.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(document)
+    publish_document_event(db, "document.restored", document, user_id)
+    db.commit()
     return get_document_detail(db, doc_id, user_id)
 
 

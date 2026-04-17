@@ -9,6 +9,7 @@ from app.core.db import SessionLocal
 from app.main import app
 from app.models.comment import Comment, CommentThread
 from app.models.document import Document, DocumentContent, DocumentPermission, DocumentVersion
+from app.models.event import EventLog
 from app.models.folder import Folder
 from app.models.notification import UserNotification
 from app.models.organization import Organization, OrganizationInvitation, OrganizationMember
@@ -16,6 +17,8 @@ from app.models.share import ShareLink
 from app.models.session import UserSession
 from app.models.space import Space
 from app.models.user import User
+from app.services.event_stream_service import heartbeat_event, sse_encode
+from app.services.notification_service import create_user_notification, mark_all_notifications_read, mark_notification_read
 
 
 client = TestClient(app)
@@ -50,6 +53,7 @@ def cleanup_document(document_id: str) -> None:
         if thread_ids:
             db.execute(delete(UserNotification).where(UserNotification.thread_id.in_(thread_ids)))
         db.execute(delete(UserNotification).where(UserNotification.document_id == document_id))
+        db.execute(delete(EventLog).where(EventLog.document_id == document_id))
         db.execute(delete(Comment).where(Comment.document_id == document_id))
         db.execute(delete(CommentThread).where(CommentThread.document_id == document_id))
         db.execute(delete(DocumentPermission).where(DocumentPermission.document_id == document_id))
@@ -247,6 +251,187 @@ def test_system_admin_can_view_all_private_documents_but_not_edit_or_delete() ->
         cleanup_document(document_id)
         cleanup_user(admin_email)
         cleanup_user(owner_email)
+
+
+def test_document_permission_member_roles_and_settings_api() -> None:
+    owner_email = f"pytest-permission-owner-{uuid4()}@example.com"
+    editor_email = f"pytest-permission-editor-{uuid4()}@example.com"
+    owner_client = register_user_client("Permission Owner", owner_email, "owner-password")
+    editor_client = register_user_client("Permission Editor", editor_email, "editor-password")
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == owner_email))
+        editor = db.scalar(select(User).where(User.email == editor_email))
+        assert owner is not None
+        assert editor is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).limit(1))
+        assert space is not None
+        space_id = space.id
+        editor_id = editor.id
+    finally:
+        db.close()
+
+    create_response = owner_client.post(
+        "/api/documents",
+        json={
+            "title": f"pytest-permission-doc-{uuid4()}",
+            "space_id": space_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    document_id = create_response.json()["id"]
+
+    try:
+        denied_detail = editor_client.get(f"/api/documents/{document_id}")
+        assert denied_detail.status_code == 404
+
+        grant_response = owner_client.post(
+            f"/api/documents/{document_id}/permissions",
+            json={"subject_type": "user", "subject_id": editor_id, "permission_level": "edit"},
+        )
+        assert grant_response.status_code == 200
+        permission_id = grant_response.json()["id"]
+
+        editor_detail = editor_client.get(f"/api/documents/{document_id}")
+        assert editor_detail.status_code == 200
+        assert editor_detail.json()["can_edit"] is True
+        assert editor_detail.json()["can_comment"] is True
+        assert editor_detail.json()["effective_role"] == "edit"
+
+        settings_response = owner_client.put(
+            f"/api/documents/{document_id}/permission-settings",
+            json={"comment_scope": "disabled", "copy_scope": "can_edit"},
+        )
+        assert settings_response.status_code == 200
+        assert settings_response.json()["comment_scope"] == "disabled"
+
+        capabilities_response = editor_client.get(f"/api/documents/{document_id}/capabilities")
+        assert capabilities_response.status_code == 200
+        assert capabilities_response.json()["can_comment"] is False
+        assert capabilities_response.json()["can_copy"] is True
+
+        audit_response = owner_client.get(f"/api/documents/{document_id}/permission-audit-logs")
+        assert audit_response.status_code == 200
+        assert any(item["action"] == "permission_settings.updated" for item in audit_response.json())
+
+        delete_permission = owner_client.delete(f"/api/documents/{document_id}/permissions/{permission_id}")
+        assert delete_permission.status_code == 204
+
+        denied_again = editor_client.get(f"/api/documents/{document_id}")
+        assert denied_again.status_code == 404
+    finally:
+        cleanup_document(document_id)
+        cleanup_user(owner_email)
+        cleanup_user(editor_email)
+
+
+def test_sse_stream_requires_auth_and_emits_ready_event() -> None:
+    anonymous_client = TestClient(app)
+    unauthorized = anonymous_client.get("/api/events/stream")
+    assert unauthorized.status_code in {401, 403}
+
+    encoded = sse_encode(heartbeat_event())
+    assert "event: heartbeat" in encoded
+    assert "data: " in encoded
+
+
+def test_notification_events_are_persisted_for_target_user_only() -> None:
+    actor_email = f"pytest-notification-actor-{uuid4()}@example.com"
+    recipient_email = f"pytest-notification-recipient-{uuid4()}@example.com"
+    register_user_client("Notification Actor", actor_email, "actor-password")
+    register_user_client("Notification Recipient", recipient_email, "recipient-password")
+
+    db = SessionLocal()
+    actor_id = ""
+    recipient_id = ""
+    try:
+        actor = db.scalar(select(User).where(User.email == actor_email))
+        recipient = db.scalar(select(User).where(User.email == recipient_email))
+        assert actor is not None
+        assert recipient is not None
+        actor_id = actor.id
+        recipient_id = recipient.id
+
+        create_user_notification(
+            db,
+            user_id=recipient.id,
+            actor_id=actor.id,
+            notification_type="comment_thread",
+            title="测试通知",
+            body="测试通知正文",
+        )
+        db.commit()
+        notification = db.scalar(
+            select(UserNotification)
+            .where(UserNotification.user_id == recipient.id)
+            .where(UserNotification.actor_id == actor.id)
+            .order_by(UserNotification.created_at.desc())
+            .limit(1)
+        )
+        assert notification is not None
+
+        created_event = db.scalar(
+            select(EventLog)
+            .where(EventLog.event_type == "notification.created")
+            .where(EventLog.target_id == notification.id)
+            .limit(1)
+        )
+        assert created_event is not None
+        assert created_event.visible_user_ids == [recipient.id]
+        assert created_event.payload["notification"]["id"] == notification.id
+
+        read_response = mark_notification_read(db, recipient.id, notification.id)
+        assert read_response is not None
+        assert read_response.is_read is True
+        read_event = db.scalar(
+            select(EventLog)
+            .where(EventLog.event_type == "notification.read")
+            .where(EventLog.target_id == notification.id)
+            .limit(1)
+        )
+        assert read_event is not None
+        assert read_event.visible_user_ids == [recipient.id]
+
+        create_user_notification(
+            db,
+            user_id=recipient.id,
+            actor_id=actor.id,
+            notification_type="comment_reply",
+            title="测试通知 2",
+            body="测试通知正文 2",
+        )
+        db.commit()
+        assert mark_all_notifications_read(db, recipient.id) == 1
+        read_all_event = db.scalar(
+            select(EventLog)
+            .where(EventLog.event_type == "notification.read_all")
+            .where(EventLog.actor_id == recipient.id)
+            .order_by(EventLog.created_at.desc())
+            .limit(1)
+        )
+        assert read_all_event is not None
+        assert read_all_event.visible_user_ids == [recipient.id]
+        assert read_all_event.payload["notification_ids"]
+    finally:
+        if actor_id or recipient_id:
+            db.execute(
+                delete(EventLog).where(
+                    EventLog.event_type.in_(
+                        ["notification.created", "notification.read", "notification.read_all"]
+                    )
+                )
+            )
+            if recipient_id:
+                db.execute(delete(UserNotification).where(UserNotification.user_id == recipient_id))
+            if actor_id:
+                db.execute(delete(UserNotification).where(UserNotification.actor_id == actor_id))
+            db.commit()
+        db.close()
+        cleanup_user(recipient_email)
+        cleanup_user(actor_email)
 
 
 def test_organization_admin_can_view_team_private_documents_but_not_edit_or_delete() -> None:
@@ -633,7 +818,9 @@ def test_public_document_is_not_accessible_through_normal_api_without_owner_sess
         assert update_response.json()["visibility"] == "public"
 
         public_detail = anonymous_client.get(f"/api/documents/{document_id}")
-        assert public_detail.status_code == 404
+        assert public_detail.status_code == 200
+        assert public_detail.json()["can_edit"] is False
+        assert public_detail.json()["effective_role"] == "view"
 
         owner_detail = client.get(f"/api/documents/{document_id}")
         assert owner_detail.status_code == 200
@@ -839,7 +1026,7 @@ def test_comment_delete_permissions_for_author_only() -> None:
 
     try:
         grant_document_edit_permission(document_id, commenter_email)
-        forbidden_comment_response = commenter_client.post(
+        commenter_comment_response = commenter_client.post(
             f"/api/documents/{document_id}/comments",
             json={
                 "anchor": {
@@ -850,10 +1037,14 @@ def test_comment_delete_permissions_for_author_only() -> None:
                     "prefix_text": "",
                     "suffix_text": "",
                 },
-                "body": "commenter cannot comment on another user's document",
+                "body": "commenter can comment with edit permission",
             },
         )
-        assert forbidden_comment_response.status_code == 403
+        assert commenter_comment_response.status_code == 200
+        commenter_comment_id = commenter_comment_response.json()["comments"][0]["id"]
+
+        commenter_delete_own_response = commenter_client.delete(f"/api/comments/{commenter_comment_id}")
+        assert commenter_delete_own_response.status_code == 200
 
         thread_response = owner_client.post(
             f"/api/documents/{document_id}/comments",
@@ -933,11 +1124,11 @@ def test_cross_user_comment_is_blocked_by_owner_only_document_api() -> None:
                 "body": "@Notify Owner 请处理这个评论",
             },
         )
-        assert thread_response.status_code == 403
+        assert thread_response.status_code == 200
 
         list_response = commenter_client.get(f"/api/documents/{document_id}/comments")
         assert list_response.status_code == 200
-        assert list_response.json() == []
+        assert len(list_response.json()) == 1
     finally:
         cleanup_document(document_id)
         cleanup_user(owner_email)

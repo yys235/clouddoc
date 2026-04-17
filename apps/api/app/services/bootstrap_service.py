@@ -1,4 +1,4 @@
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, inspect, select, text
 from sqlalchemy.orm import Session
 
 from app.models.document import Document, DocumentContent, DocumentPermission, DocumentVersion
@@ -253,36 +253,158 @@ def seed_templates_if_missing(db: Session) -> None:
 
 
 def ensure_runtime_schema(db: Session) -> None:
+    inspector = inspect(db.bind)
+    table_names = set(inspector.get_table_names())
+
+    if "folders" not in table_names:
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS folders (
+                    id UUID PRIMARY KEY,
+                    space_id UUID NOT NULL REFERENCES spaces(id),
+                    parent_folder_id UUID REFERENCES folders(id),
+                    creator_id UUID NOT NULL REFERENCES users(id),
+                    owner_id UUID NOT NULL REFERENCES users(id),
+                    title VARCHAR(255) NOT NULL DEFAULT '未命名文件夹',
+                    visibility VARCHAR(16) NOT NULL DEFAULT 'private',
+                    icon VARCHAR(32),
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+        )
+        db.execute(text("CREATE INDEX IF NOT EXISTS idx_folders_space ON folders(space_id)"))
+        db.execute(text("CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_folder_id)"))
+        db.execute(text("CREATE INDEX IF NOT EXISTS idx_folders_deleted ON folders(is_deleted)"))
+        db.commit()
+        inspector = inspect(db.bind)
+
+    document_columns = {column["name"] for column in inspector.get_columns("documents")}
+    if "visibility" not in document_columns:
+        db.execute(text("ALTER TABLE documents ADD COLUMN visibility VARCHAR(16) NOT NULL DEFAULT 'private'"))
+        db.commit()
+        inspector = inspect(db.bind)
+
+    user_columns = {column["name"] for column in inspector.get_columns("users")}
+    if "is_super_admin" not in user_columns:
+        db.execute(text("ALTER TABLE users ADD COLUMN is_super_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.commit()
     db.execute(
         text(
             """
-            CREATE TABLE IF NOT EXISTS folders (
-                id UUID PRIMARY KEY,
-                space_id UUID NOT NULL REFERENCES spaces(id),
-                parent_folder_id UUID REFERENCES folders(id),
-                creator_id UUID NOT NULL REFERENCES users(id),
-                owner_id UUID NOT NULL REFERENCES users(id),
-                title VARCHAR(255) NOT NULL DEFAULT '未命名文件夹',
-                visibility VARCHAR(16) NOT NULL DEFAULT 'private',
-                icon VARCHAR(32),
-                sort_order INTEGER NOT NULL DEFAULT 0,
-                is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL UNIQUE REFERENCES users(id),
+                document_tree_open_mode VARCHAR(32) NOT NULL DEFAULT 'same-page',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT chk_user_preference_document_tree_open_mode CHECK (document_tree_open_mode IN ('same-page', 'new-window'))
             )
             """
         )
     )
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_folders_space ON folders(space_id)"))
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_folder_id)"))
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_folders_deleted ON folders(is_deleted)"))
-    db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'private'"))
-    db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_super_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_user_preferences_user ON user_preferences(user_id)"))
     db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0"))
     db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS folder_id UUID REFERENCES folders(id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_visibility ON documents(visibility)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_folder ON documents(folder_id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_sort_order ON documents(sort_order)"))
+    db.execute(text("ALTER TABLE document_permissions ADD COLUMN IF NOT EXISTS invited_by UUID REFERENCES users(id)"))
+    db.execute(text("ALTER TABLE document_permissions ADD COLUMN IF NOT EXISTS notify BOOLEAN NOT NULL DEFAULT FALSE"))
+    db.execute(text("ALTER TABLE document_permissions ALTER COLUMN subject_id TYPE VARCHAR(128)"))
+    db.execute(text("ALTER TABLE document_permissions DROP CONSTRAINT IF EXISTS chk_permission_subject_type"))
+    db.execute(text("ALTER TABLE document_permissions DROP CONSTRAINT IF EXISTS chk_permission_level"))
+    db.execute(
+        text(
+            """
+            ALTER TABLE document_permissions
+            ADD CONSTRAINT chk_permission_subject_type
+            CHECK (subject_type IN ('user', 'organization', 'department', 'group', 'space_role', 'link'))
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE document_permissions
+            ADD CONSTRAINT chk_permission_level
+            CHECK (permission_level IN ('view', 'comment', 'edit', 'manage', 'full_access'))
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS document_permission_settings (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                document_id UUID NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+                link_share_scope VARCHAR(32) NOT NULL DEFAULT 'closed',
+                external_access_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                comment_scope VARCHAR(32) NOT NULL DEFAULT 'can_edit',
+                share_collaborator_scope VARCHAR(32) NOT NULL DEFAULT 'full_access',
+                copy_scope VARCHAR(32) NOT NULL DEFAULT 'can_view',
+                export_scope VARCHAR(32) NOT NULL DEFAULT 'full_access',
+                print_scope VARCHAR(32) NOT NULL DEFAULT 'full_access',
+                download_scope VARCHAR(32) NOT NULL DEFAULT 'full_access',
+                allow_search_index BOOLEAN NOT NULL DEFAULT FALSE,
+                watermark_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_by UUID REFERENCES users(id),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS document_permission_audit_logs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                actor_id UUID REFERENCES users(id),
+                actor_type VARCHAR(32) NOT NULL DEFAULT 'user',
+                action VARCHAR(64) NOT NULL,
+                target_type VARCHAR(32),
+                target_id VARCHAR(128),
+                before_json JSONB,
+                after_json JSONB,
+                reason TEXT,
+                ip_address VARCHAR(64),
+                user_agent VARCHAR(512),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("ALTER TABLE document_permission_settings DROP CONSTRAINT IF EXISTS document_permission_settings_document_id_fkey"))
+    db.execute(
+        text(
+            """
+            ALTER TABLE document_permission_settings
+            ADD CONSTRAINT document_permission_settings_document_id_fkey
+            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+            """
+        )
+    )
+    db.execute(text("ALTER TABLE document_permission_audit_logs DROP CONSTRAINT IF EXISTS document_permission_audit_logs_document_id_fkey"))
+    db.execute(
+        text(
+            """
+            ALTER TABLE document_permission_audit_logs
+            ADD CONSTRAINT document_permission_audit_logs_document_id_fkey
+            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_document_permission_settings_document ON document_permission_settings(document_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_document_permission_audit_document ON document_permission_audit_logs(document_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_document_permission_audit_actor ON document_permission_audit_logs(actor_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_document_permission_audit_action ON document_permission_audit_logs(action)"))
     db.execute(text("ALTER TABLE comments ADD COLUMN IF NOT EXISTS parent_comment_id UUID REFERENCES comments(id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id)"))
     db.execute(text("ALTER TABLE share_links ADD COLUMN IF NOT EXISTS password_hash TEXT"))
@@ -311,5 +433,38 @@ def ensure_runtime_schema(db: Session) -> None:
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_mcp_audit_actor ON mcp_audit_logs(actor_id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_mcp_audit_tool ON mcp_audit_logs(tool_name)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_mcp_audit_target ON mcp_audit_logs(target_id)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS event_logs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                event_type VARCHAR(64) NOT NULL,
+                actor_id VARCHAR(128),
+                space_id VARCHAR(128),
+                document_id VARCHAR(128),
+                folder_id VARCHAR(128),
+                target_type VARCHAR(32) NOT NULL,
+                target_id VARCHAR(128),
+                payload JSONB NOT NULL,
+                visible_user_ids JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("ALTER TABLE event_logs DROP CONSTRAINT IF EXISTS event_logs_actor_id_fkey"))
+    db.execute(text("ALTER TABLE event_logs DROP CONSTRAINT IF EXISTS event_logs_space_id_fkey"))
+    db.execute(text("ALTER TABLE event_logs DROP CONSTRAINT IF EXISTS event_logs_document_id_fkey"))
+    db.execute(text("ALTER TABLE event_logs DROP CONSTRAINT IF EXISTS event_logs_folder_id_fkey"))
+    db.execute(text("ALTER TABLE event_logs ALTER COLUMN actor_id TYPE VARCHAR(128)"))
+    db.execute(text("ALTER TABLE event_logs ALTER COLUMN space_id TYPE VARCHAR(128)"))
+    db.execute(text("ALTER TABLE event_logs ALTER COLUMN document_id TYPE VARCHAR(128)"))
+    db.execute(text("ALTER TABLE event_logs ALTER COLUMN folder_id TYPE VARCHAR(128)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_event_logs_type ON event_logs(event_type)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_event_logs_actor ON event_logs(actor_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_event_logs_space ON event_logs(space_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_event_logs_document ON event_logs(document_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_event_logs_folder ON event_logs(folder_id)"))
     db.commit()
     ensure_mcp_guest_user(db)

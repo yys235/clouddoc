@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.db import SessionLocal, init_db
-from app.services.bootstrap_service import ensure_runtime_schema, seed_demo_data
+from app.services.bootstrap_service import seed_demo_data
 from app.services.document_service import ensure_supported_document_types
 from app.services.folder_service import ensure_default_newdoc_folders
 
@@ -19,7 +19,6 @@ async def lifespan(_: FastAPI):
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     db = SessionLocal()
     try:
-        ensure_runtime_schema(db)
         ensure_supported_document_types(db)
         seed_demo_data(db)
         ensure_default_newdoc_folders(db)

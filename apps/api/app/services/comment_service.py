@@ -21,6 +21,7 @@ from app.services.notification_service import (
     notify_comment_reply_created,
     notify_comment_thread_created,
 )
+from app.services.event_stream_service import publish_comment_event
 
 
 def _author_name_map(db: Session, user_ids: set[str]) -> dict[str, str]:
@@ -126,6 +127,8 @@ def create_comment_thread(
         notify_comment_thread_created(db, document=document, thread=thread, comment=comment, actor=actor)
     db.commit()
     db.refresh(thread)
+    publish_comment_event(db, "comment.thread_created", document, author_id, thread_id=thread.id, comment_id=comment.id)
+    db.commit()
     return _thread_response(db, thread)
 
 
@@ -176,6 +179,8 @@ def reply_comment_thread(
         )
     db.commit()
     db.refresh(thread)
+    publish_comment_event(db, "comment.created", document, author_id, thread_id=thread.id, comment_id=comment.id)
+    db.commit()
     return _thread_response(db, thread)
 
 
@@ -201,11 +206,13 @@ def update_comment_thread_status(
     thread.status = next_status
     db.commit()
     db.refresh(thread)
+    publish_comment_event(db, f"comment.{next_status}", document, current_user_id, thread_id=thread.id)
+    db.commit()
     return _thread_response(db, thread)
 
 
 def _can_manage_comment(db: Session, document: Document, current_user_id: str, comment: Comment) -> bool:
-    return comment.author_id == current_user_id
+    return comment.author_id == current_user_id or document.owner_id == current_user_id or document.creator_id == current_user_id
 
 
 def _delete_thread_notifications(db: Session, thread_id: str) -> None:
@@ -256,6 +263,16 @@ def delete_comment(
     else:
         thread.updated_at = datetime.now(timezone.utc)
 
+    db.commit()
+    publish_comment_event(
+        db,
+        "comment.deleted",
+        document,
+        current_user_id,
+        thread_id=thread.id,
+        comment_id=comment_id,
+        thread_deleted=thread_deleted,
+    )
     db.commit()
 
     return CommentDeleteResponse(

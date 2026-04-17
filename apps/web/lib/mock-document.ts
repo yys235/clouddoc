@@ -21,6 +21,12 @@ export type DocumentViewModel = {
   canEdit: boolean;
   canManage: boolean;
   canComment: boolean;
+  canShare: boolean;
+  canCopy: boolean;
+  canExport: boolean;
+  canDelete: boolean;
+  canTransferOwner: boolean;
+  effectiveRole: string;
   isSharedView: boolean;
   outline: Array<{ id: string; title: string; level: number }>;
   content: RichTextNode[];
@@ -63,6 +69,12 @@ export function buildDocumentViewModel(data: {
   can_edit?: boolean;
   can_manage?: boolean;
   can_comment?: boolean;
+  can_share?: boolean;
+  can_copy?: boolean;
+  can_export?: boolean;
+  can_delete?: boolean;
+  can_transfer_owner?: boolean;
+  effective_role?: string;
   is_shared_view?: boolean;
   content?: { content_json?: { content?: RichTextNode[] } };
   summary?: string | null;
@@ -94,6 +106,12 @@ export function buildDocumentViewModel(data: {
     canEdit: Boolean(data.can_edit),
     canManage: Boolean(data.can_manage),
     canComment: Boolean(data.can_comment),
+    canShare: Boolean(data.can_share),
+    canCopy: Boolean(data.can_copy),
+    canExport: Boolean(data.can_export),
+    canDelete: Boolean(data.can_delete),
+    canTransferOwner: Boolean(data.can_transfer_owner),
+    effectiveRole: data.effective_role ?? "none",
     isSharedView: Boolean(data.is_shared_view),
     outline: buildOutline(content),
     content,

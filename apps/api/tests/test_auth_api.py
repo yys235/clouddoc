@@ -6,6 +6,7 @@ from sqlalchemy import delete, select
 from app.core.db import SessionLocal
 from app.main import app
 from app.models.organization import Organization, OrganizationMember
+from app.models.preference import UserPreference
 from app.models.session import UserSession
 from app.models.space import Space
 from app.models.user import User
@@ -21,6 +22,7 @@ def cleanup_user(email: str) -> None:
         if user is None:
             return
         db.execute(delete(UserSession).where(UserSession.user_id == user.id))
+        db.execute(delete(UserPreference).where(UserPreference.user_id == user.id))
         db.execute(delete(Space).where(Space.owner_id == user.id))
         db.execute(delete(OrganizationMember).where(OrganizationMember.user_id == user.id))
         db.execute(delete(Organization).where(Organization.owner_id == user.id))
@@ -116,3 +118,35 @@ def test_register_creates_user_org_spaces_and_session() -> None:
             db.close()
     finally:
         cleanup_user(email)
+
+
+def test_user_preferences_are_persisted_per_user() -> None:
+    login_response = client.post(
+        "/api/auth/login",
+        json={"email": "demo@clouddoc.local", "password": "demo123456"},
+    )
+    assert login_response.status_code == 200
+
+    authed_client = TestClient(app)
+    authed_client.cookies = login_response.cookies
+
+    initial_response = authed_client.get("/api/preferences/me")
+    assert initial_response.status_code == 200
+    assert initial_response.json()["document_tree_open_mode"] in {"same-page", "new-window"}
+
+    update_response = authed_client.patch(
+        "/api/preferences/me",
+        json={"document_tree_open_mode": "new-window"},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["document_tree_open_mode"] == "new-window"
+
+    persisted_response = authed_client.get("/api/preferences/me")
+    assert persisted_response.status_code == 200
+    assert persisted_response.json()["document_tree_open_mode"] == "new-window"
+
+    invalid_response = authed_client.patch(
+        "/api/preferences/me",
+        json={"document_tree_open_mode": "side-panel"},
+    )
+    assert invalid_response.status_code == 422

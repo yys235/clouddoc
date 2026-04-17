@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 
 import { GuestAuthLinks, UserMenu } from "@/components/auth/auth-actions";
 import { createDocument, fetchSpaces, uploadPdfDocument } from "@/lib/api";
@@ -15,6 +15,7 @@ const navItems = [
   { label: "通知", href: "/notifications" },
   { label: "收藏", href: "/favorites" },
   { label: "模板中心", href: "/templates" },
+  { label: "个人配置", href: "/settings" },
   { label: "回收站", href: "/trash" },
 ];
 
@@ -34,7 +35,45 @@ export function SidebarNav({
   const [showCreatePanel, setShowCreatePanel] = useState(false);
   const [pdfTitle, setPdfTitle] = useState("");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [liveUnreadCount, setLiveUnreadCount] = useState(notificationUnreadCount);
   const canCreate = Boolean(currentUser);
+
+  useEffect(() => {
+    setLiveUnreadCount(notificationUnreadCount);
+  }, [notificationUnreadCount]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
+
+    const source = new EventSource("/api/events/stream", { withCredentials: true });
+    const handleCreated = (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(event.data) as { notification?: { is_read?: boolean } };
+        if (!payload.notification?.is_read) {
+          setLiveUnreadCount((current) => current + 1);
+        }
+      } catch {
+        setLiveUnreadCount((current) => current + 1);
+      }
+    };
+    const handleRead = () => setLiveUnreadCount((current) => Math.max(0, current - 1));
+    const handleReadAll = () => setLiveUnreadCount(0);
+
+    source.addEventListener("notification.created", handleCreated);
+    source.addEventListener("notification.read", handleRead);
+    source.addEventListener("notification.read_all", handleReadAll);
+    source.onerror = () => {
+      source.close();
+    };
+    return () => {
+      source.removeEventListener("notification.created", handleCreated);
+      source.removeEventListener("notification.read", handleRead);
+      source.removeEventListener("notification.read_all", handleReadAll);
+      source.close();
+    };
+  }, [currentUser]);
 
   const closeCreateModal = () => {
     setShowCreatePanel(false);
@@ -128,9 +167,9 @@ export function SidebarNav({
             >
               <span className="flex items-center justify-between gap-2">
                 <span>{item.label}</span>
-                {item.href === "/notifications" && notificationUnreadCount > 0 ? (
+                {item.href === "/notifications" && liveUnreadCount > 0 ? (
                   <span className="rounded-lg bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-600">
-                    {notificationUnreadCount}
+                    {liveUnreadCount}
                   </span>
                 ) : null}
               </span>

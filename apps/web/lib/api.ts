@@ -93,6 +93,45 @@ export type ShareLinkSettings = {
   lastAccessedAt?: string;
 };
 
+export type DocumentPermissionSettings = {
+  documentId: string;
+  linkShareScope: string;
+  externalAccessEnabled: boolean;
+  commentScope: string;
+  shareCollaboratorScope: string;
+  copyScope: string;
+  exportScope: string;
+  printScope: string;
+  downloadScope: string;
+  allowSearchIndex: boolean;
+  watermarkEnabled: boolean;
+  updatedAt: string;
+};
+
+export type DocumentPermissionMember = {
+  id: string;
+  documentId: string;
+  subjectType: string;
+  subjectId: string;
+  permissionLevel: string;
+  invitedBy?: string | null;
+  notify: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DocumentPermissionAuditLog = {
+  id: string;
+  documentId: string;
+  actorId?: string | null;
+  actorType: string;
+  action: string;
+  targetType?: string | null;
+  targetId?: string | null;
+  reason?: string | null;
+  createdAt: string;
+};
+
 export type SharedDocumentResponse = {
   status: string;
   document: DocumentViewModel | null;
@@ -114,6 +153,15 @@ export type CurrentUser = {
   avatarUrl?: string;
   isActive: boolean;
   isSuperAdmin: boolean;
+};
+
+export type DocumentTreeOpenMode = "same-page" | "new-window";
+
+export type UserPreference = {
+  id: string;
+  userId: string;
+  documentTreeOpenMode: DocumentTreeOpenMode;
+  updatedAt: string;
 };
 
 export type CurrentOrganization = {
@@ -294,6 +342,20 @@ function buildCurrentUser(item: {
   };
 }
 
+function buildUserPreference(item: {
+  id: string;
+  user_id: string;
+  document_tree_open_mode: DocumentTreeOpenMode;
+  updated_at: string;
+}): UserPreference {
+  return {
+    id: item.id,
+    userId: item.user_id,
+    documentTreeOpenMode: item.document_tree_open_mode,
+    updatedAt: item.updated_at,
+  };
+}
+
 export async function fetchCurrentUser(options?: { bootstrap?: boolean }): Promise<ApiItemResult<CurrentUser>> {
   try {
     const bootstrap = options?.bootstrap ?? false;
@@ -309,6 +371,41 @@ export async function fetchCurrentUser(options?: { bootstrap?: boolean }): Promi
   } catch {
     return { data: null, unavailable: true };
   }
+}
+
+export async function fetchUserPreference(): Promise<ApiItemResult<UserPreference>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/preferences/me`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (response.status === 401) {
+      return { data: null, unavailable: false };
+    }
+    if (!response.ok) {
+      return { data: null, unavailable: true };
+    }
+    return { data: buildUserPreference(await response.json()), unavailable: false };
+  } catch {
+    return { data: null, unavailable: true };
+  }
+}
+
+export async function updateUserPreference(input: {
+  documentTreeOpenMode?: DocumentTreeOpenMode;
+}): Promise<UserPreference> {
+  const response = await fetch(`${API_BASE_URL}/preferences/me`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      document_tree_open_mode: input.documentTreeOpenMode,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to update user preferences");
+  }
+  return buildUserPreference(await response.json());
 }
 
 export async function login(input: { email: string; password: string }): Promise<AuthPayload> {
@@ -1666,6 +1763,191 @@ export async function disableDocumentShare(docId: string) {
     throw new Error("Failed to disable share link");
   }
   return buildShareLinkSettings(await response.json());
+}
+
+function buildPermissionSettings(item: any): DocumentPermissionSettings {
+  return {
+    documentId: item.document_id,
+    linkShareScope: item.link_share_scope,
+    externalAccessEnabled: Boolean(item.external_access_enabled),
+    commentScope: item.comment_scope,
+    shareCollaboratorScope: item.share_collaborator_scope,
+    copyScope: item.copy_scope,
+    exportScope: item.export_scope,
+    printScope: item.print_scope,
+    downloadScope: item.download_scope,
+    allowSearchIndex: Boolean(item.allow_search_index),
+    watermarkEnabled: Boolean(item.watermark_enabled),
+    updatedAt: item.updated_at,
+  };
+}
+
+function buildPermissionMember(item: any): DocumentPermissionMember {
+  return {
+    id: item.id,
+    documentId: item.document_id,
+    subjectType: item.subject_type,
+    subjectId: item.subject_id,
+    permissionLevel: item.permission_level,
+    invitedBy: item.invited_by,
+    notify: Boolean(item.notify),
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+  };
+}
+
+export async function fetchDocumentPermissionSettings(docId: string): Promise<ApiItemResult<DocumentPermissionSettings>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/permission-settings`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: null, unavailable: true };
+    }
+    return { data: buildPermissionSettings(await response.json()), unavailable: false };
+  } catch {
+    return { data: null, unavailable: true };
+  }
+}
+
+export async function updateDocumentPermissionSettings(
+  docId: string,
+  input: Partial<{
+    linkShareScope: string;
+    externalAccessEnabled: boolean;
+    commentScope: string;
+    shareCollaboratorScope: string;
+    copyScope: string;
+    exportScope: string;
+    printScope: string;
+    downloadScope: string;
+    allowSearchIndex: boolean;
+    watermarkEnabled: boolean;
+  }>,
+): Promise<DocumentPermissionSettings> {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/permission-settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      link_share_scope: input.linkShareScope,
+      external_access_enabled: input.externalAccessEnabled,
+      comment_scope: input.commentScope,
+      share_collaborator_scope: input.shareCollaboratorScope,
+      copy_scope: input.copyScope,
+      export_scope: input.exportScope,
+      print_scope: input.printScope,
+      download_scope: input.downloadScope,
+      allow_search_index: input.allowSearchIndex,
+      watermark_enabled: input.watermarkEnabled,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to update permission settings");
+  }
+  return buildPermissionSettings(await response.json());
+}
+
+export async function fetchDocumentPermissions(docId: string): Promise<ApiListResult<DocumentPermissionMember>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/permissions`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return { data: (data ?? []).map(buildPermissionMember), unavailable: false };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
+export async function addDocumentPermission(
+  docId: string,
+  input: { subjectType: string; subjectId: string; permissionLevel: string; notify?: boolean },
+): Promise<DocumentPermissionMember> {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/permissions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      subject_type: input.subjectType,
+      subject_id: input.subjectId,
+      permission_level: input.permissionLevel,
+      notify: Boolean(input.notify),
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to add document permission");
+  }
+  return buildPermissionMember(await response.json());
+}
+
+export async function updateDocumentPermission(docId: string, permissionId: string, permissionLevel: string) {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/permissions/${permissionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ permission_level: permissionLevel }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to update document permission");
+  }
+  return buildPermissionMember(await response.json());
+}
+
+export async function deleteDocumentPermission(docId: string, permissionId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/permissions/${permissionId}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error("Failed to delete document permission");
+  }
+}
+
+export async function transferDocumentOwner(docId: string, newOwnerId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/transfer-owner`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ new_owner_id: newOwnerId }),
+  });
+  if (!response.ok && response.status !== 204) {
+    throw new Error("Failed to transfer document owner");
+  }
+}
+
+export async function fetchDocumentPermissionAuditLogs(docId: string): Promise<ApiListResult<DocumentPermissionAuditLog>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/permission-audit-logs`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return {
+      data: (data ?? []).map((item: any) => ({
+        id: item.id,
+        documentId: item.document_id,
+        actorId: item.actor_id,
+        actorType: item.actor_type,
+        action: item.action,
+        targetType: item.target_type,
+        targetId: item.target_id,
+        reason: item.reason,
+        createdAt: item.created_at,
+      })),
+      unavailable: false,
+    };
+  } catch {
+    return { data: [], unavailable: true };
+  }
 }
 
 export async function fetchSharedDocument(token: string): Promise<ApiItemResult<SharedDocumentResponse>> {

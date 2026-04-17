@@ -763,6 +763,8 @@ export function DocumentPage({
   const titleTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const isPdfDocument = currentDocument.documentType === "pdf";
   const canManageDocument = currentDocument.canManage && !currentDocument.isSharedView;
+  const canOpenShareDialog = canManageDocument && currentDocument.canShare && !currentDocument.isSharedView;
+  const canDeleteDocument = currentDocument.canDelete && !currentDocument.isSharedView;
   const canEditDocument = currentDocument.canEdit && !currentDocument.isSharedView && !isPdfDocument;
   const canCommentDocument = currentDocument.canComment && !currentDocument.isSharedView;
   const showCommentSidebar = !isPdfDocument && !currentDocument.isSharedView;
@@ -839,6 +841,90 @@ export function DocumentPage({
       disposed = true;
     };
   }, [document.id, showCommentSidebar]);
+
+  useEffect(() => {
+    if (currentDocument.isSharedView || (!canEditDocument && !canCommentDocument && !canManageDocument)) {
+      return;
+    }
+    const source = new EventSource("/api/events/stream", { withCredentials: true });
+    const reloadComments = () => {
+      if (!showCommentSidebar) {
+        return;
+      }
+      void fetchCommentThreads(currentDocument.id).then((result) => {
+        setCommentThreads(result.data);
+        setCommentsUnavailable(result.unavailable);
+      });
+    };
+    const handleDocumentEvent = (event: MessageEvent<string>) => {
+      try {
+        const payload = JSON.parse(event.data) as { document_id?: string; event_type?: string; document?: { title?: string; visibility?: string } };
+        if (payload.document_id !== currentDocument.id) {
+          return;
+        }
+        if (payload.event_type === "document.content_updated") {
+          setNotice(
+            isEditing
+              ? "文档已在其他地方更新。当前编辑内容不会被自动覆盖，保存前请确认是否需要刷新查看。"
+              : "文档已在其他地方更新，可以刷新查看最新内容。",
+          );
+          return;
+        }
+        if (payload.event_type === "document.permission_changed") {
+          setNotice("文档权限已发生变化，部分操作能力可能已更新。");
+          return;
+        }
+        if (payload.document) {
+          setCurrentDocument((current) => ({
+            ...current,
+            title: payload.document?.title ?? current.title,
+            visibility: payload.document?.visibility ?? current.visibility,
+          }));
+        }
+      } catch {
+        // Ignore malformed stream payloads.
+      }
+    };
+    const handleCommentEvent = (event: MessageEvent<string>) => {
+      try {
+        const payload = JSON.parse(event.data) as { document_id?: string };
+        if (payload.document_id === currentDocument.id) {
+          reloadComments();
+        }
+      } catch {
+        // Ignore malformed stream payloads.
+      }
+    };
+    const documentEvents = ["document.updated", "document.content_updated", "document.permission_changed"];
+    const commentEvents = ["comment.thread_created", "comment.created", "comment.updated", "comment.deleted", "comment.resolved", "comment.reopened"];
+    for (const eventName of documentEvents) {
+      source.addEventListener(eventName, handleDocumentEvent);
+    }
+    for (const eventName of commentEvents) {
+      source.addEventListener(eventName, handleCommentEvent);
+    }
+    source.onerror = () => {
+      source.close();
+      setNotice("实时连接已断开，当前文档可能不是最新。刷新页面可重新连接。");
+    };
+    return () => {
+      for (const eventName of documentEvents) {
+        source.removeEventListener(eventName, handleDocumentEvent);
+      }
+      for (const eventName of commentEvents) {
+        source.removeEventListener(eventName, handleCommentEvent);
+      }
+      source.close();
+    };
+  }, [
+    canCommentDocument,
+    canEditDocument,
+    canManageDocument,
+    currentDocument.id,
+    currentDocument.isSharedView,
+    isEditing,
+    showCommentSidebar,
+  ]);
 
   useEffect(() => {
     if (isPdfDocument || !canEditDocument) {
@@ -1374,14 +1460,23 @@ export function DocumentPage({
   };
 
   const confirmDelete = () => {
-    if (!canManageDocument) {
+    if (!canDeleteDocument) {
       return;
     }
+    const fallbackUrl =
+      breadcrumbs && breadcrumbs.length > 0
+        ? `/folders/${breadcrumbs[breadcrumbs.length - 1].id}`
+        : `/documents${currentDocument.spaceId ? `?space=${currentDocument.spaceId}` : ""}`;
     startTransition(async () => {
       try {
         await softDeleteDocument(currentDocument.id);
         setShowDeleteConfirm(false);
-        router.push("/");
+        if (window.history.length > 1) {
+          router.back();
+          window.setTimeout(() => router.refresh(), 100);
+          return;
+        }
+        router.replace(fallbackUrl);
         router.refresh();
       } catch {
         setNotice("删除失败");
@@ -1494,7 +1589,7 @@ export function DocumentPage({
                     {currentDocument.isFavorited ? "已收藏" : "收藏"}
                   </button>
                 ) : null}
-                {canManageDocument ? (
+                {canOpenShareDialog ? (
                   <button
                     type="button"
                     onClick={() => setShowShareDialog(true)}
@@ -1503,7 +1598,7 @@ export function DocumentPage({
                     权限/分享
                   </button>
                 ) : null}
-                {canManageDocument ? (
+                {canDeleteDocument ? (
                   <button
                     type="button"
                     disabled={isMutating || isSaving}
@@ -1700,11 +1795,13 @@ export function DocumentPage({
             />
           )}
         </article>
-        {canManageDocument ? (
+        {canOpenShareDialog ? (
           <DocumentShareDialog
             open={showShareDialog}
             documentId={currentDocument.id}
             currentVisibility={(currentDocument.visibility === "public" ? "public" : "private")}
+            canTransferOwner={currentDocument.canTransferOwner}
+            mentionCandidates={mentionCandidates}
             onClose={() => setShowShareDialog(false)}
             onSaved={({ visibility, share }) => {
               setCurrentDocument((value) => ({ ...value, visibility }));
@@ -1715,7 +1812,7 @@ export function DocumentPage({
         <ConfirmDialog
           open={showDeleteConfirm}
           title="确认删除文档"
-          description="删除后文档会移入回收站。此操作会关闭当前页面。"
+          description="删除后文档会移入回收站，并返回上一页。若没有历史记录，则返回所属文件夹或文档列表。"
           confirmLabel="确认删除"
           cancelLabel="取消"
           danger

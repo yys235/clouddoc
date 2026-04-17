@@ -1,11 +1,14 @@
 import { AppShell } from "@/components/layout/app-shell";
 import { DashboardPageFrame, DocumentListSection } from "@/components/dashboard/dashboard-sections";
-import { fetchDocuments } from "@/lib/api";
+import { fetchCurrentUser, fetchDocuments } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
 export default async function FavoritesPage() {
-  const { data: documents, unavailable } = await fetchDocuments("all");
+  const [{ data: documents, unavailable }, { data: currentUser }] = await Promise.all([
+    fetchDocuments("all"),
+    fetchCurrentUser(),
+  ]);
   const favoriteDocuments = documents.filter((item) => item.isFavorited && !item.isDeleted);
 
   return (
@@ -20,6 +23,7 @@ export default async function FavoritesPage() {
           documents={favoriteDocuments}
           emptyText="当前还没有真实收藏文档。"
           badge
+          enableLiveUpdates={Boolean(currentUser)}
         />
       </DashboardPageFrame>
     </AppShell>

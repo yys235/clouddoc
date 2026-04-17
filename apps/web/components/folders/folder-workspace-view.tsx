@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition, type DragEvent } from "react";
 import { useRouter } from "next/navigation";
 
 import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
@@ -16,31 +16,245 @@ import {
   reorderFolderChildren,
   renameFolder,
   type AncestorItem,
+  type DocumentTreeOpenMode,
   type FolderChildrenResult,
   type FolderSummary,
   type SpaceSummary,
   type TreeNode,
+  updateUserPreference,
   uploadPdfDocument,
 } from "@/lib/api";
+
+type NodeDragPayload = { id: string; nodeType: "folder" | "document" };
+type TreeDropPosition = "before" | "inside" | "after";
+type LibraryEvent = {
+  event_id?: string;
+  event_type?: string;
+  space_id?: string | null;
+  document_id?: string | null;
+  folder_id?: string | null;
+  document?: {
+    id: string;
+    title: string;
+    document_type?: string;
+    status?: string;
+    visibility: string;
+    space_id: string;
+    folder_id?: string | null;
+    sort_order?: number;
+    updated_at?: string | null;
+    is_deleted?: boolean;
+  };
+  folder?: {
+    id: string;
+    title: string;
+    visibility: string;
+    space_id: string;
+    parent_folder_id?: string | null;
+    sort_order?: number;
+    updated_at?: string | null;
+    is_deleted?: boolean;
+  };
+};
+
+function parseDragPayload(raw: string): NodeDragPayload | null {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(raw) as NodeDragPayload;
+    if ((payload.nodeType === "folder" || payload.nodeType === "document") && payload.id) {
+      return payload;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function getTreeDropPosition(event: DragEvent<HTMLElement>, nodeType: TreeNode["nodeType"]): TreeDropPosition {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const offset = event.clientY - rect.top;
+  const topZone = rect.height * 0.28;
+  const bottomZone = rect.height * 0.72;
+  if (offset < topZone) {
+    return "before";
+  }
+  if (offset > bottomZone) {
+    return "after";
+  }
+  return nodeType === "folder" ? "inside" : "after";
+}
+
+function findTreeNode(nodes: TreeNode[], nodeId: string, nodeType: TreeNode["nodeType"]): TreeNode | null {
+  for (const node of nodes) {
+    if (node.id === nodeId && node.nodeType === nodeType) {
+      return node;
+    }
+    const child = findTreeNode(node.children, nodeId, nodeType);
+    if (child) {
+      return child;
+    }
+  }
+  return null;
+}
+
+function findFolderChildren(nodes: TreeNode[], folderId: string | null): TreeNode[] {
+  if (folderId === null) {
+    return nodes;
+  }
+  const folder = findTreeNode(nodes, folderId, "folder");
+  return folder?.children ?? [];
+}
+
+function sortNodes(nodes: TreeNode[]) {
+  return [...nodes].sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title) || a.nodeType.localeCompare(b.nodeType));
+}
+
+function removeTreeNode(nodes: TreeNode[], nodeId: string, nodeType: TreeNode["nodeType"]): TreeNode[] {
+  let changed = false;
+  const next = nodes
+    .filter((node) => {
+      const keep = !(node.id === nodeId && node.nodeType === nodeType);
+      if (!keep) changed = true;
+      return keep;
+    })
+    .map((node) => {
+      const children = removeTreeNode(node.children, nodeId, nodeType);
+      if (children !== node.children) {
+        changed = true;
+        return { ...node, children };
+      }
+      return node;
+    });
+  return changed ? next : nodes;
+}
+
+function upsertTreeNode(nodes: TreeNode[], node: TreeNode, parentFolderId: string | null): TreeNode[] {
+  const withoutExisting = removeTreeNode(nodes, node.id, node.nodeType);
+  if (parentFolderId === null) {
+    return sortNodes([...withoutExisting, node]);
+  }
+  let changed = false;
+  const next = withoutExisting.map((item) => {
+    if (item.nodeType === "folder" && item.id === parentFolderId) {
+      changed = true;
+      return { ...item, children: sortNodes([...removeTreeNode(item.children, node.id, node.nodeType), node]) };
+    }
+    const children = upsertTreeNode(item.children, node, parentFolderId);
+    if (children !== item.children) {
+      changed = true;
+      return { ...item, children };
+    }
+    return item;
+  });
+  return changed ? next : withoutExisting;
+}
+
+function eventDocumentToNode(document: NonNullable<LibraryEvent["document"]>): TreeNode {
+  return {
+    id: document.id,
+    nodeType: "document",
+    title: document.title,
+    spaceId: document.space_id,
+    parentFolderId: document.folder_id ?? undefined,
+    sortOrder: document.sort_order ?? 0,
+    visibility: document.visibility,
+    updatedAt: document.updated_at ? new Intl.DateTimeFormat("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(document.updated_at)) : "",
+    canManage: true,
+    documentType: document.document_type ?? "doc",
+    isDeleted: Boolean(document.is_deleted),
+    children: [],
+  };
+}
+
+function eventFolderToNode(folder: NonNullable<LibraryEvent["folder"]>): TreeNode {
+  return {
+    id: folder.id,
+    nodeType: "folder",
+    title: folder.title,
+    spaceId: folder.space_id,
+    parentFolderId: folder.parent_folder_id ?? undefined,
+    sortOrder: folder.sort_order ?? 0,
+    visibility: folder.visibility,
+    updatedAt: folder.updated_at ? new Intl.DateTimeFormat("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(folder.updated_at)) : "",
+    canManage: true,
+    isDeleted: Boolean(folder.is_deleted),
+    children: [],
+  };
+}
+
+function upsertCurrentChild(children: TreeNode[], node: TreeNode, currentFolderId: string | null): TreeNode[] {
+  if ((node.parentFolderId ?? null) !== currentFolderId || node.isDeleted) {
+    return removeTreeNode(children, node.id, node.nodeType);
+  }
+  return sortNodes([...removeTreeNode(children, node.id, node.nodeType), node]);
+}
+
+function buildReorderedSiblingItems(
+  siblings: TreeNode[],
+  dragged: NodeDragPayload,
+  target: NodeDragPayload,
+  position: Exclude<TreeDropPosition, "inside">,
+) {
+  const draggedKey = `${dragged.nodeType}:${dragged.id}`;
+  const targetKey = `${target.nodeType}:${target.id}`;
+  const withoutDragged = siblings.filter((item) => `${item.nodeType}:${item.id}` !== draggedKey);
+  const targetIndex = withoutDragged.findIndex((item) => `${item.nodeType}:${item.id}` === targetKey);
+  if (targetIndex === -1) {
+    return null;
+  }
+
+  const insertIndex = position === "before" ? targetIndex : targetIndex + 1;
+  const nextItems: Array<{ id: string; nodeType: "folder" | "document" }> = withoutDragged.map((item) => ({
+    id: item.id,
+    nodeType: item.nodeType,
+  }));
+  nextItems.splice(insertIndex, 0, dragged);
+  return nextItems;
+}
 
 function FolderTree({
   nodes,
   currentFolderId,
+  documentOpenMode,
   onDropNode,
+  onReorderNode,
   expandedFolderIds,
   onToggleFolder,
+  dropIndicator,
+  onDropIndicatorChange,
 }: {
   nodes: TreeNode[];
   currentFolderId?: string | null;
-  onDropNode: (targetFolderId: string | null, payload: { id: string; nodeType: "folder" | "document" }) => void;
+  documentOpenMode: DocumentTreeOpenMode;
+  onDropNode: (targetFolderId: string | null, payload: NodeDragPayload) => void;
+  onReorderNode: (dragged: NodeDragPayload, target: NodeDragPayload, position: Exclude<TreeDropPosition, "inside">) => void;
   expandedFolderIds: Set<string>;
   onToggleFolder: (folderId: string) => void;
+  dropIndicator: { key: string; position: TreeDropPosition } | null;
+  onDropIndicatorChange: (indicator: { key: string; position: TreeDropPosition } | null) => void;
 }) {
   return (
     <div className="space-y-1">
       {nodes.map((node) => (
         <div key={`${node.nodeType}-${node.id}`} className="space-y-1">
           <div
+            className={`relative rounded-lg ${
+              dropIndicator?.key === `${node.nodeType}:${node.id}` && dropIndicator.position === "inside"
+                ? "bg-blue-50 ring-1 ring-blue-200"
+                : ""
+            }`}
             draggable
             onDragStart={(event) => {
               event.dataTransfer.setData(
@@ -50,21 +264,44 @@ function FolderTree({
               event.dataTransfer.effectAllowed = "move";
             }}
             onDragOver={(event) => {
-              if (node.nodeType === "folder") {
-                event.preventDefault();
+              if (!Array.from(event.dataTransfer.types).includes("application/clouddoc-node")) {
+                return;
               }
-            }}
-            onDrop={(event) => {
-              if (node.nodeType !== "folder") return;
               event.preventDefault();
-              const raw = event.dataTransfer.getData("application/clouddoc-node");
-              if (!raw) return;
-              onDropNode(node.id, JSON.parse(raw));
+              const position = getTreeDropPosition(event, node.nodeType);
+              onDropIndicatorChange({ key: `${node.nodeType}:${node.id}`, position });
+              event.dataTransfer.dropEffect = "move";
             }}
+            onDragLeave={() => onDropIndicatorChange(null)}
+            onDrop={(event) => {
+              event.preventDefault();
+              onDropIndicatorChange(null);
+              const payload = parseDragPayload(event.dataTransfer.getData("application/clouddoc-node"));
+              if (!payload) return;
+              if (payload.id === node.id && payload.nodeType === node.nodeType) return;
+              const position = getTreeDropPosition(event, node.nodeType);
+              if (position === "inside" && node.nodeType === "folder") {
+                onDropNode(node.id, payload);
+                return;
+              }
+              onReorderNode(payload, { id: node.id, nodeType: node.nodeType }, position === "inside" ? "after" : position);
+            }}
+            onDragEnd={() => onDropIndicatorChange(null)}
           >
+            {(() => {
+              const isDocument = node.nodeType === "document";
+              const href = node.nodeType === "folder" ? `/folders/${node.id}` : `/docs/${node.id}`;
+              const shouldOpenNewWindow = isDocument && documentOpenMode === "new-window";
+              return (
+                <>
+            {dropIndicator?.key === `${node.nodeType}:${node.id}` && dropIndicator.position === "before" ? (
+              <div className="absolute -top-1 left-2 right-2 h-0.5 rounded-full bg-blue-400" />
+            ) : null}
             <Link
-              href={node.nodeType === "folder" ? `/folders/${node.id}` : `/docs/${node.id}`}
-              className={`flex items-center rounded-lg px-2.5 py-1.5 text-sm transition hover:bg-slate-100 ${
+              href={href}
+              target={shouldOpenNewWindow ? "_blank" : undefined}
+              rel={shouldOpenNewWindow ? "noreferrer" : undefined}
+              className={`grid grid-cols-[18px_20px_minmax(0,1fr)] items-center gap-1 rounded-lg px-2 py-1.5 text-sm leading-5 transition hover:bg-slate-100 ${
                 node.nodeType === "folder" && node.id === currentFolderId
                   ? "bg-slate-100 font-medium text-slate-900"
                   : "text-slate-600"
@@ -78,26 +315,38 @@ function FolderTree({
                     event.stopPropagation();
                     onToggleFolder(node.id);
                   }}
-                  className="mr-1 inline-flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                  className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-[11px] leading-none text-slate-400 hover:bg-slate-200 hover:text-slate-700"
                   aria-label={expandedFolderIds.has(node.id) ? "折叠文件夹" : "展开文件夹"}
                 >
                   {expandedFolderIds.has(node.id) ? "▾" : "▸"}
                 </button>
               ) : (
-                <span className="mr-1 inline-block h-5 w-5" />
+                <span className="block h-[18px] w-[18px]" />
               )}
-              <span className="mr-2 text-slate-400">{node.nodeType === "folder" ? "📁" : "📄"}</span>
-              <span className="truncate">{node.title}</span>
+              <span className="flex h-5 w-5 items-center justify-center text-[15px] text-slate-400">
+                {node.nodeType === "folder" ? "📁" : "📄"}
+              </span>
+              <span className="truncate pl-0.5">{node.title}</span>
             </Link>
+            {dropIndicator?.key === `${node.nodeType}:${node.id}` && dropIndicator.position === "after" ? (
+              <div className="absolute -bottom-1 left-2 right-2 h-0.5 rounded-full bg-blue-400" />
+            ) : null}
+                </>
+              );
+            })()}
           </div>
           {node.children.length > 0 && (node.nodeType !== "folder" || expandedFolderIds.has(node.id)) ? (
-            <div className="ml-4 border-l border-slate-200 pl-2">
+            <div className="ml-[21px] border-l border-slate-200 pl-[9px]">
               <FolderTree
                 nodes={node.children}
                 currentFolderId={currentFolderId}
+                documentOpenMode={documentOpenMode}
                 onDropNode={onDropNode}
+                onReorderNode={onReorderNode}
                 expandedFolderIds={expandedFolderIds}
                 onToggleFolder={onToggleFolder}
+                dropIndicator={dropIndicator}
+                onDropIndicatorChange={onDropIndicatorChange}
               />
             </div>
           ) : null}
@@ -148,6 +397,7 @@ export function FolderWorkspaceView({
   currentFolder,
   ancestors,
   apiUnavailable = false,
+  initialDocumentTreeOpenMode = "same-page",
 }: {
   spaces: SpaceSummary[];
   selectedSpace: SpaceSummary | null;
@@ -156,6 +406,7 @@ export function FolderWorkspaceView({
   currentFolder?: FolderSummary | null;
   ancestors?: AncestorItem[];
   apiUnavailable?: boolean;
+  initialDocumentTreeOpenMode?: DocumentTreeOpenMode;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -174,11 +425,124 @@ export function FolderWorkspaceView({
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [selectedNodeKeys, setSelectedNodeKeys] = useState<string[]>([]);
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
-  const folderOptions = useMemo(() => flattenFolders(tree), [tree]);
-  const allFolderIds = useMemo(() => collectFolderIds(tree), [tree]);
+  const [treeDropIndicator, setTreeDropIndicator] = useState<{ key: string; position: TreeDropPosition } | null>(null);
+  const [documentTreeOpenMode, setDocumentTreeOpenMode] = useState<DocumentTreeOpenMode>(initialDocumentTreeOpenMode);
+  const [liveTree, setLiveTree] = useState<TreeNode[]>(tree);
+  const [liveCurrentChildren, setLiveCurrentChildren] = useState<FolderChildrenResult | null>(currentChildren);
+  const handledEventIdsRef = useRef<Set<string>>(new Set());
+  const folderOptions = useMemo(() => flattenFolders(liveTree), [liveTree]);
+  const allFolderIds = useMemo(() => collectFolderIds(liveTree), [liveTree]);
 
   const currentFolderId = currentFolder?.id ?? null;
   const effectiveFolderTitle = currentFolder?.title ?? "根目录";
+
+  useEffect(() => {
+    setLiveTree(tree);
+  }, [tree]);
+
+  useEffect(() => {
+    setLiveCurrentChildren(currentChildren);
+  }, [currentChildren]);
+
+  useEffect(() => {
+    if (!selectedSpace || apiUnavailable) {
+      return;
+    }
+    const source = new EventSource("/api/events/stream", { withCredentials: true });
+    const applyEvent = (payload: LibraryEvent) => {
+      if (!payload.event_type || payload.space_id !== selectedSpace.id) {
+        return;
+      }
+      if (payload.event_id) {
+        if (handledEventIdsRef.current.has(payload.event_id)) {
+          return;
+        }
+        handledEventIdsRef.current.add(payload.event_id);
+        if (handledEventIdsRef.current.size > 500) {
+          handledEventIdsRef.current = new Set(Array.from(handledEventIdsRef.current).slice(-250));
+        }
+      }
+      if (payload.document) {
+        const node = eventDocumentToNode(payload.document);
+        setLiveTree((current) => {
+          if (payload.event_type === "document.deleted" || node.isDeleted) {
+            return removeTreeNode(current, node.id, "document");
+          }
+          return upsertTreeNode(current, node, node.parentFolderId ?? null);
+        });
+        setLiveCurrentChildren((current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            children:
+              payload.event_type === "document.deleted" || node.isDeleted
+                ? removeTreeNode(current.children, node.id, "document")
+                : upsertCurrentChild(current.children, node, currentFolderId),
+          };
+        });
+        return;
+      }
+      if (payload.folder) {
+        const node = eventFolderToNode(payload.folder);
+        setLiveTree((current) => {
+          if (payload.event_type === "folder.deleted" || node.isDeleted) {
+            return removeTreeNode(current, node.id, "folder");
+          }
+          return upsertTreeNode(current, node, node.parentFolderId ?? null);
+        });
+        setLiveCurrentChildren((current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            children:
+              payload.event_type === "folder.deleted" || node.isDeleted
+                ? removeTreeNode(current.children, node.id, "folder")
+                : upsertCurrentChild(current.children, node, currentFolderId),
+          };
+        });
+      }
+    };
+    const listener = (event: MessageEvent<string>) => {
+      try {
+        applyEvent(JSON.parse(event.data) as LibraryEvent);
+      } catch {
+        // Ignore malformed stream payloads and keep the current UI state.
+      }
+    };
+    const eventNames = [
+      "document.created",
+      "document.updated",
+      "document.renamed",
+      "document.deleted",
+      "document.restored",
+      "document.moved",
+      "document.reordered",
+      "document.content_updated",
+      "document.permission_changed",
+      "folder.created",
+      "folder.updated",
+      "folder.renamed",
+      "folder.deleted",
+      "folder.moved",
+      "folder.reordered",
+    ];
+    for (const eventName of eventNames) {
+      source.addEventListener(eventName, listener);
+    }
+    source.onerror = () => {
+      source.close();
+      setNotice("实时连接已断开，当前数据可能不是最新。刷新页面可重新连接。");
+    };
+    source.onopen = () => {
+      setNotice((current) => (current.startsWith("实时连接已断开") ? "" : current));
+    };
+    return () => {
+      for (const eventName of eventNames) {
+        source.removeEventListener(eventName, listener);
+      }
+      source.close();
+    };
+  }, [apiUnavailable, currentFolderId, selectedSpace]);
 
   useEffect(() => {
     setExpandedFolderIds((current) => {
@@ -191,6 +555,19 @@ export function FolderWorkspaceView({
       return next;
     });
   }, [allFolderIds]);
+
+  const handleDocumentTreeOpenModeChange = (mode: DocumentTreeOpenMode) => {
+    setDocumentTreeOpenMode(mode);
+    startTransition(async () => {
+      try {
+        setNotice("");
+        await updateUserPreference({ documentTreeOpenMode: mode });
+        router.refresh();
+      } catch {
+        setNotice("保存个人配置失败");
+      }
+    });
+  };
 
   const refreshView = () => {
     router.refresh();
@@ -212,7 +589,7 @@ export function FolderWorkspaceView({
     setSelectedNodeKeys((current) => (current.includes(key) ? current.filter((item) => item !== key) : [...current, key]));
   };
 
-  const handleDropNodeIntoFolder = (targetFolderId: string | null, payload: { id: string; nodeType: "folder" | "document" }) => {
+  const handleDropNodeIntoFolder = (targetFolderId: string | null, payload: NodeDragPayload) => {
     startTransition(async () => {
       try {
         setNotice("");
@@ -224,6 +601,46 @@ export function FolderWorkspaceView({
         refreshView();
       } catch {
         setNotice("移动节点失败");
+      }
+    });
+  };
+
+  const handleTreeReorderDrop = (
+    dragged: NodeDragPayload,
+    target: NodeDragPayload,
+    position: Exclude<TreeDropPosition, "inside">,
+  ) => {
+    if (!selectedSpace) return;
+    const targetNode = findTreeNode(liveTree, target.id, target.nodeType);
+    if (!targetNode) return;
+
+    const targetParentFolderId = targetNode.parentFolderId ?? null;
+    const siblings = findFolderChildren(liveTree, targetParentFolderId);
+    const items = buildReorderedSiblingItems(siblings, dragged, target, position);
+    if (!items) return;
+
+    const draggedNode = findTreeNode(liveTree, dragged.id, dragged.nodeType);
+    const draggedParentFolderId = draggedNode?.parentFolderId ?? null;
+    const needsMove = draggedParentFolderId !== targetParentFolderId;
+
+    startTransition(async () => {
+      try {
+        setNotice("");
+        if (needsMove) {
+          if (dragged.nodeType === "folder") {
+            await moveFolder(dragged.id, targetParentFolderId);
+          } else {
+            await moveDocumentToFolder(dragged.id, targetParentFolderId);
+          }
+        }
+        await reorderFolderChildren({
+          spaceId: selectedSpace.id,
+          parentFolderId: targetParentFolderId,
+          items,
+        });
+        refreshView();
+      } catch {
+        setNotice("移动或排序节点失败");
       }
     });
   };
@@ -367,8 +784,8 @@ export function FolderWorkspaceView({
   };
 
   const handleReorderDrop = (dragged: { id: string; nodeType: "folder" | "document" }, target: { id: string; nodeType: "folder" | "document" }) => {
-    if (!selectedSpace || !currentChildren) return;
-    const currentItems = [...currentChildren.children];
+    if (!selectedSpace || !liveCurrentChildren) return;
+    const currentItems = [...liveCurrentChildren.children];
     const dragKey = `${dragged.nodeType}:${dragged.id}`;
     const targetKey = `${target.nodeType}:${target.id}`;
     const fromIndex = currentItems.findIndex((item) => `${item.nodeType}:${item.id}` === dragKey);
@@ -397,7 +814,21 @@ export function FolderWorkspaceView({
   return (
     <div className="flex w-full gap-4 px-4 py-5">
       <aside className="w-[340px] shrink-0 rounded-3xl bg-white p-4 shadow-panel">
-        <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">文档树</div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">文档树</div>
+          <label className="flex items-center gap-1.5 text-xs text-slate-500">
+            <span>打开</span>
+            <select
+              value={documentTreeOpenMode}
+              onChange={(event) => handleDocumentTreeOpenModeChange(event.target.value as DocumentTreeOpenMode)}
+              className="h-7 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+              aria-label="文档树打开文档方式"
+            >
+              <option value="same-page">本页</option>
+              <option value="new-window">新窗口</option>
+            </select>
+          </label>
+        </div>
         <div className="mt-3 space-y-4">
               {spaces.map((space) => (
             <div key={space.id} className="space-y-2">
@@ -410,9 +841,9 @@ export function FolderWorkspaceView({
                 onDrop={(event) => {
                   if (selectedSpace?.id !== space.id) return;
                   event.preventDefault();
-                  const raw = event.dataTransfer.getData("application/clouddoc-node");
-                  if (!raw) return;
-                  handleDropNodeIntoFolder(null, JSON.parse(raw));
+                  const payload = parseDragPayload(event.dataTransfer.getData("application/clouddoc-node"));
+                  if (!payload) return;
+                  handleDropNodeIntoFolder(null, payload);
                 }}
               >
                 <Link
@@ -427,11 +858,15 @@ export function FolderWorkspaceView({
               {selectedSpace?.id === space.id ? (
                 <div className="ml-2 border-l border-slate-200 pl-2">
                   <FolderTree
-                    nodes={tree}
+                    nodes={liveTree}
                     currentFolderId={currentFolderId}
+                    documentOpenMode={documentTreeOpenMode}
                     onDropNode={handleDropNodeIntoFolder}
+                    onReorderNode={handleTreeReorderDrop}
                     expandedFolderIds={expandedFolderIds}
                     onToggleFolder={handleToggleFolder}
+                    dropIndicator={treeDropIndicator}
+                    onDropIndicatorChange={setTreeDropIndicator}
                   />
                 </div>
               ) : null}
@@ -538,8 +973,8 @@ export function FolderWorkspaceView({
         <div className="rounded-3xl bg-white p-5 shadow-panel">
           <div className="mb-3 text-lg font-semibold">当前目录内容</div>
           <div className="space-y-2">
-            {(currentChildren?.children ?? []).length > 0 ? (
-              currentChildren!.children.map((node) => (
+            {(liveCurrentChildren?.children ?? []).length > 0 ? (
+              liveCurrentChildren!.children.map((node) => (
                 <div
                   key={`${node.nodeType}-${node.id}`}
                   className="flex items-center justify-between rounded-xl border border-slate-100 px-4 py-3"
@@ -554,9 +989,8 @@ export function FolderWorkspaceView({
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={(event) => {
                     event.preventDefault();
-                    const raw = event.dataTransfer.getData("application/clouddoc-node");
-                    if (!raw) return;
-                    const payload = JSON.parse(raw) as { id: string; nodeType: "folder" | "document" };
+                    const payload = parseDragPayload(event.dataTransfer.getData("application/clouddoc-node"));
+                    if (!payload) return;
                     handleReorderDrop(payload, { id: node.id, nodeType: node.nodeType });
                   }}
                 >

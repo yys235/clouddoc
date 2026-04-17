@@ -12,6 +12,7 @@ from app.models.organization import OrganizationMember
 from app.models.space import Space
 from app.models.user import User
 from app.schemas.notification import NotificationResponse
+from app.services.event_stream_service import publish_notification_event
 
 
 def _author_name_map(db: Session, user_ids: set[str]) -> dict[str, str]:
@@ -81,7 +82,19 @@ def mark_notification_read(db: Session, user_id: str, notification_id: str) -> N
     )
     if notification is None:
         return None
+    was_unread = not notification.is_read
     notification.is_read = True
+    db.flush()
+    response = _to_response(db, [notification])[0]
+    if was_unread:
+        publish_notification_event(
+            db,
+            "notification.read",
+            user_id=user_id,
+            actor_id=user_id,
+            notification_id=notification.id,
+            payload={"notification": response.model_dump(mode="json")},
+        )
     db.commit()
     db.refresh(notification)
     return _to_response(db, [notification])[0]
@@ -93,8 +106,18 @@ def mark_all_notifications_read(db: Session, user_id: str) -> int:
         .where(UserNotification.user_id == user_id)
         .where(UserNotification.is_read.is_(False))
     ).all()
+    unread_ids = [item.id for item in notifications]
     for item in notifications:
         item.is_read = True
+    if unread_ids:
+        publish_notification_event(
+            db,
+            "notification.read_all",
+            user_id=user_id,
+            actor_id=user_id,
+            notification_id=None,
+            payload={"notification_ids": unread_ids},
+        )
     db.commit()
     return len(notifications)
 
@@ -151,18 +174,27 @@ def create_user_notification(
 ) -> None:
     if user_id == actor_id:
         return
-    db.add(
-        UserNotification(
-            user_id=user_id,
-            actor_id=actor_id,
-            document_id=document_id,
-            thread_id=thread_id,
-            comment_id=comment_id,
-            notification_type=notification_type,
-            title=title[:255],
-            body=body[:4000],
-            is_read=False,
-        )
+    notification = UserNotification(
+        user_id=user_id,
+        actor_id=actor_id,
+        document_id=document_id,
+        thread_id=thread_id,
+        comment_id=comment_id,
+        notification_type=notification_type,
+        title=title[:255],
+        body=body[:4000],
+        is_read=False,
+    )
+    db.add(notification)
+    db.flush()
+    response = _to_response(db, [notification])[0]
+    publish_notification_event(
+        db,
+        "notification.created",
+        user_id=user_id,
+        actor_id=actor_id,
+        notification_id=notification.id,
+        payload={"notification": response.model_dump(mode="json")},
     )
 
 

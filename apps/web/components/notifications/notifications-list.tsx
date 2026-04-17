@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 import { markAllNotificationsRead, markNotificationRead, type NotificationItem } from "@/lib/api";
@@ -17,12 +17,124 @@ function formatTime(value: string) {
   }
 }
 
-export function NotificationsList({ notifications }: { notifications: NotificationItem[] }) {
+function notificationFromEvent(value: unknown): NotificationItem | null {
+  const item = value as {
+    id?: string;
+    user_id?: string;
+    actor_id?: string | null;
+    actor_name?: string | null;
+    document_id?: string | null;
+    document_title?: string | null;
+    thread_id?: string | null;
+    comment_id?: string | null;
+    notification_type?: string;
+    title?: string;
+    body?: string;
+    is_read?: boolean;
+    created_at?: string;
+    updated_at?: string;
+  };
+  if (!item?.id || !item.user_id || !item.notification_type || !item.title) {
+    return null;
+  }
+  return {
+    id: item.id,
+    userId: item.user_id,
+    actorId: item.actor_id ?? undefined,
+    actorName: item.actor_name ?? undefined,
+    documentId: item.document_id ?? undefined,
+    documentTitle: item.document_title ?? undefined,
+    threadId: item.thread_id ?? undefined,
+    commentId: item.comment_id ?? undefined,
+    notificationType: item.notification_type,
+    title: item.title,
+    body: item.body ?? "",
+    isRead: Boolean(item.is_read),
+    createdAt: item.created_at ?? new Date().toISOString(),
+    updatedAt: item.updated_at ?? item.created_at ?? new Date().toISOString(),
+  };
+}
+
+export function NotificationsList({
+  notifications,
+  enableLiveUpdates = false,
+}: {
+  notifications: NotificationItem[];
+  enableLiveUpdates?: boolean;
+}) {
   const router = useRouter();
   const [items, setItems] = useState(notifications);
   const [notice, setNotice] = useState("");
   const [isPending, startTransition] = useTransition();
   const unreadCount = useMemo(() => items.filter((item) => !item.isRead).length, [items]);
+
+  useEffect(() => {
+    setItems(notifications);
+  }, [notifications]);
+
+  useEffect(() => {
+    if (!enableLiveUpdates) {
+      return;
+    }
+
+    const source = new EventSource("/api/events/stream", { withCredentials: true });
+    const handleCreated = (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(event.data) as { notification?: unknown };
+        const notification = notificationFromEvent(payload.notification);
+        if (!notification) {
+          return;
+        }
+        setItems((current) => {
+          const existing = current.some((item) => item.id === notification.id);
+          if (existing) {
+            return current.map((item) => (item.id === notification.id ? notification : item));
+          }
+          return [notification, ...current];
+        });
+      } catch {
+        setNotice("收到通知更新，但解析失败");
+      }
+    };
+    const handleRead = (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(event.data) as { notification?: { id?: string }; target_id?: string };
+        const id = payload.notification?.id ?? payload.target_id;
+        if (!id) {
+          return;
+        }
+        setItems((current) =>
+          current.map((item) => (item.id === id ? { ...item, isRead: true } : item)),
+        );
+      } catch {
+        setNotice("收到已读更新，但解析失败");
+      }
+    };
+    const handleReadAll = (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(event.data) as { notification_ids?: string[] };
+        const ids = new Set(payload.notification_ids ?? []);
+        setItems((current) =>
+          current.map((item) => (ids.size === 0 || ids.has(item.id) ? { ...item, isRead: true } : item)),
+        );
+      } catch {
+        setItems((current) => current.map((item) => ({ ...item, isRead: true })));
+      }
+    };
+
+    source.addEventListener("notification.created", handleCreated);
+    source.addEventListener("notification.read", handleRead);
+    source.addEventListener("notification.read_all", handleReadAll);
+    source.onerror = () => {
+      source.close();
+    };
+    return () => {
+      source.removeEventListener("notification.created", handleCreated);
+      source.removeEventListener("notification.read", handleRead);
+      source.removeEventListener("notification.read_all", handleReadAll);
+      source.close();
+    };
+  }, [enableLiveUpdates]);
 
   const openNotificationDocument = (item: NotificationItem) => {
     const href = `/docs/${item.documentId}${item.threadId ? `?thread=${item.threadId}` : ""}`;

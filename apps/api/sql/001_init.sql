@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS organization_invitations (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS user_preferences (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL UNIQUE REFERENCES users(id),
+    document_tree_open_mode VARCHAR(32) NOT NULL DEFAULT 'same-page',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_user_preference_document_tree_open_mode CHECK (document_tree_open_mode IN ('same-page', 'new-window'))
+);
+
 CREATE TABLE IF NOT EXISTS spaces (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID REFERENCES organizations(id),
@@ -129,12 +138,50 @@ CREATE TABLE IF NOT EXISTS document_permissions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID NOT NULL REFERENCES documents(id),
     subject_type VARCHAR(32) NOT NULL,
-    subject_id VARCHAR(64) NOT NULL,
+    subject_id VARCHAR(128) NOT NULL,
     permission_level VARCHAR(32) NOT NULL DEFAULT 'view',
+    invited_by UUID REFERENCES users(id),
+    notify BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT chk_permission_subject_type CHECK (subject_type IN ('user', 'organization', 'link')),
-    CONSTRAINT chk_permission_level CHECK (permission_level IN ('view', 'edit', 'manage'))
+    CONSTRAINT uq_document_permission_subject UNIQUE (document_id, subject_type, subject_id),
+    CONSTRAINT chk_permission_subject_type CHECK (subject_type IN ('user', 'organization', 'department', 'group', 'space_role', 'link')),
+    CONSTRAINT chk_permission_level CHECK (permission_level IN ('view', 'comment', 'edit', 'manage', 'full_access'))
+);
+
+CREATE TABLE IF NOT EXISTS document_permission_settings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id UUID NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+    link_share_scope VARCHAR(32) NOT NULL DEFAULT 'closed',
+    external_access_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    comment_scope VARCHAR(32) NOT NULL DEFAULT 'can_edit',
+    share_collaborator_scope VARCHAR(32) NOT NULL DEFAULT 'full_access',
+    copy_scope VARCHAR(32) NOT NULL DEFAULT 'can_view',
+    export_scope VARCHAR(32) NOT NULL DEFAULT 'full_access',
+    print_scope VARCHAR(32) NOT NULL DEFAULT 'full_access',
+    download_scope VARCHAR(32) NOT NULL DEFAULT 'full_access',
+    allow_search_index BOOLEAN NOT NULL DEFAULT FALSE,
+    watermark_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_by UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS document_permission_audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    actor_id UUID REFERENCES users(id),
+    actor_type VARCHAR(32) NOT NULL DEFAULT 'user',
+    action VARCHAR(64) NOT NULL,
+    target_type VARCHAR(32),
+    target_id VARCHAR(128),
+    before_json JSONB,
+    after_json JSONB,
+    reason TEXT,
+    ip_address VARCHAR(64),
+    user_agent VARCHAR(512),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS document_favorites (
@@ -249,7 +296,23 @@ CREATE TABLE IF NOT EXISTS mcp_audit_logs (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS event_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_type VARCHAR(64) NOT NULL,
+    actor_id VARCHAR(128),
+    space_id VARCHAR(128),
+    document_id VARCHAR(128),
+    folder_id VARCHAR(128),
+    target_type VARCHAR(32) NOT NULL,
+    target_id VARCHAR(128),
+    payload JSONB NOT NULL,
+    visible_user_ids JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_user_preferences_user ON user_preferences(user_id);
 CREATE INDEX IF NOT EXISTS idx_org_members_org ON organization_members(organization_id);
 CREATE INDEX IF NOT EXISTS idx_org_members_user ON organization_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_org_invitations_org ON organization_invitations(organization_id);
@@ -268,6 +331,10 @@ CREATE INDEX IF NOT EXISTS idx_document_contents_document ON document_contents(d
 CREATE INDEX IF NOT EXISTS idx_document_versions_document ON document_versions(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_permissions_document ON document_permissions(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_permissions_subject ON document_permissions(subject_id);
+CREATE INDEX IF NOT EXISTS idx_document_permission_settings_document ON document_permission_settings(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_permission_audit_document ON document_permission_audit_logs(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_permission_audit_actor ON document_permission_audit_logs(actor_id);
+CREATE INDEX IF NOT EXISTS idx_document_permission_audit_action ON document_permission_audit_logs(action);
 CREATE INDEX IF NOT EXISTS idx_document_favorites_user ON document_favorites(user_id);
 CREATE INDEX IF NOT EXISTS idx_document_favorites_document ON document_favorites(document_id);
 CREATE INDEX IF NOT EXISTS idx_comment_threads_document ON comment_threads(document_id);
@@ -286,4 +353,9 @@ CREATE INDEX IF NOT EXISTS idx_templates_org ON templates(organization_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_audit_actor ON mcp_audit_logs(actor_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_audit_tool ON mcp_audit_logs(tool_name);
 CREATE INDEX IF NOT EXISTS idx_mcp_audit_target ON mcp_audit_logs(target_id);
+CREATE INDEX IF NOT EXISTS idx_event_logs_type ON event_logs(event_type);
+CREATE INDEX IF NOT EXISTS idx_event_logs_actor ON event_logs(actor_id);
+CREATE INDEX IF NOT EXISTS idx_event_logs_space ON event_logs(space_id);
+CREATE INDEX IF NOT EXISTS idx_event_logs_document ON event_logs(document_id);
+CREATE INDEX IF NOT EXISTS idx_event_logs_folder ON event_logs(folder_id);
 CREATE INDEX IF NOT EXISTS idx_document_contents_search ON document_contents USING GIN (to_tsvector('simple', plain_text));

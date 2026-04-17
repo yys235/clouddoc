@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { FolderWorkspaceView } from "@/components/folders/folder-workspace-view";
-import { fetchFolder, fetchFolderAncestors, fetchFolderChildren, fetchSpaces, fetchSpaceTree } from "@/lib/api";
+import { fetchFolder, fetchFolderAncestors, fetchFolderChildren, fetchSpaces, fetchSpaceTree, fetchUserPreference } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -34,12 +34,13 @@ export default async function FolderPage({
     );
   }
 
-  const [{ data: spaces }, { data: tree, unavailable: treeUnavailable }, { data: children, unavailable: childrenUnavailable }, { data: ancestors, unavailable: ancestorsUnavailable }] =
+  const [{ data: spaces }, { data: tree, unavailable: treeUnavailable }, { data: children, unavailable: childrenUnavailable }, { data: ancestors, unavailable: ancestorsUnavailable }, { data: userPreference, unavailable: preferenceUnavailable }] =
     await Promise.all([
       fetchSpaces(),
       fetchSpaceTree(folder.spaceId),
       fetchFolderChildren(folder.id),
       fetchFolderAncestors(folder.id),
+      fetchUserPreference(),
     ]);
 
   const selectedSpace = spaces.find((space) => space.id === folder.spaceId) ?? null;
@@ -53,7 +54,8 @@ export default async function FolderPage({
         currentChildren={children}
         currentFolder={folder}
         ancestors={ancestors}
-        apiUnavailable={unavailable || treeUnavailable || childrenUnavailable || ancestorsUnavailable}
+        apiUnavailable={unavailable || treeUnavailable || childrenUnavailable || ancestorsUnavailable || preferenceUnavailable}
+        initialDocumentTreeOpenMode={userPreference?.documentTreeOpenMode ?? "same-page"}
       />
     </AppShell>
   );

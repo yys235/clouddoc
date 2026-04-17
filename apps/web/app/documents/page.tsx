@@ -1,6 +1,6 @@
 import { AppShell } from "@/components/layout/app-shell";
 import { FolderWorkspaceView } from "@/components/folders/folder-workspace-view";
-import { fetchSpaceRootChildren, fetchSpaces, fetchSpaceTree } from "@/lib/api";
+import { fetchSpaceRootChildren, fetchSpaces, fetchSpaceTree, fetchUserPreference } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -10,14 +10,16 @@ export default async function DocumentsPage({
   searchParams: Promise<{ space?: string }>;
 }) {
   const { space: requestedSpaceId } = await searchParams;
-  const { data: spaces, unavailable: spacesUnavailable } = await fetchSpaces();
+  const [{ data: spaces, unavailable: spacesUnavailable }, { data: userPreference, unavailable: preferenceUnavailable }] =
+    await Promise.all([fetchSpaces(), fetchUserPreference()]);
   const selectedSpace = spaces.find((space) => space.id === requestedSpaceId) ?? spaces[0] ?? null;
-  const { data: rootChildren, unavailable: rootUnavailable } = selectedSpace
-    ? await fetchSpaceRootChildren(selectedSpace.id)
-    : { data: null, unavailable: false };
-  const { data: tree, unavailable: treeUnavailable } = selectedSpace
-    ? await fetchSpaceTree(selectedSpace.id)
-    : { data: [], unavailable: false };
+  const [{ data: rootChildren, unavailable: rootUnavailable }, { data: tree, unavailable: treeUnavailable }] =
+    selectedSpace
+      ? await Promise.all([fetchSpaceRootChildren(selectedSpace.id), fetchSpaceTree(selectedSpace.id)])
+      : [
+          { data: null, unavailable: false },
+          { data: [], unavailable: false },
+        ];
 
   return (
     <AppShell>
@@ -28,7 +30,8 @@ export default async function DocumentsPage({
         currentChildren={rootChildren}
         currentFolder={null}
         ancestors={[]}
-        apiUnavailable={spacesUnavailable || rootUnavailable || treeUnavailable}
+        apiUnavailable={spacesUnavailable || rootUnavailable || treeUnavailable || preferenceUnavailable}
+        initialDocumentTreeOpenMode={userPreference?.documentTreeOpenMode ?? "same-page"}
       />
     </AppShell>
   );

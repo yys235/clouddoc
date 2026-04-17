@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 
 import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
 import { DashboardDocument } from "@/lib/api";
@@ -19,11 +22,108 @@ function buildCards(documents: DashboardDocument[]) {
 export function WorkspaceOverview({
   documents,
   apiUnavailable = false,
+  enableLiveUpdates = false,
 }: {
   documents: DashboardDocument[];
   apiUnavailable?: boolean;
+  enableLiveUpdates?: boolean;
 }) {
-  const cards = buildCards(documents);
+  const [liveDocuments, setLiveDocuments] = useState(documents);
+  const handledEventIdsRef = useRef<Set<string>>(new Set());
+  const cards = buildCards(liveDocuments);
+
+  useEffect(() => {
+    setLiveDocuments(documents);
+  }, [documents]);
+
+  useEffect(() => {
+    if (apiUnavailable || !enableLiveUpdates) {
+      return;
+    }
+
+    const source = new EventSource("/api/events/stream", { withCredentials: true });
+    const listener = (event: MessageEvent<string>) => {
+      try {
+        const payload = JSON.parse(event.data) as {
+          event_id?: string;
+          event_type?: string;
+          document_id?: string;
+          document?: {
+            id: string;
+            title?: string;
+            status?: string;
+            visibility?: string;
+            folder_id?: string | null;
+            updated_at?: string;
+            is_deleted?: boolean;
+          };
+        };
+        if (payload.event_id) {
+          if (handledEventIdsRef.current.has(payload.event_id)) {
+            return;
+          }
+          handledEventIdsRef.current.add(payload.event_id);
+          if (handledEventIdsRef.current.size > 500) {
+            handledEventIdsRef.current = new Set(Array.from(handledEventIdsRef.current).slice(-250));
+          }
+        }
+        const docId = payload.document?.id ?? payload.document_id;
+        if (!docId) {
+          return;
+        }
+        if (payload.event_type === "document.deleted" || payload.document?.is_deleted) {
+          setLiveDocuments((current) => current.filter((item) => item.id !== docId));
+          return;
+        }
+        if (!payload.document) {
+          return;
+        }
+        setLiveDocuments((current) =>
+          current.map((item) =>
+            item.id === docId
+              ? {
+                  ...item,
+                  title: payload.document?.title ?? item.title,
+                  status: payload.document?.status ?? item.status,
+                  visibility: payload.document?.visibility ?? item.visibility,
+                  folderId: payload.document?.folder_id ?? item.folderId,
+                  updatedAt: payload.document?.updated_at
+                    ? new Intl.DateTimeFormat("zh-CN", {
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }).format(new Date(payload.document.updated_at))
+                    : item.updatedAt,
+                }
+              : item,
+          ),
+        );
+      } catch {
+        // Keep the current list if a transient SSE payload cannot be parsed.
+      }
+    };
+    const eventNames = [
+      "document.updated",
+      "document.renamed",
+      "document.deleted",
+      "document.restored",
+      "document.content_updated",
+      "document.permission_changed",
+    ];
+    for (const eventName of eventNames) {
+      source.addEventListener(eventName, listener);
+    }
+    source.onerror = () => {
+      source.close();
+    };
+    return () => {
+      for (const eventName of eventNames) {
+        source.removeEventListener(eventName, listener);
+      }
+      source.close();
+    };
+  }, [apiUnavailable, enableLiveUpdates]);
 
   return (
     <div className="mx-auto max-w-6xl space-y-5 p-5">
@@ -59,8 +159,8 @@ export function WorkspaceOverview({
           </Link>
         </div>
         <div className="space-y-2">
-          {documents.length > 0 ? (
-            documents.map((doc) => (
+          {liveDocuments.length > 0 ? (
+            liveDocuments.map((doc) => (
               <Link
                 key={doc.id}
                 href={`/docs/${doc.id}`}

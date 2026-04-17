@@ -1,11 +1,14 @@
 import { AppShell } from "@/components/layout/app-shell";
 import { DashboardPageFrame, DocumentListSection } from "@/components/dashboard/dashboard-sections";
-import { fetchDocuments } from "@/lib/api";
+import { fetchCurrentUser, fetchDocuments } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
 export default async function RecentPage() {
-  const { data: documents, unavailable } = await fetchDocuments("active");
+  const [{ data: documents, unavailable }, { data: currentUser }] = await Promise.all([
+    fetchDocuments("active"),
+    fetchCurrentUser(),
+  ]);
 
   return (
     <AppShell>
@@ -18,6 +21,7 @@ export default async function RecentPage() {
           title="最近访问文档"
           documents={documents}
           emptyText="当前还没有最近访问记录。"
+          enableLiveUpdates={Boolean(currentUser)}
         />
       </DashboardPageFrame>
     </AppShell>
