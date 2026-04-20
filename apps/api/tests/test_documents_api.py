@@ -10,7 +10,7 @@ from app.main import app
 from app.models.comment import Comment, CommentThread
 from app.models.document import Document, DocumentContent, DocumentFavorite, DocumentPermission, DocumentVersion
 from app.models.event import EventLog
-from app.models.folder import Folder, FolderFavorite, UserTreePin
+from app.models.folder import Folder, FolderFavorite, TreeShortcut, UserTreePin
 from app.models.notification import UserNotification
 from app.models.organization import Organization, OrganizationInvitation, OrganizationMember
 from app.models.share import ShareLink
@@ -55,6 +55,7 @@ def cleanup_document(document_id: str) -> None:
         db.execute(delete(UserNotification).where(UserNotification.document_id == document_id))
         db.execute(delete(EventLog).where(EventLog.document_id == document_id))
         db.execute(delete(UserTreePin).where(UserTreePin.node_type == "document").where(UserTreePin.node_id == document_id))
+        db.execute(delete(TreeShortcut).where(TreeShortcut.target_type == "document").where(TreeShortcut.target_id == document_id))
         db.execute(delete(Comment).where(Comment.document_id == document_id))
         db.execute(delete(CommentThread).where(CommentThread.document_id == document_id))
         db.execute(delete(DocumentFavorite).where(DocumentFavorite.document_id == document_id))
@@ -90,6 +91,7 @@ def cleanup_user(email: str) -> None:
         db.execute(delete(UserNotification).where(UserNotification.user_id == user.id))
         db.execute(delete(UserNotification).where(UserNotification.actor_id == user.id))
         db.execute(delete(UserTreePin).where(UserTreePin.user_id == user.id))
+        db.execute(delete(TreeShortcut).where(TreeShortcut.owner_user_id == user.id))
         db.execute(delete(DocumentFavorite).where(DocumentFavorite.user_id == user.id))
         db.execute(delete(FolderFavorite).where(FolderFavorite.user_id == user.id))
         db.execute(delete(UserSession).where(UserSession.user_id == user.id))
@@ -427,6 +429,91 @@ def test_tree_node_actions_summarize_document_and_folder_permissions() -> None:
         assert folder_payload["can_delete"] is False
         assert folder_payload["delete_disabled_reason"] == "请先移动或删除文件夹内内容"
     finally:
+        cleanup_document(document_id)
+        db = SessionLocal()
+        try:
+            db.execute(delete(FolderFavorite).where(FolderFavorite.folder_id == folder_id))
+            db.execute(delete(UserTreePin).where(UserTreePin.node_type == "folder").where(UserTreePin.node_id == folder_id))
+            db.execute(delete(Folder).where(Folder.id == folder_id))
+            db.commit()
+        finally:
+            db.close()
+        cleanup_user(email)
+
+
+def test_user_can_create_and_delete_document_shortcut() -> None:
+    email = f"pytest-shortcut-{uuid4()}@example.com"
+    owner_client = register_user_client("Pytest Shortcut", email, "shortcut-password")
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == email))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    folder_response = owner_client.post(
+        "/api/folders",
+        json={"title": "pytest-shortcut-folder", "space_id": space_id, "visibility": "private"},
+    )
+    assert folder_response.status_code == 200
+    folder_id = folder_response.json()["id"]
+    document_response = owner_client.post(
+        "/api/documents",
+        json={
+            "title": "pytest-shortcut-document",
+            "space_id": space_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert document_response.status_code == 200
+    document_id = document_response.json()["id"]
+    shortcut_id = None
+
+    try:
+        shortcut_response = owner_client.post(
+            "/api/folders/shortcuts",
+            json={
+                "target_type": "document",
+                "target_id": document_id,
+                "parent_folder_id": folder_id,
+            },
+        )
+        assert shortcut_response.status_code == 200
+        shortcut_payload = shortcut_response.json()
+        shortcut_id = shortcut_payload["id"]
+        assert shortcut_payload["node_type"] == "shortcut"
+        assert shortcut_payload["target_type"] == "document"
+        assert shortcut_payload["target_id"] == document_id
+        assert shortcut_payload["title"] == "pytest-shortcut-document"
+
+        children_response = owner_client.get(f"/api/folders/{folder_id}/children")
+        assert children_response.status_code == 200
+        child_shortcut = next(node for node in children_response.json()["children"] if node["id"] == shortcut_id)
+        assert child_shortcut["node_type"] == "shortcut"
+        assert child_shortcut["target_id"] == document_id
+
+        delete_response = owner_client.delete(f"/api/folders/shortcuts/{shortcut_id}")
+        assert delete_response.status_code == 200
+        shortcut_id = None
+
+        document_detail_response = owner_client.get(f"/api/documents/{document_id}")
+        assert document_detail_response.status_code == 200
+        children_after_response = owner_client.get(f"/api/folders/{folder_id}/children")
+        assert children_after_response.status_code == 200
+        assert all(node["target_id"] != document_id for node in children_after_response.json()["children"])
+    finally:
+        if shortcut_id:
+            db = SessionLocal()
+            try:
+                db.execute(delete(TreeShortcut).where(TreeShortcut.id == shortcut_id))
+                db.commit()
+            finally:
+                db.close()
         cleanup_document(document_id)
         db = SessionLocal()
         try:

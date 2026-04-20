@@ -15,6 +15,7 @@ from app.schemas.folder import (
     FolderUpdateRequest,
     TreePinRequest,
     TreePinResponse,
+    TreeShortcutCreateRequest,
     TreeNodeActionsResponse,
     TreeNodeSummary,
 )
@@ -22,7 +23,9 @@ from app.services.auth_service import optional_current_user_dependency, require_
 from app.services.folder_service import (
     bulk_move_nodes,
     create_folder,
+    create_tree_shortcut,
     delete_folder,
+    delete_tree_shortcut,
     favorite_folder,
     get_folder_ancestors,
     get_folder_detail,
@@ -129,6 +132,35 @@ def get_tree_node_actions_route(
         if message.endswith("not found"):
             raise HTTPException(status_code=404, detail=message) from exc
         raise HTTPException(status_code=400, detail=message) from exc
+
+
+@router.post("/shortcuts", response_model=TreeNodeSummary)
+def create_tree_shortcut_route(
+    payload: TreeShortcutCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> TreeNodeSummary:
+    try:
+        return create_tree_shortcut(db, payload, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/shortcuts/{shortcut_id}", response_model=TreeNodeSummary)
+def delete_tree_shortcut_route(
+    shortcut_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> TreeNodeSummary:
+    try:
+        shortcut = delete_tree_shortcut(db, shortcut_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if shortcut is None:
+        raise HTTPException(status_code=404, detail="Shortcut not found")
+    return shortcut
 
 
 @router.get("/favorites", response_model=list[FolderSummary])

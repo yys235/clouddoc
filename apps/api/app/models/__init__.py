@@ -8,7 +8,7 @@ from app.models.document import (
     DocumentPermissionSettings,
     DocumentVersion,
 )
-from app.models.folder import Folder, FolderFavorite, UserTreePin
+from app.models.folder import Folder, FolderFavorite, TreeShortcut, UserTreePin
 from app.models.event import EventLog
 from app.models.integration import (
     Integration,
@@ -41,6 +41,7 @@ __all__ = [
     "EventLog",
     "Folder",
     "FolderFavorite",
+    "TreeShortcut",
     "UserTreePin",
     "Integration",
     "IntegrationAuditLog",

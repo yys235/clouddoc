@@ -10,9 +10,11 @@ import { DocumentShareDialog } from "@/components/editor/document-share-dialog";
 import {
   createDocument,
   createFolder,
+  createTreeShortcut,
   bulkMoveNodes,
   deleteDocument,
   deleteFolder,
+  deleteTreeShortcut,
   duplicateDocument,
   favoriteDocument,
   favoriteFolder,
@@ -299,6 +301,13 @@ function eventFolderToNode(folder: NonNullable<LibraryEvent["folder"]>): TreeNod
   };
 }
 
+function getTreeNodeHref(node: TreeNode) {
+  if (node.nodeType === "shortcut") {
+    return node.targetType === "folder" ? `/folders/${node.targetId}` : `/docs/${node.targetId}`;
+  }
+  return node.nodeType === "folder" ? `/folders/${node.id}` : `/docs/${node.id}`;
+}
+
 function upsertCurrentChild(children: TreeNode[], node: TreeNode, currentFolderId: string | null): TreeNode[] {
   if ((node.parentFolderId ?? null) !== currentFolderId || node.isDeleted) {
     return removeTreeNode(children, node.id, node.nodeType);
@@ -321,10 +330,9 @@ function buildReorderedSiblingItems(
   }
 
   const insertIndex = position === "before" ? targetIndex : targetIndex + 1;
-  const nextItems: Array<{ id: string; nodeType: "folder" | "document" }> = withoutDragged.map((item) => ({
-    id: item.id,
-    nodeType: item.nodeType,
-  }));
+  const nextItems: Array<{ id: string; nodeType: "folder" | "document" }> = withoutDragged.flatMap((item) =>
+    item.nodeType === "shortcut" ? [] : [{ id: item.id, nodeType: item.nodeType }],
+  );
   nextItems.splice(insertIndex, 0, dragged);
   return nextItems;
 }
@@ -369,8 +377,12 @@ function FolderTree({
                 ? "bg-blue-50 ring-1 ring-blue-200"
                 : ""
             }`}
-            draggable
+            draggable={node.nodeType !== "shortcut"}
             onDragStart={(event) => {
+              if (node.nodeType === "shortcut") {
+                event.preventDefault();
+                return;
+              }
               event.dataTransfer.setData(
                 "application/clouddoc-node",
                 JSON.stringify({ id: node.id, nodeType: node.nodeType }),
@@ -378,6 +390,9 @@ function FolderTree({
               event.dataTransfer.effectAllowed = "move";
             }}
             onDragOver={(event) => {
+              if (node.nodeType === "shortcut") {
+                return;
+              }
               if (!Array.from(event.dataTransfer.types).includes("application/clouddoc-node")) {
                 return;
               }
@@ -398,12 +413,15 @@ function FolderTree({
                 onDropNode(node.id, payload);
                 return;
               }
+              if (node.nodeType === "shortcut") {
+                return;
+              }
               onReorderNode(payload, { id: node.id, nodeType: node.nodeType }, position === "inside" ? "after" : position);
             }}
             onDragEnd={() => onDropIndicatorChange(null)}
             onKeyDown={(event: ReactKeyboardEvent<HTMLDivElement>) => {
-              const isDocument = node.nodeType === "document";
-              const href = node.nodeType === "folder" ? `/folders/${node.id}` : `/docs/${node.id}`;
+              const isDocument = node.nodeType === "document" || (node.nodeType === "shortcut" && node.targetType === "document");
+              const href = getTreeNodeHref(node);
               if (event.key === "Enter") {
                 event.preventDefault();
                 if (isDocument && documentOpenMode === "new-window") {
@@ -424,8 +442,8 @@ function FolderTree({
             }}
           >
             {(() => {
-              const isDocument = node.nodeType === "document";
-              const href = node.nodeType === "folder" ? `/folders/${node.id}` : `/docs/${node.id}`;
+              const isDocument = node.nodeType === "document" || (node.nodeType === "shortcut" && node.targetType === "document");
+              const href = getTreeNodeHref(node);
               const shouldOpenNewWindow = isDocument && documentOpenMode === "new-window";
               return (
                 <>
@@ -464,7 +482,7 @@ function FolderTree({
                 className="grid min-w-0 grid-cols-[17px_minmax(0,1fr)] items-center gap-1 py-0"
               >
                 <span className="flex h-4 w-4 items-center justify-center text-[13px] text-slate-400">
-                  {node.nodeType === "folder" ? "📁" : "📄"}
+                  {node.nodeType === "folder" ? "📁" : node.nodeType === "shortcut" ? "↗" : "📄"}
                 </span>
                 <span className="truncate pl-0.5">{node.title}</span>
               </Link>
@@ -579,6 +597,8 @@ export function FolderWorkspaceView({
   const [treeRenameValue, setTreeRenameValue] = useState("");
   const [treeDeleteTarget, setTreeDeleteTarget] = useState<TreeNode | null>(null);
   const [treeShareDialogTarget, setTreeShareDialogTarget] = useState<TreeShareDialogTarget | null>(null);
+  const [treeShortcutTarget, setTreeShortcutTarget] = useState<TreeNode | null>(null);
+  const [treeShortcutFolderId, setTreeShortcutFolderId] = useState(currentFolder?.id ?? "__root__");
   const [documentTitle, setDocumentTitle] = useState("");
   const [documentLocationMode, setDocumentLocationMode] = useState<"existing" | "new-folder">("existing");
   const [documentFolderId, setDocumentFolderId] = useState(currentFolder?.id ?? "__root__");
@@ -815,7 +835,7 @@ export function FolderWorkspaceView({
     };
   }, [activeTreeMenu]);
 
-  const getNodeHref = (node: TreeNode) => (node.nodeType === "folder" ? `/folders/${node.id}` : `/docs/${node.id}`);
+  const getNodeHref = (node: TreeNode) => getTreeNodeHref(node);
 
   const runTreeMenuAction = (action: () => void) => {
     closeTreeMenu();
@@ -871,6 +891,8 @@ export function FolderWorkspaceView({
         setNotice("");
         if (target.nodeType === "folder") {
           await deleteFolder(target.id);
+        } else if (target.nodeType === "shortcut") {
+          await deleteTreeShortcut(target.id);
         } else {
           await deleteDocument(target.id);
         }
@@ -893,6 +915,7 @@ export function FolderWorkspaceView({
   };
 
   const handleToggleTreeFavorite = (node: TreeNode) => {
+    if (node.nodeType === "shortcut") return;
     startTransition(async () => {
       try {
         setNotice("");
@@ -945,6 +968,38 @@ export function FolderWorkspaceView({
       return;
     }
     setTreeShareDialogTarget({ node, tab });
+  };
+
+  const openTreeShortcutDialog = (node: TreeNode) => {
+    if (node.nodeType === "shortcut") {
+      setNotice("快捷方式暂不支持继续创建快捷方式");
+      return;
+    }
+    setTreeShortcutTarget(node);
+    setTreeShortcutFolderId(currentFolder?.id ?? "__root__");
+  };
+
+  const handleCreateTreeShortcut = () => {
+    if (!treeShortcutTarget) return;
+    const target = treeShortcutTarget;
+    if (target.nodeType === "shortcut") return;
+    const targetType = target.nodeType;
+    const parentFolderId = treeShortcutFolderId === "__root__" ? null : treeShortcutFolderId;
+    startTransition(async () => {
+      try {
+        setNotice("");
+        await createTreeShortcut({
+          targetType,
+          targetId: target.id,
+          parentFolderId,
+        });
+        setTreeShortcutTarget(null);
+        setNotice("已添加快捷方式");
+        refreshView();
+      } catch {
+        setNotice("添加快捷方式失败，可能目标目录无权限或跨空间");
+      }
+    });
   };
 
   const handleToggleTreePin = (node: TreeNode) => {
@@ -1209,7 +1264,9 @@ export function FolderWorkspaceView({
         await reorderFolderChildren({
           spaceId: selectedSpace.id,
           parentFolderId: currentFolderId,
-          items: reordered.map((item) => ({ id: item.id, nodeType: item.nodeType })),
+          items: reordered.flatMap((item) =>
+            item.nodeType === "shortcut" ? [] : [{ id: item.id, nodeType: item.nodeType }],
+          ),
         });
         refreshView();
       } catch {
@@ -1392,8 +1449,12 @@ export function FolderWorkspaceView({
                 <div
                   key={`${node.nodeType}-${node.id}`}
                   className="flex items-center justify-between border border-slate-200 px-3 py-2"
-                  draggable
+                  draggable={node.nodeType !== "shortcut"}
                   onDragStart={(event) => {
+                    if (node.nodeType === "shortcut") {
+                      event.preventDefault();
+                      return;
+                    }
                     event.dataTransfer.setData(
                       "application/clouddoc-node",
                       JSON.stringify({ id: node.id, nodeType: node.nodeType }),
@@ -1403,6 +1464,7 @@ export function FolderWorkspaceView({
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={(event) => {
                     event.preventDefault();
+                    if (node.nodeType === "shortcut") return;
                     const payload = parseDragPayload(event.dataTransfer.getData("application/clouddoc-node"));
                     if (!payload) return;
                     handleReorderDrop(payload, { id: node.id, nodeType: node.nodeType });
@@ -1457,7 +1519,7 @@ export function FolderWorkspaceView({
         >
           <button
             type="button"
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
             onClick={() => runTreeMenuAction(() => window.open(getNodeHref(activeTreeMenu.node), "_blank", "noopener,noreferrer"))}
           >
             <span className="w-4 text-slate-400">↗</span>
@@ -1485,8 +1547,10 @@ export function FolderWorkspaceView({
           ) : null}
           <button
             type="button"
+            disabled={activeTreeMenu.node.nodeType === "shortcut"}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100"
             onClick={() => runTreeMenuAction(() => handleToggleTreeFavorite(activeTreeMenu.node))}
+            title={activeTreeMenu.node.nodeType === "shortcut" ? "快捷方式不单独收藏，请收藏原对象" : undefined}
           >
             <span className="w-4 text-slate-400">{activeTreeMenu.node.isFavorited ? "★" : "☆"}</span>
             <span>{activeTreeMenu.node.isFavorited ? "取消收藏" : "收藏"}</span>
@@ -1494,20 +1558,32 @@ export function FolderWorkspaceView({
           <div className="my-1 border-t border-slate-100" />
           <button
             type="button"
-            disabled={!activeTreeMenu.node.canManage}
+            disabled={!activeTreeMenu.node.canManage || activeTreeMenu.node.nodeType === "shortcut"}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
             onClick={() => runTreeMenuAction(() => setShowMoveDialog(`${activeTreeMenu.node.nodeType}:${activeTreeMenu.node.id}`))}
-            title={activeTreeMenu.node.canManage ? undefined : "你没有移动该节点的权限"}
+            title={
+              activeTreeMenu.node.nodeType === "shortcut"
+                ? "快捷方式暂不支持移动，请删除后重新添加"
+                : activeTreeMenu.node.canManage
+                  ? undefined
+                  : "你没有移动该节点的权限"
+            }
           >
             <span className="w-4 text-slate-400">↪</span>
             <span>移动到</span>
           </button>
           <button
             type="button"
-            disabled={!activeTreeMenu.node.canManage}
+            disabled={!activeTreeMenu.node.canManage || activeTreeMenu.node.nodeType === "shortcut"}
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
             onClick={() => runTreeMenuAction(() => openTreeRenameDialog(activeTreeMenu.node))}
-            title={activeTreeMenu.node.canManage ? undefined : "你没有重命名该节点的权限"}
+            title={
+              activeTreeMenu.node.nodeType === "shortcut"
+                ? "快捷方式暂不支持重命名"
+                : activeTreeMenu.node.canManage
+                  ? undefined
+                  : "你没有重命名该节点的权限"
+            }
           >
             <span className="w-4 text-slate-400">✎</span>
             <span>重命名</span>
@@ -1520,6 +1596,16 @@ export function FolderWorkspaceView({
             >
               <span className="w-4 text-slate-400">⧉</span>
               <span>创建副本</span>
+            </button>
+          ) : null}
+          {activeTreeMenu.node.nodeType !== "shortcut" ? (
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100"
+              onClick={() => runTreeMenuAction(() => openTreeShortcutDialog(activeTreeMenu.node))}
+            >
+              <span className="w-4 text-slate-400">＋</span>
+              <span>添加快捷方式到</span>
             </button>
           ) : null}
           <button
@@ -1574,6 +1660,46 @@ export function FolderWorkspaceView({
             <span className="w-4">⌫</span>
             <span>删除</span>
           </button>
+        </div>
+      ) : null}
+
+      {treeShortcutTarget ? (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-slate-950/30 px-4" role="dialog" aria-modal="true">
+          <div className="absolute inset-0" onClick={() => setTreeShortcutTarget(null)} aria-hidden="true" />
+          <div className="relative z-10 w-full max-w-md border border-slate-200 bg-white p-5 shadow-[0_24px_64px_rgba(15,23,42,0.18)]">
+            <div className="text-lg font-semibold text-slate-950">添加快捷方式到</div>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              快捷方式会指向“{treeShortcutTarget.title}”，不会复制原对象；删除快捷方式不会删除原对象。
+            </p>
+            <label className="mt-4 block text-xs font-medium text-slate-500">目标位置</label>
+            <select
+              value={treeShortcutFolderId}
+              onChange={(event) => setTreeShortcutFolderId(event.target.value)}
+              className="mt-1 w-full border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-accent"
+            >
+              <option value="__root__">{selectedSpace?.name ?? "当前空间"} / 根目录</option>
+              {folderOptions.map((folder) => (
+                <option key={folder.id} value={folder.id}>{folder.label}</option>
+              ))}
+            </select>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setTreeShortcutTarget(null)}
+                className="border border-slate-300 px-4 py-2 text-sm text-slate-700"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={isPending}
+                onClick={handleCreateTreeShortcut}
+                className="bg-accent px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                {isPending ? "添加中..." : "确认添加"}
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
 

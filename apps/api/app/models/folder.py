@@ -19,6 +19,19 @@ class Folder(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 
+class TreeShortcut(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "tree_shortcuts"
+
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("spaces.id"), index=True)
+    parent_folder_id: Mapped[str | None] = mapped_column(ForeignKey("folders.id"), nullable=True, index=True)
+    target_type: Mapped[str] = mapped_column(String(32), index=True)
+    target_id: Mapped[str] = mapped_column(String(128), index=True)
+    title_override: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+
 class UserTreePin(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "user_tree_pins"
     __table_args__ = (

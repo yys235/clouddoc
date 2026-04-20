@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.document import Document, DocumentFavorite, DocumentPermission
-from app.models.folder import Folder, FolderFavorite, UserTreePin
+from app.models.folder import Folder, FolderFavorite, TreeShortcut, UserTreePin
 from app.models.organization import OrganizationMember
 from app.models.space import Space
 from app.models.user import User
@@ -19,6 +19,7 @@ from app.schemas.folder import (
     FolderSummary,
     TreePinRequest,
     TreePinResponse,
+    TreeShortcutCreateRequest,
     TreeNodeActionsResponse,
     TreeNodeSummary,
 )
@@ -59,6 +60,20 @@ def get_next_document_sort_order(db: Session, space_id: str, folder_id: str | No
         statement = statement.where(Document.folder_id.is_(None))
     else:
         statement = statement.where(Document.folder_id == folder_id)
+    max_value = db.scalar(statement)
+    return int(max_value or 0) + 1
+
+
+def get_next_shortcut_sort_order(db: Session, space_id: str, parent_folder_id: str | None) -> int:
+    statement = (
+        select(func.max(TreeShortcut.sort_order))
+        .where(TreeShortcut.space_id == space_id)
+        .where(TreeShortcut.is_deleted.is_(False))
+    )
+    if parent_folder_id is None:
+        statement = statement.where(TreeShortcut.parent_folder_id.is_(None))
+    else:
+        statement = statement.where(TreeShortcut.parent_folder_id == parent_folder_id)
     max_value = db.scalar(statement)
     return int(max_value or 0) + 1
 
@@ -327,6 +342,57 @@ def build_document_tree_node(
     )
 
 
+def build_shortcut_tree_node(
+    db: Session,
+    shortcut: TreeShortcut,
+    user_id: str | None,
+    resolver: SpaceTreePermissionResolver | None = None,
+    pinned_keys: set[tuple[str, str]] | None = None,
+) -> TreeNodeSummary | None:
+    target_title = shortcut.title_override
+    target_visibility = "private"
+    target_document_type = None
+    if shortcut.target_type == "folder":
+        target_folder = db.get(Folder, shortcut.target_id)
+        if target_folder is None or target_folder.is_deleted:
+            return None
+        can_view = resolver.can_view_folder(target_folder) if resolver else can_view_folder(db, target_folder, user_id)
+        if not can_view:
+            return None
+        target_title = target_title or target_folder.title
+        target_visibility = target_folder.visibility
+    elif shortcut.target_type == "document":
+        target_document = db.get(Document, shortcut.target_id)
+        if target_document is None or target_document.is_deleted:
+            return None
+        can_view = resolver.can_view_document(target_document) if resolver else can_view_document(db, target_document, user_id)
+        if not can_view:
+            return None
+        target_title = target_title or target_document.title
+        target_visibility = target_document.visibility
+        target_document_type = target_document.document_type
+    else:
+        return None
+
+    return TreeNodeSummary(
+        id=shortcut.id,
+        node_type="shortcut",
+        title=target_title or "快捷方式",
+        space_id=shortcut.space_id,
+        parent_folder_id=shortcut.parent_folder_id,
+        target_type=shortcut.target_type,
+        target_id=shortcut.target_id,
+        sort_order=shortcut.sort_order,
+        visibility=target_visibility,
+        updated_at=shortcut.updated_at,
+        can_manage=shortcut.owner_user_id == user_id,
+        document_type=target_document_type,
+        is_deleted=shortcut.is_deleted,
+        is_pinned=("shortcut", shortcut.id) in (pinned_keys or set()),
+        children=[],
+    )
+
+
 def sort_tree_nodes(nodes: list[TreeNodeSummary]) -> list[TreeNodeSummary]:
     return sorted(nodes, key=lambda node: (0 if node.is_pinned else 1, node.sort_order, node.title.lower(), node.node_type, node.id))
 
@@ -459,6 +525,14 @@ def list_space_root_children(db: Session, space_id: str, user_id: str | None = N
         .where(Document.is_deleted.is_(False))
         .order_by(Document.sort_order.asc(), Document.updated_at.desc())
     ).all()
+    shortcuts = db.scalars(
+        select(TreeShortcut)
+        .where(TreeShortcut.space_id == space_id)
+        .where(TreeShortcut.parent_folder_id.is_(None))
+        .where(TreeShortcut.is_deleted.is_(False))
+        .where(TreeShortcut.owner_user_id == user_id)
+        .order_by(TreeShortcut.sort_order.asc(), TreeShortcut.updated_at.desc())
+    ).all()
     resolver = SpaceTreePermissionResolver(db, space, user_id, documents)
     pinned_keys = get_pinned_node_keys(db, user_id, space_id)
     favorite_folder_ids = get_favorite_folder_ids(db, user_id)
@@ -474,6 +548,10 @@ def list_space_root_children(db: Session, space_id: str, user_id: str | None = N
         for document in documents
         if resolver.can_view_document(document)
     )
+    for shortcut in shortcuts:
+        shortcut_node = build_shortcut_tree_node(db, shortcut, user_id, resolver, pinned_keys)
+        if shortcut_node is not None:
+            children.append(shortcut_node)
     return FolderChildrenResponse(folder=None, children=sort_tree_nodes(children))
 
 
@@ -499,6 +577,13 @@ def list_folder_children(db: Session, folder_id: str, user_id: str | None = None
         .where(Document.is_deleted.is_(False))
         .order_by(Document.sort_order.asc(), Document.updated_at.desc())
     ).all()
+    shortcuts = db.scalars(
+        select(TreeShortcut)
+        .where(TreeShortcut.parent_folder_id == folder_id)
+        .where(TreeShortcut.is_deleted.is_(False))
+        .where(TreeShortcut.owner_user_id == user_id)
+        .order_by(TreeShortcut.sort_order.asc(), TreeShortcut.updated_at.desc())
+    ).all()
     resolver = SpaceTreePermissionResolver(db, space, user_id, documents)
     pinned_keys = get_pinned_node_keys(db, user_id, space.id)
     favorite_folder_ids = get_favorite_folder_ids(db, user_id)
@@ -513,6 +598,10 @@ def list_folder_children(db: Session, folder_id: str, user_id: str | None = None
         for document in documents
         if resolver.can_view_document(document)
     )
+    for shortcut in shortcuts:
+        shortcut_node = build_shortcut_tree_node(db, shortcut, user_id, resolver, pinned_keys)
+        if shortcut_node is not None:
+            children.append(shortcut_node)
     return FolderChildrenResponse(
         folder=build_folder_summary(db, folder, user_id),
         children=sort_tree_nodes(children),
@@ -523,6 +612,7 @@ def _build_folder_tree(
     db: Session,
     folders_by_parent: dict[str | None, list[Folder]],
     docs_by_folder: dict[str | None, list[Document]],
+    shortcuts_by_parent: dict[str | None, list[TreeShortcut]],
     parent_id: str | None,
     user_id: str | None,
     resolver: SpaceTreePermissionResolver | None = None,
@@ -542,6 +632,7 @@ def _build_folder_tree(
             db,
             folders_by_parent,
             docs_by_folder,
+            shortcuts_by_parent,
             folder.id,
             user_id,
             resolver,
@@ -557,6 +648,10 @@ def _build_folder_tree(
         elif not can_view_document(db, document, user_id):
             continue
         nodes.append(build_document_tree_node(db, document, user_id, resolver, pinned_keys, favorite_document_ids))
+    for shortcut in shortcuts_by_parent.get(parent_id, []):
+        shortcut_node = build_shortcut_tree_node(db, shortcut, user_id, resolver, pinned_keys)
+        if shortcut_node is not None:
+            nodes.append(shortcut_node)
     return sort_tree_nodes(nodes)
 
 
@@ -578,12 +673,22 @@ def get_space_tree(db: Session, space_id: str, user_id: str | None = None) -> li
         .where(Document.is_deleted.is_(False))
         .order_by(Document.sort_order.asc(), Document.updated_at.desc())
     ).all()
+    shortcuts = db.scalars(
+        select(TreeShortcut)
+        .where(TreeShortcut.space_id == space_id)
+        .where(TreeShortcut.is_deleted.is_(False))
+        .where(TreeShortcut.owner_user_id == user_id)
+        .order_by(TreeShortcut.sort_order.asc(), TreeShortcut.updated_at.desc())
+    ).all()
     folders_by_parent: dict[str | None, list[Folder]] = {}
     docs_by_folder: dict[str | None, list[Document]] = {}
+    shortcuts_by_parent: dict[str | None, list[TreeShortcut]] = {}
     for folder in folders:
         folders_by_parent.setdefault(folder.parent_folder_id, []).append(folder)
     for document in documents:
         docs_by_folder.setdefault(document.folder_id, []).append(document)
+    for shortcut in shortcuts:
+        shortcuts_by_parent.setdefault(shortcut.parent_folder_id, []).append(shortcut)
     resolver = SpaceTreePermissionResolver(db, space, user_id, documents)
     pinned_keys = get_pinned_node_keys(db, user_id, space_id)
     favorite_folder_ids = get_favorite_folder_ids(db, user_id)
@@ -592,6 +697,7 @@ def get_space_tree(db: Session, space_id: str, user_id: str | None = None) -> li
         db,
         folders_by_parent,
         docs_by_folder,
+        shortcuts_by_parent,
         None,
         user_id,
         resolver,
@@ -620,6 +726,13 @@ def get_tree_pin_target(
         if not can_view_document(db, document, user_id):
             raise PermissionError("Not allowed to pin document")
         return document.space_id, document.id, document.folder_id
+    if payload.node_type == "shortcut":
+        shortcut = db.get(TreeShortcut, payload.node_id)
+        if shortcut is None or shortcut.is_deleted:
+            raise ValueError("Shortcut not found")
+        if shortcut.owner_user_id != user_id:
+            raise PermissionError("Not allowed to pin shortcut")
+        return shortcut.space_id, shortcut.id, shortcut.parent_folder_id
     raise ValueError("Unsupported node type")
 
 
@@ -686,6 +799,23 @@ def get_tree_node_actions(db: Session, node_type: str, node_id: str, user_id: st
             delete_disabled_reason="请先移动或删除文件夹内内容" if can_manage and has_children else None,
         )
 
+    if node_type == "shortcut":
+        shortcut = db.get(TreeShortcut, node_id)
+        if shortcut is None or shortcut.is_deleted:
+            raise ValueError("Shortcut not found")
+        if shortcut.owner_user_id != user_id:
+            raise PermissionError("Not allowed to access shortcut")
+        return TreeNodeActionsResponse(
+            node_type="shortcut",
+            node_id=shortcut.id,
+            can_open=True,
+            can_copy_link=True,
+            can_move=False,
+            can_pin=True,
+            can_favorite=False,
+            can_delete=True,
+        )
+
     raise ValueError("Unsupported node type")
 
 
@@ -735,6 +865,65 @@ def unpin_tree_node(db: Session, payload: TreePinRequest, user_id: str) -> TreeP
         db.delete(existing)
         db.commit()
     return TreePinResponse(node_type=payload.node_type, node_id=node_id, is_pinned=False)
+
+
+def create_tree_shortcut(db: Session, payload: TreeShortcutCreateRequest, user_id: str) -> TreeNodeSummary:
+    if payload.target_type == "folder":
+        target_folder = db.get(Folder, payload.target_id)
+        if target_folder is None or target_folder.is_deleted:
+            raise ValueError("Target folder not found")
+        if not can_view_folder(db, target_folder, user_id):
+            raise PermissionError("Not allowed to create shortcut to this folder")
+        space_id = target_folder.space_id
+    elif payload.target_type == "document":
+        target_document = db.get(Document, payload.target_id)
+        if target_document is None or target_document.is_deleted:
+            raise ValueError("Target document not found")
+        if not can_view_document(db, target_document, user_id):
+            raise PermissionError("Not allowed to create shortcut to this document")
+        space_id = target_document.space_id
+    else:
+        raise ValueError("Unsupported shortcut target type")
+
+    parent_folder_id = payload.parent_folder_id
+    if parent_folder_id is not None:
+        parent_folder = db.get(Folder, parent_folder_id)
+        if parent_folder is None or parent_folder.is_deleted:
+            raise ValueError("Parent folder not found")
+        if parent_folder.space_id != space_id:
+            raise ValueError("Shortcut parent folder must be in the target space")
+        if not can_manage_folder(db, parent_folder, user_id):
+            raise PermissionError("Not allowed to create shortcut in this folder")
+
+    shortcut = TreeShortcut(
+        owner_user_id=user_id,
+        space_id=space_id,
+        parent_folder_id=parent_folder_id,
+        target_type=payload.target_type,
+        target_id=payload.target_id,
+        title_override=(payload.title_override.strip()[:255] if payload.title_override else None),
+        sort_order=get_next_shortcut_sort_order(db, space_id, parent_folder_id),
+    )
+    db.add(shortcut)
+    db.commit()
+    db.refresh(shortcut)
+    node = build_shortcut_tree_node(db, shortcut, user_id)
+    if node is None:
+        raise ValueError("Shortcut target is no longer available")
+    return node
+
+
+def delete_tree_shortcut(db: Session, shortcut_id: str, user_id: str) -> TreeNodeSummary | None:
+    shortcut = db.get(TreeShortcut, shortcut_id)
+    if shortcut is None or shortcut.is_deleted:
+        return None
+    if shortcut.owner_user_id != user_id:
+        raise PermissionError("Not allowed to delete shortcut")
+    node = build_shortcut_tree_node(db, shortcut, user_id)
+    shortcut.is_deleted = True
+    shortcut.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return node
 
 
 def list_favorite_folders(db: Session, user_id: str) -> list[FolderSummary]:

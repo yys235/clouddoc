@@ -461,10 +461,12 @@ export type FolderSummary = {
 
 export type TreeNode = {
   id: string;
-  nodeType: "folder" | "document";
+  nodeType: "folder" | "document" | "shortcut";
   title: string;
   spaceId: string;
   parentFolderId?: string;
+  targetType?: "folder" | "document";
+  targetId?: string;
   sortOrder: number;
   visibility: string;
   updatedAt: string;
@@ -1880,10 +1882,12 @@ function formatDateTime(value: string) {
 
 function buildTreeNode(item: {
   id: string;
-  node_type: "folder" | "document";
+  node_type: "folder" | "document" | "shortcut";
   title: string;
   space_id: string;
   parent_folder_id?: string | null;
+  target_type?: "folder" | "document" | null;
+  target_id?: string | null;
   sort_order?: number;
   visibility: string;
   updated_at: string;
@@ -1900,6 +1904,8 @@ function buildTreeNode(item: {
     title: item.title,
     spaceId: item.space_id,
     parentFolderId: item.parent_folder_id ?? undefined,
+    targetType: item.target_type ?? undefined,
+    targetId: item.target_id ?? undefined,
     sortOrder: item.sort_order ?? 0,
     visibility: item.visibility,
     updatedAt: formatDateTime(item.updated_at),
@@ -2271,7 +2277,7 @@ export async function duplicateDocument(docId: string) {
   });
 }
 
-export async function pinTreeNode(input: { nodeType: "folder" | "document"; nodeId: string }) {
+export async function pinTreeNode(input: { nodeType: "folder" | "document" | "shortcut"; nodeId: string }) {
   const response = await apiFetch(`${API_BASE_URL}/folders/pins`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2281,10 +2287,10 @@ export async function pinTreeNode(input: { nodeType: "folder" | "document"; node
   if (!response.ok) {
     throw new Error("Failed to pin tree node");
   }
-  return response.json() as Promise<{ node_type: "folder" | "document"; node_id: string; is_pinned: boolean }>;
+  return response.json() as Promise<{ node_type: "folder" | "document" | "shortcut"; node_id: string; is_pinned: boolean }>;
 }
 
-export async function unpinTreeNode(input: { nodeType: "folder" | "document"; nodeId: string }) {
+export async function unpinTreeNode(input: { nodeType: "folder" | "document" | "shortcut"; nodeId: string }) {
   const response = await apiFetch(`${API_BASE_URL}/folders/pins`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
@@ -2294,7 +2300,41 @@ export async function unpinTreeNode(input: { nodeType: "folder" | "document"; no
   if (!response.ok) {
     throw new Error("Failed to unpin tree node");
   }
-  return response.json() as Promise<{ node_type: "folder" | "document"; node_id: string; is_pinned: boolean }>;
+  return response.json() as Promise<{ node_type: "folder" | "document" | "shortcut"; node_id: string; is_pinned: boolean }>;
+}
+
+export async function createTreeShortcut(input: {
+  targetType: "folder" | "document";
+  targetId: string;
+  parentFolderId?: string | null;
+  titleOverride?: string;
+}) {
+  const response = await apiFetch(`${API_BASE_URL}/folders/shortcuts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      target_type: input.targetType,
+      target_id: input.targetId,
+      parent_folder_id: input.parentFolderId ?? null,
+      title_override: input.titleOverride ?? null,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to create shortcut");
+  }
+  return buildTreeNode(await response.json());
+}
+
+export async function deleteTreeShortcut(shortcutId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/folders/shortcuts/${shortcutId}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error("Failed to delete shortcut");
+  }
+  return buildTreeNode(await response.json());
 }
 
 export async function bulkMoveNodes(input: {

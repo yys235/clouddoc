@@ -59,6 +59,8 @@ class TreeNodeSummary(BaseModel):
     title: str
     space_id: str
     parent_folder_id: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
     sort_order: int = 0
     visibility: str
     updated_at: datetime
@@ -73,6 +75,13 @@ class TreeNodeSummary(BaseModel):
 class TreePinRequest(BaseModel):
     node_type: str
     node_id: str
+
+
+class TreeShortcutCreateRequest(BaseModel):
+    target_type: str
+    target_id: str
+    parent_folder_id: str | None = None
+    title_override: str | None = None
 
 
 class TreePinResponse(BaseModel):
