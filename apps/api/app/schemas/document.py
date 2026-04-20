@@ -56,6 +56,10 @@ class DocumentCreateRequest(BaseModel):
     visibility: str = "private"
 
 
+class DocumentRenameRequest(BaseModel):
+    title: str
+
+
 class DocumentContentUpdateRequest(DocumentContentPayload):
     base_version_no: int | None = None
 

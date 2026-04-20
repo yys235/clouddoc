@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, useTransition, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition, type DragEvent, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 
 import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
@@ -10,10 +10,13 @@ import {
   createDocument,
   createFolder,
   bulkMoveNodes,
+  deleteDocument,
   deleteFolder,
+  favoriteDocument,
   moveDocumentToFolder,
   moveFolder,
   reorderFolderChildren,
+  renameDocument,
   renameFolder,
   subscribeDocumentLibraryBrowserEvents,
   type AncestorItem,
@@ -28,6 +31,7 @@ import {
 
 type NodeDragPayload = { id: string; nodeType: "folder" | "document" };
 type TreeDropPosition = "before" | "inside" | "after";
+type ActiveTreeMenu = { node: TreeNode; x: number; y: number };
 type LibraryEvent = {
   event_id?: string;
   event_type?: string;
@@ -128,6 +132,23 @@ function removeTreeNode(nodes: TreeNode[], nodeId: string, nodeType: TreeNode["n
       }
       return node;
     });
+  return changed ? next : nodes;
+}
+
+function updateTreeNodeTitle(nodes: TreeNode[], nodeId: string, nodeType: TreeNode["nodeType"], title: string): TreeNode[] {
+  let changed = false;
+  const next = nodes.map((node) => {
+    if (node.id === nodeId && node.nodeType === nodeType) {
+      changed = true;
+      return { ...node, title };
+    }
+    const children = updateTreeNodeTitle(node.children, nodeId, nodeType, title);
+    if (children !== node.children) {
+      changed = true;
+      return { ...node, children };
+    }
+    return node;
+  });
   return changed ? next : nodes;
 }
 
@@ -235,6 +256,8 @@ function FolderTree({
   onToggleFolder,
   dropIndicator,
   onDropIndicatorChange,
+  activeMenuKey,
+  onOpenMenu,
 }: {
   nodes: TreeNode[];
   currentFolderId?: string | null;
@@ -245,13 +268,16 @@ function FolderTree({
   onToggleFolder: (folderId: string) => void;
   dropIndicator: { key: string; position: TreeDropPosition } | null;
   onDropIndicatorChange: (indicator: { key: string; position: TreeDropPosition } | null) => void;
+  activeMenuKey?: string | null;
+  onOpenMenu: (node: TreeNode, event: MouseEvent<HTMLElement>) => void;
 }) {
   return (
     <div className="space-y-0.5">
       {nodes.map((node) => (
         <div key={`${node.nodeType}-${node.id}`} className="space-y-0.5">
           <div
-            className={`relative rounded-lg ${
+            onContextMenu={(event) => onOpenMenu(node, event)}
+            className={`group relative rounded-lg ${
               dropIndicator?.key === `${node.nodeType}:${node.id}` && dropIndicator.position === "inside"
                 ? "bg-blue-50 ring-1 ring-blue-200"
                 : ""
@@ -299,8 +325,8 @@ function FolderTree({
               <div className="absolute -top-1 left-2 right-2 h-0.5 rounded-full bg-blue-400" />
             ) : null}
             <div
-              className={`grid grid-cols-[16px_minmax(0,1fr)] items-center gap-1 px-1.5 py-0.5 text-[13px] leading-4 transition hover:bg-slate-100 ${
-                node.nodeType === "folder" && node.id === currentFolderId
+              className={`grid grid-cols-[16px_minmax(0,1fr)_26px] items-center gap-1 px-1.5 py-0.5 text-[13px] leading-4 transition hover:bg-slate-100 ${
+                (node.nodeType === "folder" && node.id === currentFolderId) || activeMenuKey === `${node.nodeType}:${node.id}`
                   ? "bg-slate-100 font-medium text-slate-900"
                   : "text-slate-600"
               }`}
@@ -334,6 +360,18 @@ function FolderTree({
                 </span>
                 <span className="truncate pl-0.5">{node.title}</span>
               </Link>
+              <button
+                type="button"
+                onClick={(event) => onOpenMenu(node, event)}
+                className={`flex h-5 w-6 items-center justify-center border text-[15px] font-semibold leading-none shadow-[0_1px_2px_rgba(15,23,42,0.08)] transition ${
+                  activeMenuKey === `${node.nodeType}:${node.id}`
+                    ? "border-blue-300 bg-blue-50 text-blue-600 opacity-100"
+                    : "border-slate-300 bg-white text-slate-500 opacity-0 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-600 group-hover:opacity-100"
+                }`}
+                aria-label={`${node.title} 更多操作`}
+              >
+                ⋯
+              </button>
             </div>
             {dropIndicator?.key === `${node.nodeType}:${node.id}` && dropIndicator.position === "after" ? (
               <div className="absolute -bottom-1 left-2 right-2 h-0.5 rounded-full bg-blue-400" />
@@ -354,6 +392,8 @@ function FolderTree({
                 onToggleFolder={onToggleFolder}
                 dropIndicator={dropIndicator}
                 onDropIndicatorChange={onDropIndicatorChange}
+                activeMenuKey={activeMenuKey}
+                onOpenMenu={onOpenMenu}
               />
             </div>
           ) : null}
@@ -424,6 +464,10 @@ export function FolderWorkspaceView({
   const [showMoveDialog, setShowMoveDialog] = useState<string | null>(null);
   const [showDeleteFolder, setShowDeleteFolder] = useState(false);
   const [showBulkMoveDialog, setShowBulkMoveDialog] = useState(false);
+  const [activeTreeMenu, setActiveTreeMenu] = useState<ActiveTreeMenu | null>(null);
+  const [treeRenameTarget, setTreeRenameTarget] = useState<TreeNode | null>(null);
+  const [treeRenameValue, setTreeRenameValue] = useState("");
+  const [treeDeleteTarget, setTreeDeleteTarget] = useState<TreeNode | null>(null);
   const [documentTitle, setDocumentTitle] = useState("");
   const [documentLocationMode, setDocumentLocationMode] = useState<"existing" | "new-folder">("existing");
   const [documentFolderId, setDocumentFolderId] = useState(currentFolder?.id ?? "__root__");
@@ -443,6 +487,7 @@ export function FolderWorkspaceView({
   const [liveTree, setLiveTree] = useState<TreeNode[]>(tree);
   const [liveCurrentChildren, setLiveCurrentChildren] = useState<FolderChildrenResult | null>(currentChildren);
   const handledEventIdsRef = useRef<Set<string>>(new Set());
+  const treeMenuRef = useRef<HTMLDivElement | null>(null);
   const folderOptions = useMemo(() => flattenFolders(liveTree), [liveTree]);
   const allFolderIds = useMemo(() => collectFolderIds(liveTree), [liveTree]);
 
@@ -617,6 +662,136 @@ export function FolderWorkspaceView({
 
   const refreshView = () => {
     router.refresh();
+  };
+
+  const closeTreeMenu = () => {
+    setActiveTreeMenu(null);
+  };
+
+  const openTreeMenu = (node: TreeNode, event: MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const baseX = event.type === "contextmenu" ? event.clientX : rect.right + 4;
+    const baseY = event.type === "contextmenu" ? event.clientY : rect.top;
+    const menuWidth = 210;
+    const menuHeight = 360;
+    const x = Math.max(8, Math.min(baseX, window.innerWidth - menuWidth - 8));
+    const y = Math.max(8, Math.min(baseY, window.innerHeight - menuHeight - 8));
+    setActiveTreeMenu({ node, x, y });
+  };
+
+  useEffect(() => {
+    if (!activeTreeMenu) {
+      return;
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      if (treeMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      closeTreeMenu();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeTreeMenu();
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeTreeMenu]);
+
+  const getNodeHref = (node: TreeNode) => (node.nodeType === "folder" ? `/folders/${node.id}` : `/docs/${node.id}`);
+
+  const runTreeMenuAction = (action: () => void) => {
+    closeTreeMenu();
+    action();
+  };
+
+  const handleCopyNodeLink = async (node: TreeNode) => {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}${getNodeHref(node)}`);
+      setNotice("链接已复制");
+    } catch {
+      setNotice("复制链接失败，请检查浏览器剪贴板权限");
+    }
+  };
+
+  const openTreeRenameDialog = (node: TreeNode) => {
+    setTreeRenameTarget(node);
+    setTreeRenameValue(node.title);
+  };
+
+  const handleTreeRename = () => {
+    if (!treeRenameTarget) return;
+    const target = treeRenameTarget;
+    const nextTitle = treeRenameValue.trim() || (target.nodeType === "folder" ? "未命名文件夹" : "未命名文档");
+    startTransition(async () => {
+      try {
+        setNotice("");
+        if (target.nodeType === "folder") {
+          await renameFolder(target.id, nextTitle, target.visibility as "private" | "public");
+        } else {
+          await renameDocument(target.id, nextTitle);
+        }
+        setLiveTree((current) => updateTreeNodeTitle(current, target.id, target.nodeType, nextTitle));
+        setLiveCurrentChildren((current) =>
+          current
+            ? { ...current, children: updateTreeNodeTitle(current.children, target.id, target.nodeType, nextTitle) }
+            : current,
+        );
+        setTreeRenameTarget(null);
+        setTreeRenameValue("");
+        refreshView();
+      } catch {
+        setNotice("重命名失败");
+      }
+    });
+  };
+
+  const handleTreeDelete = () => {
+    if (!treeDeleteTarget) return;
+    const target = treeDeleteTarget;
+    startTransition(async () => {
+      try {
+        setNotice("");
+        if (target.nodeType === "folder") {
+          await deleteFolder(target.id);
+        } else {
+          await deleteDocument(target.id);
+        }
+        setLiveTree((current) => removeTreeNode(current, target.id, target.nodeType));
+        setLiveCurrentChildren((current) =>
+          current
+            ? { ...current, children: removeTreeNode(current.children, target.id, target.nodeType) }
+            : current,
+        );
+        setSelectedNodeKeys((current) => current.filter((key) => key !== `${target.nodeType}:${target.id}`));
+        setTreeDeleteTarget(null);
+        if (target.nodeType === "folder" && target.id === currentFolderId) {
+          router.push(`/documents?space=${selectedSpace?.id ?? ""}`);
+        }
+        refreshView();
+      } catch {
+        setNotice(target.nodeType === "folder" ? "删除文件夹失败，可能文件夹非空或权限不足" : "删除文档失败");
+      }
+    });
+  };
+
+  const handleFavoriteTreeDocument = (node: TreeNode) => {
+    if (node.nodeType !== "document") return;
+    startTransition(async () => {
+      try {
+        setNotice("");
+        await favoriteDocument(node.id);
+        setNotice("已收藏");
+      } catch {
+        setNotice("收藏失败");
+      }
+    });
   };
 
   const handleToggleFolder = (folderId: string) => {
@@ -923,6 +1098,8 @@ export function FolderWorkspaceView({
                     onToggleFolder={handleToggleFolder}
                     dropIndicator={treeDropIndicator}
                     onDropIndicatorChange={setTreeDropIndicator}
+                    activeMenuKey={activeTreeMenu ? `${activeTreeMenu.node.nodeType}:${activeTreeMenu.node.id}` : null}
+                    onOpenMenu={openTreeMenu}
                   />
                 </div>
               ) : null}
@@ -1093,6 +1270,101 @@ export function FolderWorkspaceView({
         </div>
       </section>
 
+      {activeTreeMenu ? (
+        <div
+          ref={treeMenuRef}
+          className="fixed z-[140] w-[210px] border border-slate-200 bg-white py-1 text-sm text-slate-700 shadow-[0_16px_36px_rgba(15,23,42,0.16)]"
+          style={{ left: activeTreeMenu.x, top: activeTreeMenu.y }}
+          role="menu"
+        >
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100"
+            onClick={() => runTreeMenuAction(() => window.open(getNodeHref(activeTreeMenu.node), "_blank", "noopener,noreferrer"))}
+          >
+            <span className="w-4 text-slate-400">↗</span>
+            <span>在新标签页打开</span>
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100"
+            onClick={() => runTreeMenuAction(() => void handleCopyNodeLink(activeTreeMenu.node))}
+          >
+            <span className="w-4 text-slate-400">🔗</span>
+            <span>复制链接</span>
+          </button>
+          {activeTreeMenu.node.nodeType === "document" ? (
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100"
+              onClick={() => runTreeMenuAction(() => handleFavoriteTreeDocument(activeTreeMenu.node))}
+            >
+              <span className="w-4 text-slate-400">☆</span>
+              <span>收藏</span>
+            </button>
+          ) : null}
+          <div className="my-1 border-t border-slate-100" />
+          <button
+            type="button"
+            disabled={!activeTreeMenu.node.canManage}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
+            onClick={() => runTreeMenuAction(() => setShowMoveDialog(`${activeTreeMenu.node.nodeType}:${activeTreeMenu.node.id}`))}
+            title={activeTreeMenu.node.canManage ? undefined : "你没有移动该节点的权限"}
+          >
+            <span className="w-4 text-slate-400">↪</span>
+            <span>移动到</span>
+          </button>
+          <button
+            type="button"
+            disabled={!activeTreeMenu.node.canManage}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
+            onClick={() => runTreeMenuAction(() => openTreeRenameDialog(activeTreeMenu.node))}
+            title={activeTreeMenu.node.canManage ? undefined : "你没有重命名该节点的权限"}
+          >
+            <span className="w-4 text-slate-400">✎</span>
+            <span>重命名</span>
+          </button>
+          <button
+            type="button"
+            disabled
+            className="flex w-full cursor-not-allowed items-center gap-2 px-3 py-1.5 text-left text-slate-300"
+            title="后续版本实现创建副本"
+          >
+            <span className="w-4">⧉</span>
+            <span>创建副本</span>
+          </button>
+          <button
+            type="button"
+            disabled
+            className="flex w-full cursor-not-allowed items-center gap-2 px-3 py-1.5 text-left text-slate-300"
+            title="后续版本实现置顶"
+          >
+            <span className="w-4">⌃</span>
+            <span>添加到置顶</span>
+          </button>
+          <div className="my-1 border-t border-slate-100" />
+          <button
+            type="button"
+            disabled={
+              !activeTreeMenu.node.canManage ||
+              (activeTreeMenu.node.nodeType === "folder" && activeTreeMenu.node.children.length > 0)
+            }
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
+            onClick={() => runTreeMenuAction(() => setTreeDeleteTarget(activeTreeMenu.node))}
+            title={
+              !activeTreeMenu.node.canManage
+                ? "你没有删除该节点的权限"
+                : activeTreeMenu.node.nodeType === "folder" && activeTreeMenu.node.children.length > 0
+                  ? "非空文件夹暂不支持删除"
+                  : undefined
+            }
+          >
+            <span className="w-4">⌫</span>
+            <span>删除</span>
+          </button>
+        </div>
+      ) : null}
+
       {showCreateDocument ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/30 px-4" role="dialog" aria-modal="true">
           <div className="absolute inset-0" onClick={closeCreateDocumentDialog} aria-hidden="true" />
@@ -1257,6 +1529,41 @@ export function FolderWorkspaceView({
         </div>
       ) : null}
 
+      {treeRenameTarget ? (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/30 px-4" role="dialog" aria-modal="true">
+          <div className="absolute inset-0" onClick={() => setTreeRenameTarget(null)} aria-hidden="true" />
+          <div className="relative z-10 w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-[0_24px_64px_rgba(15,23,42,0.18)]">
+            <div className="text-lg font-semibold">
+              重命名{treeRenameTarget.nodeType === "folder" ? "文件夹" : "文档"}
+            </div>
+            <input
+              value={treeRenameValue}
+              onChange={(event) => setTreeRenameValue(event.target.value)}
+              className="mt-4 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+              autoFocus
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setTreeRenameTarget(null)}
+                disabled={isPending}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm disabled:opacity-60"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleTreeRename}
+                disabled={isPending}
+                className="rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:opacity-60"
+              >
+                {isPending ? "保存中..." : "保存"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showMoveDialog ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/30 px-4">
           <div className="absolute inset-0" onClick={() => setShowMoveDialog(null)} aria-hidden="true" />
@@ -1326,6 +1633,21 @@ export function FolderWorkspaceView({
         cancelLabel="取消"
         onCancel={() => setShowDeleteFolder(false)}
         onConfirm={handleDeleteFolder}
+        pending={isPending}
+      />
+      <ConfirmDialog
+        open={Boolean(treeDeleteTarget)}
+        title={`确认删除${treeDeleteTarget?.nodeType === "folder" ? "文件夹" : "文档"}`}
+        description={
+          treeDeleteTarget?.nodeType === "folder"
+            ? "只有空文件夹可以删除。确认后该文件夹会从目录树移除。"
+            : "确认后该文档会移入回收站，其他页面会通过事件同步移除。"
+        }
+        confirmLabel="确认删除"
+        cancelLabel="取消"
+        danger
+        onCancel={() => setTreeDeleteTarget(null)}
+        onConfirm={handleTreeDelete}
         pending={isPending}
       />
     </div>

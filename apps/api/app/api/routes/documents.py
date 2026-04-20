@@ -7,6 +7,7 @@ from app.schemas.document import (
     DocumentContentUpdateRequest,
     DocumentCreateRequest,
     DocumentDetail,
+    DocumentRenameRequest,
     DocumentSummary,
     FavoriteStatusResponse,
     LinkPreviewRequest,
@@ -29,6 +30,7 @@ from app.services.document_service import (
     list_document_ancestors,
     list_documents,
     move_document,
+    rename_document,
     restore_document,
     search_documents,
     soft_delete_document,
@@ -156,6 +158,22 @@ def update_document_content_route(
 ) -> DocumentDetail:
     try:
         document = update_document_content(db, doc_id, payload, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return document
+
+
+@router.patch("/{doc_id}", response_model=DocumentDetail)
+def rename_document_route(
+    doc_id: str,
+    payload: DocumentRenameRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> DocumentDetail:
+    try:
+        document = rename_document(db, doc_id, payload.title, current_user.id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if document is None:

@@ -1082,6 +1082,27 @@ def update_document_content(
     return get_document_detail(db, doc_id, current_user_id)
 
 
+def rename_document(
+    db: Session,
+    doc_id: str,
+    title: str,
+    current_user_id: str,
+) -> DocumentDetail | None:
+    document = db.get(Document, doc_id)
+    if not document or document.is_deleted:
+        return None
+    if not can_manage_document(db, document, current_user_id):
+        raise PermissionError("Not allowed to rename document")
+
+    document.title = (title.strip() or "未命名文档")[:255]
+    document.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(document)
+    publish_document_event(db, "document.renamed", document, current_user_id)
+    db.commit()
+    return get_document_detail(db, doc_id, current_user_id)
+
+
 def soft_delete_document(db: Session, doc_id: str, user_id: str | None = None) -> DocumentDetail | None:
     document = db.get(Document, doc_id)
     if not document:

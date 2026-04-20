@@ -177,6 +177,48 @@ def register_user_client(name: str, email: str, password: str) -> TestClient:
     return authed_client
 
 
+def test_document_owner_can_rename_document() -> None:
+    email = f"pytest-rename-owner-{uuid4()}@example.com"
+    owner_client = register_user_client("Pytest Rename Owner", email, "rename-password")
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == email))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    create_response = owner_client.post(
+        "/api/documents",
+        json={
+            "title": "pytest-before-rename",
+            "space_id": space_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    document_id = create_response.json()["id"]
+
+    try:
+        rename_response = owner_client.patch(
+            f"/api/documents/{document_id}",
+            json={"title": "pytest-after-rename"},
+        )
+        assert rename_response.status_code == 200
+        assert rename_response.json()["title"] == "pytest-after-rename"
+
+        detail_response = owner_client.get(f"/api/documents/{document_id}")
+        assert detail_response.status_code == 200
+        assert detail_response.json()["title"] == "pytest-after-rename"
+    finally:
+        cleanup_document(document_id)
+        cleanup_user(email)
+
+
 def test_system_admin_can_view_all_private_documents_but_not_edit_or_delete() -> None:
     owner_email = f"pytest-owner-{uuid4()}@example.com"
     admin_email = f"pytest-super-admin-{uuid4()}@example.com"

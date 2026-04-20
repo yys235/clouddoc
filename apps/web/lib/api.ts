@@ -2196,6 +2196,38 @@ export async function moveDocumentToFolder(docId: string, folderId?: string | nu
   });
 }
 
+export async function renameDocument(docId: string, title: string) {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ title }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to rename document");
+  }
+  const data = await response.json();
+  return buildDocumentViewModel({
+    ...data,
+    file_url: resolveApiAssetUrl(data.file_url),
+  });
+}
+
+export async function deleteDocument(docId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error("Failed to delete document");
+  }
+  const data = await response.json();
+  return buildDocumentViewModel({
+    ...data,
+    file_url: resolveApiAssetUrl(data.file_url),
+  });
+}
+
 export async function bulkMoveNodes(input: {
   spaceId: string;
   targetFolderId?: string | null;
