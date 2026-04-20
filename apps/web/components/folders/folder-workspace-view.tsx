@@ -595,6 +595,7 @@ export function FolderWorkspaceView({
   const [activeTreeMenu, setActiveTreeMenu] = useState<ActiveTreeMenu | null>(null);
   const [treeRenameTarget, setTreeRenameTarget] = useState<TreeNode | null>(null);
   const [treeRenameValue, setTreeRenameValue] = useState("");
+  const [treeRenameVisibility, setTreeRenameVisibility] = useState<"private" | "public">("private");
   const [treeDeleteTarget, setTreeDeleteTarget] = useState<TreeNode | null>(null);
   const [treeShareDialogTarget, setTreeShareDialogTarget] = useState<TreeShareDialogTarget | null>(null);
   const [treeShortcutTarget, setTreeShortcutTarget] = useState<TreeNode | null>(null);
@@ -854,6 +855,7 @@ export function FolderWorkspaceView({
   const openTreeRenameDialog = (node: TreeNode) => {
     setTreeRenameTarget(node);
     setTreeRenameValue(node.title);
+    setTreeRenameVisibility(node.visibility === "public" ? "public" : "private");
   };
 
   const handleTreeRename = () => {
@@ -864,16 +866,26 @@ export function FolderWorkspaceView({
       try {
         setNotice("");
         if (target.nodeType === "folder") {
-          await renameFolder(target.id, nextTitle, target.visibility as "private" | "public");
+          await renameFolder(target.id, nextTitle, treeRenameVisibility);
         } else {
           await renameDocument(target.id, nextTitle);
         }
         setLiveTree((current) => updateTreeNodeTitle(current, target.id, target.nodeType, nextTitle));
+        if (target.nodeType === "folder") {
+          setLiveTree((current) => updateTreeNodeVisibility(current, target.id, target.nodeType, treeRenameVisibility));
+        }
         setLiveCurrentChildren((current) =>
           current
             ? { ...current, children: updateTreeNodeTitle(current.children, target.id, target.nodeType, nextTitle) }
             : current,
         );
+        if (target.nodeType === "folder") {
+          setLiveCurrentChildren((current) =>
+            current
+              ? { ...current, children: updateTreeNodeVisibility(current.children, target.id, target.nodeType, treeRenameVisibility) }
+              : current,
+          );
+        }
         setTreeRenameTarget(null);
         setTreeRenameValue("");
         refreshView();
@@ -1640,6 +1652,18 @@ export function FolderWorkspaceView({
               </button>
             </>
           ) : null}
+          {activeTreeMenu.node.nodeType === "folder" ? (
+            <button
+              type="button"
+              disabled={!activeTreeMenu.node.canManage}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
+              onClick={() => runTreeMenuAction(() => openTreeRenameDialog(activeTreeMenu.node))}
+              title={activeTreeMenu.node.canManage ? undefined : "你没有设置文件夹密级的权限"}
+            >
+              <span className="w-4 text-slate-400">⚙</span>
+              <span>设置密级</span>
+            </button>
+          ) : null}
           <div className="my-1 border-t border-slate-100" />
           <button
             type="button"
@@ -1905,6 +1929,19 @@ export function FolderWorkspaceView({
               className="mt-4 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
               autoFocus
             />
+            {treeRenameTarget.nodeType === "folder" ? (
+              <label className="mt-3 block text-xs font-medium text-slate-500">
+                文件夹密级
+                <select
+                  value={treeRenameVisibility}
+                  onChange={(event) => setTreeRenameVisibility(event.target.value as "private" | "public")}
+                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                >
+                  <option value="private">私有，仅有权限成员可见</option>
+                  <option value="public">公开，有访问空间权限的成员可见</option>
+                </select>
+              </label>
+            ) : null}
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
