@@ -28,25 +28,25 @@ export function PersonalSettingsForm({
   };
 
   return (
-    <section className="rounded-3xl bg-white p-6 shadow-panel">
+    <section className="border border-slate-200 bg-white px-5 py-4 shadow-panel">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="text-sm font-medium text-accent">Personal Settings</div>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">个人配置</h1>
-          <p className="mt-3 text-sm leading-6 text-slate-600">
+          <p className="mt-2 text-sm leading-6 text-slate-600">
             这里保存个人使用习惯，配置会写入后端并跟随账号生效。
           </p>
         </div>
       </div>
 
-      <div className="mt-6 max-w-2xl rounded-2xl border border-slate-100 p-4">
+      <div className="mt-4 max-w-2xl border border-slate-200 p-3">
         <div className="text-base font-semibold text-slate-900">文件树打开方式</div>
         <p className="mt-1 text-sm leading-6 text-slate-500">
           控制从左侧文档树点击文档时，是在当前页面打开，还是打开新的浏览器标签/窗口。
         </p>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
           <label
-            className={`cursor-pointer rounded-lg border px-4 py-3 transition ${
+            className={`cursor-pointer border px-3 py-2.5 transition ${
               documentTreeOpenMode === "same-page" ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white"
             }`}
           >
@@ -62,7 +62,7 @@ export function PersonalSettingsForm({
             <div className="mt-1 text-xs leading-5 text-slate-500">适合连续浏览同一目录下的文档。</div>
           </label>
           <label
-            className={`cursor-pointer rounded-lg border px-4 py-3 transition ${
+            className={`cursor-pointer border px-3 py-2.5 transition ${
               documentTreeOpenMode === "new-window" ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white"
             }`}
           >
@@ -80,12 +80,12 @@ export function PersonalSettingsForm({
         </div>
       </div>
 
-      <div className="mt-5 flex items-center gap-3">
+      <div className="mt-4 flex items-center gap-3">
         <button
           type="button"
           onClick={savePreference}
           disabled={isPending}
-          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-70"
+          className="bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-70"
         >
           {isPending ? "保存中..." : "保存配置"}
         </button>

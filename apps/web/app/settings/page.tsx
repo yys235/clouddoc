@@ -13,16 +13,16 @@ export default async function SettingsPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-5xl space-y-5 p-5">
+      <div className="mx-auto max-w-[1280px] space-y-3 px-4 py-3">
         {userUnavailable || preferenceUnavailable ? <ApiUnavailableNotice /> : null}
         {!currentUser ? (
-          <section className="rounded-3xl bg-white p-6 shadow-panel">
+          <section className="border border-slate-200 bg-white px-5 py-4 shadow-panel">
             <div className="text-sm font-medium text-accent">Personal Settings</div>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight">需要登录</h1>
             <p className="mt-3 text-sm leading-6 text-slate-600">个人配置保存在后端账号下，请先登录后再修改。</p>
             <Link
               href="/login"
-              className="mt-5 inline-flex rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white"
+              className="mt-4 inline-flex bg-accent px-4 py-1.5 text-sm font-medium text-white"
             >
               去登录
             </Link>

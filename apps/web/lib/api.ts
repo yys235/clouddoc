@@ -11,6 +11,122 @@ const API_BASE_URL =
     : PUBLIC_API_BASE_URL;
 
 const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, "");
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const inFlightMutations = new Set<string>();
+const DOCUMENT_LIBRARY_BROWSER_EVENT = "clouddoc:document-library-event";
+
+export type DocumentLibraryBrowserEvent = {
+  event_type: "document.deleted" | "document.restored";
+  document_id: string;
+  document?: {
+    id: string;
+    title?: string;
+    space_id?: string;
+    folder_id?: string | null;
+    is_deleted?: boolean;
+  };
+};
+
+function publishDocumentLibraryBrowserEvent(event: DocumentLibraryBrowserEvent) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const payload = JSON.stringify({ ...event, emitted_at: Date.now() });
+  if ("BroadcastChannel" in window) {
+    const channel = new BroadcastChannel(DOCUMENT_LIBRARY_BROWSER_EVENT);
+    channel.postMessage(event);
+    channel.close();
+  }
+  try {
+    window.localStorage.setItem(DOCUMENT_LIBRARY_BROWSER_EVENT, payload);
+    window.localStorage.removeItem(DOCUMENT_LIBRARY_BROWSER_EVENT);
+  } catch {
+    // Cross-tab sync is best-effort. SSE remains the primary event source.
+  }
+}
+
+export function subscribeDocumentLibraryBrowserEvents(
+  listener: (event: DocumentLibraryBrowserEvent) => void,
+) {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+
+  let channel: BroadcastChannel | null = null;
+  const handleChannelMessage = (event: MessageEvent<DocumentLibraryBrowserEvent>) => {
+    listener(event.data);
+  };
+  if ("BroadcastChannel" in window) {
+    channel = new BroadcastChannel(DOCUMENT_LIBRARY_BROWSER_EVENT);
+    channel.addEventListener("message", handleChannelMessage);
+  }
+
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key !== DOCUMENT_LIBRARY_BROWSER_EVENT || !event.newValue) {
+      return;
+    }
+    try {
+      listener(JSON.parse(event.newValue) as DocumentLibraryBrowserEvent);
+    } catch {
+      // Ignore malformed same-origin storage events.
+    }
+  };
+  window.addEventListener("storage", handleStorage);
+
+  return () => {
+    window.removeEventListener("storage", handleStorage);
+    if (channel) {
+      channel.removeEventListener("message", handleChannelMessage);
+      channel.close();
+    }
+  };
+}
+
+function normalizeMethod(method?: string) {
+  return (method ?? "GET").toUpperCase();
+}
+
+function bodyFingerprint(body: BodyInit | null | undefined) {
+  if (!body) {
+    return "";
+  }
+  if (typeof body === "string") {
+    return body;
+  }
+  if (body instanceof FormData) {
+    const parts: string[] = [];
+    for (const [key, value] of body.entries()) {
+      if (value instanceof File) {
+        parts.push(`${key}=file:${value.name}:${value.size}:${value.lastModified}`);
+      } else {
+        parts.push(`${key}=${value}`);
+      }
+    }
+    return parts.join("&");
+  }
+  return String(body);
+}
+
+function stableHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function submissionKey(input: string, init?: RequestInit) {
+  const method = normalizeMethod(init?.method);
+  return stableHash(`${method}:${input}:${bodyFingerprint(init?.body)}`);
+}
+
+export class DuplicateSubmissionError extends Error {
+  constructor() {
+    super("Duplicate submission is already in progress");
+    this.name = "DuplicateSubmissionError";
+  }
+}
 
 async function buildRequestHeaders(init?: RequestInit) {
   const headers = new Headers(init?.headers ?? {});
@@ -31,10 +147,29 @@ async function buildRequestHeaders(init?: RequestInit) {
 
 async function apiFetch(input: string, init?: RequestInit) {
   const headers = await buildRequestHeaders(init);
-  return fetch(input, {
-    ...init,
-    headers,
-  });
+  const method = normalizeMethod(init?.method);
+  const isMutation = MUTATING_METHODS.has(method);
+  const key = isMutation ? submissionKey(input, init) : "";
+  if (isMutation) {
+    if (inFlightMutations.has(key)) {
+      throw new DuplicateSubmissionError();
+    }
+    inFlightMutations.add(key);
+    if (!headers.has("X-CloudDoc-Submission-Key")) {
+      headers.set("X-CloudDoc-Submission-Key", key);
+    }
+  }
+  try {
+    return await fetch(input, {
+      ...init,
+      method,
+      headers,
+    });
+  } finally {
+    if (isMutation) {
+      inFlightMutations.delete(key);
+    }
+  }
 }
 
 function resolveApiAssetUrl(value?: string | null) {
@@ -394,7 +529,7 @@ export async function fetchUserPreference(): Promise<ApiItemResult<UserPreferenc
 export async function updateUserPreference(input: {
   documentTreeOpenMode?: DocumentTreeOpenMode;
 }): Promise<UserPreference> {
-  const response = await fetch(`${API_BASE_URL}/preferences/me`, {
+  const response = await apiFetch(`${API_BASE_URL}/preferences/me`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
@@ -409,7 +544,7 @@ export async function updateUserPreference(input: {
 }
 
 export async function login(input: { email: string; password: string }): Promise<AuthPayload> {
-  const response = await fetch(`${API_BASE_URL}/auth/login`, {
+  const response = await apiFetch(`${API_BASE_URL}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
@@ -431,7 +566,7 @@ export async function register(input: {
   password: string;
   organizationName?: string;
 }): Promise<AuthPayload> {
-  const response = await fetch(`${API_BASE_URL}/auth/register`, {
+  const response = await apiFetch(`${API_BASE_URL}/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
@@ -453,7 +588,7 @@ export async function register(input: {
 }
 
 export async function logout(): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/auth/logout`, {
+  const response = await apiFetch(`${API_BASE_URL}/auth/logout`, {
     method: "POST",
     credentials: "same-origin",
   });
@@ -642,7 +777,7 @@ export async function fetchUnreadNotificationCount(): Promise<ApiItemResult<{ un
 }
 
 export async function markNotificationRead(notificationId: string): Promise<NotificationItem> {
-  const response = await fetch(`${API_BASE_URL}/notifications/${notificationId}/read`, {
+  const response = await apiFetch(`${API_BASE_URL}/notifications/${notificationId}/read`, {
     method: "POST",
     credentials: "same-origin",
   });
@@ -669,7 +804,7 @@ export async function markNotificationRead(notificationId: string): Promise<Noti
 }
 
 export async function markAllNotificationsRead(): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/notifications/read-all`, {
+  const response = await apiFetch(`${API_BASE_URL}/notifications/read-all`, {
     method: "POST",
     credentials: "same-origin",
   });
@@ -679,7 +814,7 @@ export async function markAllNotificationsRead(): Promise<void> {
 }
 
 export async function revokeSession(sessionId: string): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}`, {
+  const response = await apiFetch(`${API_BASE_URL}/sessions/${sessionId}`, {
     method: "DELETE",
     credentials: "same-origin",
   });
@@ -689,7 +824,7 @@ export async function revokeSession(sessionId: string): Promise<void> {
 }
 
 export async function createOrganization(input: { name: string }) {
-  const response = await fetch(`${API_BASE_URL}/organizations`, {
+  const response = await apiFetch(`${API_BASE_URL}/organizations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
@@ -715,7 +850,7 @@ export async function inviteOrganizationMember(input: {
   email: string;
   role: string;
 }) {
-  const response = await fetch(`${API_BASE_URL}/organizations/${input.organizationId}/invite`, {
+  const response = await apiFetch(`${API_BASE_URL}/organizations/${input.organizationId}/invite`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
@@ -741,7 +876,7 @@ export async function updateOrganizationMember(input: {
   role?: string;
   status?: string;
 }) {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_BASE_URL}/organizations/${input.organizationId}/members/${input.memberId}`,
     {
       method: "PATCH",
@@ -1102,7 +1237,7 @@ export async function instantiateTemplate(
   templateId: string,
   input: { title?: string; spaceId?: string },
 ) {
-  const response = await fetch(`${API_BASE_URL}/templates/${templateId}/instantiate`, {
+  const response = await apiFetch(`${API_BASE_URL}/templates/${templateId}/instantiate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1603,7 +1738,19 @@ export async function softDeleteDocument(docId: string) {
     throw new Error("Failed to delete document");
   }
 
-  return response.json();
+  const data = await response.json();
+  publishDocumentLibraryBrowserEvent({
+    event_type: "document.deleted",
+    document_id: docId,
+    document: {
+      id: data.id ?? docId,
+      title: data.title,
+      space_id: data.space_id,
+      folder_id: data.folder_id ?? null,
+      is_deleted: true,
+    },
+  });
+  return data;
 }
 
 export async function restoreDocument(docId: string) {
@@ -1616,7 +1763,19 @@ export async function restoreDocument(docId: string) {
     throw new Error("Failed to restore document");
   }
 
-  return response.json();
+  const data = await response.json();
+  publishDocumentLibraryBrowserEvent({
+    event_type: "document.restored",
+    document_id: docId,
+    document: {
+      id: data.id ?? docId,
+      title: data.title,
+      space_id: data.space_id,
+      folder_id: data.folder_id ?? null,
+      is_deleted: false,
+    },
+  });
+  return data;
 }
 
 export async function favoriteDocument(docId: string) {

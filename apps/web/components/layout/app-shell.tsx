@@ -11,7 +11,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
   ]);
 
   return (
-    <div className="min-h-screen bg-[#fcfbf8]">
+    <div className="min-h-screen bg-sand">
       <SidebarNav
         currentUser={
           currentUser
@@ -21,7 +21,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
         currentOrganizationName={currentOrganization?.name ?? null}
         notificationUnreadCount={unreadNotifications?.unreadCount ?? 0}
       />
-      <main className="min-h-screen min-w-0 pl-56">{children}</main>
+      <main className="min-h-screen min-w-0 pl-52">{children}</main>
     </div>
   );
 }

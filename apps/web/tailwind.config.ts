@@ -8,16 +8,16 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#18212f",
-        mist: "#eef3f7",
-        accent: "#246bce",
-        sand: "#f8f5ef",
+        ink: "#111827",
+        mist: "#eef2f6",
+        accent: "#1d4f91",
+        sand: "#f4f6f8",
       },
       fontFamily: {
         sans: ["'Noto Sans SC'", "'Helvetica Neue'", "Arial", "sans-serif"],
       },
       boxShadow: {
-        panel: "0 18px 40px rgba(24, 33, 47, 0.08)",
+        panel: "0 1px 2px rgba(17, 24, 39, 0.06)",
       },
     },
   },
@@ -25,4 +25,3 @@ const config: Config = {
 };
 
 export default config;
-

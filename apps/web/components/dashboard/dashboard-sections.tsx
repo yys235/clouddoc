@@ -4,7 +4,14 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
-import { CurrentOrganization, DashboardDocument, OrganizationMember, SpaceSummary, TreeNode } from "@/lib/api";
+import {
+  CurrentOrganization,
+  DashboardDocument,
+  OrganizationMember,
+  SpaceSummary,
+  subscribeDocumentLibraryBrowserEvents,
+  TreeNode,
+} from "@/lib/api";
 
 function statusLabel(status: string) {
   return status === "published" ? "已发布" : "草稿";
@@ -24,15 +31,15 @@ export function DashboardPageFrame({
   children: React.ReactNode;
 }) {
   return (
-    <div className="mx-auto max-w-6xl space-y-5 p-5">
+    <div className="mx-auto max-w-[1280px] space-y-3 px-4 py-3">
       {apiUnavailable ? <ApiUnavailableNotice /> : null}
-      <section className="rounded-3xl bg-white p-6 shadow-panel">
+      <section className="border border-slate-200 bg-white px-5 py-4 shadow-panel">
         <div className="flex items-start justify-between gap-4">
           <div className="max-w-2xl">
             <div className="text-sm font-medium text-accent">Workspace Page</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight">{title}</h1>
+            <h1 className="mt-1.5 text-3xl font-semibold tracking-tight text-slate-950">{title}</h1>
             {description ? (
-              <p className="mt-3 text-sm leading-6 text-slate-600">{description}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{description}</p>
             ) : null}
           </div>
           {actions ? <div className="shrink-0">{actions}</div> : null}
@@ -62,6 +69,14 @@ export function DocumentListSection({
   useEffect(() => {
     setLiveDocuments(documents);
   }, [documents]);
+
+  useEffect(() => {
+    return subscribeDocumentLibraryBrowserEvents((event) => {
+      if (event.event_type === "document.deleted") {
+        setLiveDocuments((current) => current.filter((item) => item.id !== event.document_id));
+      }
+    });
+  }, []);
 
   useEffect(() => {
     if (!enableLiveUpdates) {
@@ -153,22 +168,22 @@ export function DocumentListSection({
   }, [enableLiveUpdates]);
 
   return (
-    <section className="rounded-3xl bg-white p-5 shadow-panel">
+    <section className="border border-slate-200 bg-white px-4 py-3 shadow-panel">
       <h2 className="text-lg font-semibold">{title}</h2>
-      <div className="mt-3 space-y-2">
+      <div className="mt-2 space-y-1.5">
         {liveDocuments.length > 0 ? (
           liveDocuments.map((doc) => (
             <Link
               key={doc.id}
               href={`/docs/${doc.id}`}
-              className="flex items-center justify-between rounded-lg border border-slate-100 px-3.5 py-3 transition hover:border-slate-200 hover:bg-slate-50"
+              className="flex items-center justify-between border border-slate-200 px-3 py-2 transition hover:border-slate-300 hover:bg-slate-50"
             >
               <div>
                 <div className="text-sm font-medium">{doc.title}</div>
                 <div className="mt-0.5 text-xs text-slate-500">{doc.updatedAt}</div>
               </div>
               <div
-                className={`rounded-lg px-3 py-1 text-xs font-medium ${
+                className={`px-2.5 py-0.5 text-xs font-medium ${
                   badge
                     ? "bg-amber-50 text-amber-700"
                     : "bg-mist text-slate-600"
@@ -188,14 +203,14 @@ export function DocumentListSection({
 
 export function SpacesSection({ spaces }: { spaces: SpaceSummary[] }) {
   return (
-    <section className="rounded-3xl bg-white p-5 shadow-panel">
+    <section className="border border-slate-200 bg-white px-4 py-3 shadow-panel">
       <h2 className="text-lg font-semibold">团队空间</h2>
-      <div className="mt-3 space-y-2">
+      <div className="mt-2 space-y-1.5">
         {spaces.length > 0 ? (
           spaces.map((space) => (
             <div
               key={space.id}
-              className="flex items-center justify-between rounded-lg border border-slate-100 px-3.5 py-3"
+              className="flex items-center justify-between border border-slate-200 px-3 py-2"
             >
               <div>
                 <div className="text-sm font-medium">{space.name}</div>
@@ -203,7 +218,7 @@ export function SpacesSection({ spaces }: { spaces: SpaceSummary[] }) {
                   {space.spaceType === "team" ? "团队空间" : "个人空间"} · {space.visibility}
                 </div>
               </div>
-              <div className="rounded-lg bg-mist px-3 py-1 text-xs font-medium text-slate-600">
+              <div className="bg-mist px-2.5 py-0.5 text-xs font-medium text-slate-600">
                 {space.updatedAt}
               </div>
             </div>
@@ -227,7 +242,7 @@ function SpaceTreeNodes({ nodes, level = 0 }: { nodes: TreeNode[]; level?: numbe
         <div key={`${node.nodeType}-${node.id}`} style={{ paddingLeft: level * 14 }}>
           <Link
             href={node.nodeType === "folder" ? `/folders/${node.id}` : `/docs/${node.id}`}
-            className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50 hover:text-accent"
+            className="flex items-center gap-2 px-2 py-1 text-sm text-slate-700 hover:bg-slate-50 hover:text-accent"
           >
             <span className="text-slate-400">{node.nodeType === "folder" ? "📁" : "📄"}</span>
             <span className="min-w-0 flex-1 truncate">{node.title}</span>
@@ -248,21 +263,21 @@ export function SpacesDirectorySection({
   items: Array<{ space: SpaceSummary; tree: TreeNode[] }>;
 }) {
   return (
-    <section className="rounded-3xl bg-white p-5 shadow-panel">
+    <section className="border border-slate-200 bg-white px-4 py-3 shadow-panel">
       <div className="flex items-center justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold">空间目录</h2>
           <p className="mt-1 text-sm text-slate-500">按空间查看当前文件夹和文档层级。</p>
         </div>
-        <Link href="/documents" className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+        <Link href="/documents" className="border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">
           打开我的文档
         </Link>
       </div>
-      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+      <div className="mt-3 grid gap-2.5 lg:grid-cols-2">
         {items.length > 0 ? (
           items.map((item) => (
-            <div key={item.space.id} className="rounded-2xl border border-slate-100 p-4">
-              <div className="mb-3 flex items-center justify-between gap-3">
+            <div key={item.space.id} className="border border-slate-200 p-3">
+              <div className="mb-2 flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold text-slate-900">{item.space.name}</div>
                   <div className="mt-0.5 text-xs text-slate-500">
@@ -271,7 +286,7 @@ export function SpacesDirectorySection({
                 </div>
                 <Link
                   href={`/documents?space=${item.space.id}`}
-                  className="shrink-0 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                  className="shrink-0 border border-slate-200 px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50"
                 >
                   进入
                 </Link>
@@ -295,30 +310,30 @@ export function OrganizationSummarySection({
   members: OrganizationMember[];
 }) {
   return (
-    <section className="rounded-3xl bg-white p-5 shadow-panel">
+    <section className="border border-slate-200 bg-white px-4 py-3 shadow-panel">
       <h2 className="text-lg font-semibold">当前组织</h2>
       {organization ? (
         <>
-          <div className="mt-3 rounded-lg border border-slate-100 px-3.5 py-3">
+          <div className="mt-2 border border-slate-200 px-3 py-2">
             <div className="text-sm font-medium">{organization.name}</div>
             <div className="mt-0.5 text-xs text-slate-500">
               角色：{organization.role} · 成员 {organization.memberCount} 人
             </div>
           </div>
-          <div className="mt-4">
+          <div className="mt-3">
             <div className="mb-2 text-sm font-medium text-slate-800">成员</div>
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               {members.length > 0 ? (
                 members.map((member) => (
                   <div
                     key={member.id}
-                    className="flex items-center justify-between rounded-lg border border-slate-100 px-3.5 py-2.5"
+                    className="flex items-center justify-between border border-slate-200 px-3 py-2"
                   >
                     <div>
                       <div className="text-sm font-medium">{member.name}</div>
                       <div className="mt-0.5 text-xs text-slate-500">{member.email}</div>
                     </div>
-                    <div className="rounded-lg bg-mist px-3 py-1 text-xs font-medium text-slate-600">
+                    <div className="bg-mist px-2.5 py-0.5 text-xs font-medium text-slate-600">
                       {member.role}
                     </div>
                   </div>

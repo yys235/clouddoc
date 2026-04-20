@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
-import { DashboardDocument } from "@/lib/api";
+import { DashboardDocument, subscribeDocumentLibraryBrowserEvents } from "@/lib/api";
 import { SearchForm } from "@/components/search/search-form";
 
 function buildCards(documents: DashboardDocument[]) {
@@ -35,6 +35,14 @@ export function WorkspaceOverview({
   useEffect(() => {
     setLiveDocuments(documents);
   }, [documents]);
+
+  useEffect(() => {
+    return subscribeDocumentLibraryBrowserEvents((event) => {
+      if (event.event_type === "document.deleted") {
+        setLiveDocuments((current) => current.filter((item) => item.id !== event.document_id));
+      }
+    });
+  }, []);
 
   useEffect(() => {
     if (apiUnavailable || !enableLiveUpdates) {
@@ -126,24 +134,24 @@ export function WorkspaceOverview({
   }, [apiUnavailable, enableLiveUpdates]);
 
   return (
-    <div className="mx-auto max-w-6xl space-y-5 p-5">
+    <div className="mx-auto max-w-[1280px] space-y-3 px-4 py-3">
       {apiUnavailable ? <ApiUnavailableNotice /> : null}
-      <section id="workspace" className="rounded-3xl bg-white p-6 shadow-panel">
+      <section id="workspace" className="border border-slate-200 bg-white px-5 py-4 shadow-panel">
         <div className="max-w-2xl">
           <div className="text-sm font-medium text-accent">V1 Workspace</div>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">
+          <h1 className="mt-1.5 text-3xl font-semibold tracking-tight text-slate-950">
             飞书式连续文档体验，结构化内容底层
           </h1>
-          <p className="mt-3 text-sm leading-6 text-slate-600">
+          <p className="mt-2 text-sm leading-6 text-slate-600">
             当前页面只展示真实后端返回的数据。后端不可用时，将显示空状态或错误提示，不再填充演示数据。
           </p>
           <SearchForm />
         </div>
       </section>
 
-      <section id="recent-documents" className="grid gap-3 md:grid-cols-3">
+      <section id="recent-documents" className="grid gap-2.5 md:grid-cols-3">
         {cards.map((card) => (
-          <article key={card.title} className="rounded-2xl bg-white p-5 shadow-panel">
+          <article key={card.title} className="border border-slate-200 bg-white px-4 py-3 shadow-panel">
             <div className="text-sm text-slate-500">{card.title}</div>
             <div className="mt-2 text-2xl font-semibold">{card.value}</div>
             <div className="mt-1.5 text-sm text-slate-500">{card.note}</div>
@@ -151,26 +159,26 @@ export function WorkspaceOverview({
         ))}
       </section>
 
-      <section id="my-documents" className="rounded-3xl bg-white p-5 shadow-panel">
-        <div className="mb-3 flex items-center justify-between">
+      <section id="my-documents" className="border border-slate-200 bg-white px-4 py-3 shadow-panel">
+        <div className="mb-2 flex items-center justify-between">
           <h2 className="text-lg font-semibold">最近文档</h2>
           <Link className="text-sm font-medium text-accent" href="/documents">
             查看全部
           </Link>
         </div>
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {liveDocuments.length > 0 ? (
             liveDocuments.map((doc) => (
               <Link
                 key={doc.id}
                 href={`/docs/${doc.id}`}
-                className="flex items-center justify-between rounded-lg border border-slate-100 px-3.5 py-3 transition hover:border-slate-200 hover:bg-slate-50"
+                className="flex items-center justify-between border border-slate-200 px-3 py-2 transition hover:border-slate-300 hover:bg-slate-50"
               >
                 <div>
                   <div className="text-sm font-medium">{doc.title}</div>
                   <div className="mt-0.5 text-xs text-slate-500">{doc.updatedAt}</div>
                 </div>
-                <div className="rounded-lg bg-mist px-3 py-1 text-xs font-medium text-slate-600">
+                <div className="bg-mist px-2.5 py-0.5 text-xs font-medium text-slate-600">
                   {doc.status === "published" ? "已发布" : "草稿"}
                 </div>
               </Link>

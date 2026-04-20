@@ -4,10 +4,16 @@
 
 :root {
   color-scheme: light;
+  --clouddoc-bg: #f4f6f8;
+  --clouddoc-surface: #ffffff;
+  --clouddoc-border: #d8dee8;
+  --clouddoc-muted: #5f6b7a;
+  --clouddoc-accent: #1d4f91;
 }
 
 body {
   @apply bg-sand text-ink antialiased;
+  font-size: 14px;
 }
 
 a {
@@ -18,3 +24,19 @@ a {
   box-sizing: border-box;
 }
 
+*, ::before, ::after {
+  border-radius: 0 !important;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+[role="button"],
+a {
+  -webkit-tap-highlight-color: transparent;
+}

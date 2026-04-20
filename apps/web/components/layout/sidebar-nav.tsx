@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
 import { GuestAuthLinks, UserMenu } from "@/components/auth/auth-actions";
-import { createDocument, fetchSpaces, uploadPdfDocument } from "@/lib/api";
+import { createDocument, createFolder, fetchSpaces, fetchSpaceTree, uploadPdfDocument, type SpaceSummary, type TreeNode } from "@/lib/api";
 
 const navItems = [
   { label: "工作台", href: "/" },
@@ -18,6 +18,23 @@ const navItems = [
   { label: "个人配置", href: "/settings" },
   { label: "回收站", href: "/trash" },
 ];
+
+function flattenFolders(nodes: TreeNode[]): Array<{ id: string; label: string }> {
+  const result: Array<{ id: string; label: string }> = [];
+  const walk = (items: TreeNode[], prefix = "") => {
+    for (const item of items) {
+      if (item.nodeType === "folder") {
+        const label = prefix ? `${prefix} / ${item.title}` : item.title;
+        result.push({ id: item.id, label });
+        if (item.children.length > 0) {
+          walk(item.children, label);
+        }
+      }
+    }
+  };
+  walk(nodes);
+  return result;
+}
 
 export function SidebarNav({
   currentUser,
@@ -33,6 +50,14 @@ export function SidebarNav({
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState("");
   const [showCreatePanel, setShowCreatePanel] = useState(false);
+  const [availableSpaces, setAvailableSpaces] = useState<SpaceSummary[]>([]);
+  const [selectedSpaceId, setSelectedSpaceId] = useState("");
+  const [folderOptions, setFolderOptions] = useState<Array<{ id: string; label: string }>>([]);
+  const [documentTitle, setDocumentTitle] = useState("");
+  const [documentLocationMode, setDocumentLocationMode] = useState<"existing" | "new-folder">("existing");
+  const [documentFolderId, setDocumentFolderId] = useState("__root__");
+  const [newDocumentFolderTitle, setNewDocumentFolderTitle] = useState("");
+  const [newDocumentFolderParentId, setNewDocumentFolderParentId] = useState("__root__");
   const [pdfTitle, setPdfTitle] = useState("");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [liveUnreadCount, setLiveUnreadCount] = useState(notificationUnreadCount);
@@ -77,23 +102,82 @@ export function SidebarNav({
 
   const closeCreateModal = () => {
     setShowCreatePanel(false);
+    setDocumentTitle("");
+    setDocumentLocationMode("existing");
+    setDocumentFolderId("__root__");
+    setNewDocumentFolderTitle("");
+    setNewDocumentFolderParentId("__root__");
     setPdfTitle("");
     setPdfFile(null);
   };
+
+  const openCreateModal = () => {
+    setShowCreatePanel(true);
+    setError("");
+    startTransition(async () => {
+      try {
+        const { data: spaces, unavailable } = await fetchSpaces();
+        if (unavailable || spaces.length === 0) {
+          throw new Error("No available space");
+        }
+        setAvailableSpaces(spaces);
+        const nextSpaceId = selectedSpaceId || spaces[0].id;
+        setSelectedSpaceId(nextSpaceId);
+        const { data: tree } = await fetchSpaceTree(nextSpaceId);
+        setFolderOptions(flattenFolders(tree));
+      } catch {
+        setError("加载创建位置失败，请确认后端服务和空间数据可用");
+      }
+    });
+  };
+
+  useEffect(() => {
+    if (!showCreatePanel || !selectedSpaceId) {
+      return;
+    }
+
+    let cancelled = false;
+    fetchSpaceTree(selectedSpaceId)
+      .then(({ data }) => {
+        if (!cancelled) {
+          setFolderOptions(flattenFolders(data));
+          setDocumentFolderId("__root__");
+          setNewDocumentFolderParentId("__root__");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFolderOptions([]);
+          setError("加载文件夹树失败，请稍后重试");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSpaceId, showCreatePanel]);
 
   const handleCreateDocument = () => {
     startTransition(async () => {
       try {
         setError("");
-        const { data: spaces, unavailable } = await fetchSpaces();
-        const defaultSpace = spaces[0];
-        if (!defaultSpace) {
-          throw new Error(unavailable ? "API unavailable" : "No available space");
+        const spaceId = selectedSpaceId || availableSpaces[0]?.id;
+        if (!spaceId) {
+          throw new Error("No available space");
+        }
+        let targetFolderId = documentFolderId === "__root__" ? null : documentFolderId;
+        if (documentLocationMode === "new-folder") {
+          const folder = await createFolder({
+            title: newDocumentFolderTitle.trim() || "未命名文件夹",
+            spaceId,
+            parentFolderId: newDocumentFolderParentId === "__root__" ? null : newDocumentFolderParentId,
+          });
+          targetFolderId = folder.id;
         }
 
         const document = await createDocument({
-          title: "未命名文档",
-          spaceId: defaultSpace.id,
+          title: documentTitle.trim() || "未命名文档",
+          spaceId,
+          folderId: targetFolderId,
           documentType: "doc",
         });
         closeCreateModal();
@@ -113,15 +197,24 @@ export function SidebarNav({
           throw new Error("No file selected");
         }
 
-        const { data: spaces, unavailable } = await fetchSpaces();
-        const defaultSpace = spaces[0];
-        if (!defaultSpace) {
-          throw new Error(unavailable ? "API unavailable" : "No available space");
+        const spaceId = selectedSpaceId || availableSpaces[0]?.id;
+        if (!spaceId) {
+          throw new Error("No available space");
+        }
+        let targetFolderId = documentFolderId === "__root__" ? null : documentFolderId;
+        if (documentLocationMode === "new-folder") {
+          const folder = await createFolder({
+            title: newDocumentFolderTitle.trim() || "未命名文件夹",
+            spaceId,
+            parentFolderId: newDocumentFolderParentId === "__root__" ? null : newDocumentFolderParentId,
+          });
+          targetFolderId = folder.id;
         }
 
         const document = await uploadPdfDocument({
           title: pdfTitle.trim() || pdfFile.name.replace(/\.pdf$/i, ""),
-          spaceId: defaultSpace.id,
+          spaceId,
+          folderId: targetFolderId,
           file: pdfFile,
         });
         closeCreateModal();
@@ -135,30 +228,30 @@ export function SidebarNav({
 
   return (
     <>
-      <aside className="fixed inset-y-0 left-0 z-40 flex w-56 flex-col border-r border-slate-200 bg-white/95 px-3 py-4 backdrop-blur">
-        <div className="mb-6">
-          <div className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-400">
+      <aside className="fixed inset-y-0 left-0 z-40 flex w-52 flex-col border-r border-slate-300 bg-white px-2.5 py-3">
+        <div className="mb-4 px-1">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
             CloudDoc
           </div>
-          <div className="mt-1.5 text-xl font-semibold">云文档</div>
+          <div className="mt-1 text-lg font-semibold text-slate-950">云文档</div>
         </div>
 
         <button
           type="button"
-          onClick={() => setShowCreatePanel(true)}
+          onClick={openCreateModal}
           disabled={isPending || !canCreate}
-          className="mb-2 rounded-lg bg-accent px-3 py-2.5 text-left text-sm font-medium text-white shadow-panel disabled:cursor-not-allowed disabled:opacity-70"
+          className="mb-2 bg-accent px-3 py-2 text-left text-sm font-medium text-white shadow-panel disabled:cursor-not-allowed disabled:opacity-70"
         >
           {isPending ? "处理中..." : "+ 新建文档"}
         </button>
         {!canCreate ? <div className="mb-3 text-xs text-slate-500">请先登录后再创建文档</div> : null}
         {error ? <div className="mb-3 text-xs text-rose-500">{error}</div> : null}
 
-        <nav className="space-y-1">
+        <nav className="space-y-0.5">
           {navItems.map((item) => (
             <Link
               key={item.label}
-              className={`block rounded-lg px-3 py-1.5 text-sm transition hover:bg-slate-100 hover:text-ink ${
+              className={`block px-2.5 py-1.5 text-sm transition hover:bg-slate-100 hover:text-ink ${
                 pathname === item.href
                   ? "bg-slate-100 font-medium text-ink shadow-[inset_0_0_0_1px_rgba(226,232,240,0.9)]"
                   : "text-slate-600"
@@ -199,7 +292,7 @@ export function SidebarNav({
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-lg font-semibold text-slate-900">新建文档</div>
-                <div className="mt-1 text-sm text-slate-500">选择文档类型</div>
+                <div className="mt-1 text-sm text-slate-500">选择类型并确认创建位置</div>
               </div>
               <button
                 type="button"
@@ -211,14 +304,99 @@ export function SidebarNav({
             </div>
 
             <div className="mt-4 grid gap-3">
+              <label className="block text-sm font-medium text-slate-700">
+                空间
+                <select
+                  value={selectedSpaceId}
+                  onChange={(event) => setSelectedSpaceId(event.target.value)}
+                  disabled={isPending || availableSpaces.length === 0}
+                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
+                >
+                  {availableSpaces.map((space) => (
+                    <option key={space.id} value={space.id}>
+                      {space.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-sm font-medium text-slate-700">
+                文档标题
+                <input
+                  type="text"
+                  value={documentTitle}
+                  onChange={(event) => setDocumentTitle(event.target.value)}
+                  placeholder="未命名文档"
+                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-0 placeholder:text-slate-400"
+                />
+              </label>
+              <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <label className="flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="radio"
+                    name="global-document-location-mode"
+                    checked={documentLocationMode === "existing"}
+                    onChange={() => setDocumentLocationMode("existing")}
+                    className="h-4 w-4 border-slate-300 text-accent"
+                  />
+                  选择已有位置
+                </label>
+                {documentLocationMode === "existing" ? (
+                  <select
+                    value={documentFolderId}
+                    onChange={(event) => setDocumentFolderId(event.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                    aria-label="选择文档创建位置"
+                  >
+                    <option value="__root__">根目录</option>
+                    {folderOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+                <label className="flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="radio"
+                    name="global-document-location-mode"
+                    checked={documentLocationMode === "new-folder"}
+                    onChange={() => setDocumentLocationMode("new-folder")}
+                    className="h-4 w-4 border-slate-300 text-accent"
+                  />
+                  新建文件夹后创建
+                </label>
+                {documentLocationMode === "new-folder" ? (
+                  <div className="grid gap-3">
+                    <input
+                      value={newDocumentFolderTitle}
+                      onChange={(event) => setNewDocumentFolderTitle(event.target.value)}
+                      placeholder="新文件夹名称"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                    />
+                    <select
+                      value={newDocumentFolderParentId}
+                      onChange={(event) => setNewDocumentFolderParentId(event.target.value)}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                      aria-label="选择新文件夹父级位置"
+                    >
+                      <option value="__root__">根目录</option>
+                      {folderOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+              </div>
               <button
                 type="button"
                 onClick={handleCreateDocument}
-                disabled={isPending}
+                disabled={isPending || !selectedSpaceId}
                 className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-left text-sm text-slate-700 hover:border-slate-300"
               >
                 <div className="font-medium text-slate-900">普通文档</div>
-                <div className="mt-1 text-xs text-slate-500">可直接进入编辑页面</div>
+                <div className="mt-1 text-xs text-slate-500">{isPending ? "创建中..." : "可直接进入编辑页面"}</div>
               </button>
 
               <div className="rounded-lg border border-slate-200 bg-white p-4">

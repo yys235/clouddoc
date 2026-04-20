@@ -15,6 +15,7 @@ import {
   moveFolder,
   reorderFolderChildren,
   renameFolder,
+  subscribeDocumentLibraryBrowserEvents,
   type AncestorItem,
   type DocumentTreeOpenMode,
   type FolderChildrenResult,
@@ -297,11 +298,8 @@ function FolderTree({
             {dropIndicator?.key === `${node.nodeType}:${node.id}` && dropIndicator.position === "before" ? (
               <div className="absolute -top-1 left-2 right-2 h-0.5 rounded-full bg-blue-400" />
             ) : null}
-            <Link
-              href={href}
-              target={shouldOpenNewWindow ? "_blank" : undefined}
-              rel={shouldOpenNewWindow ? "noreferrer" : undefined}
-              className={`grid grid-cols-[18px_20px_minmax(0,1fr)] items-center gap-1 rounded-lg px-2 py-1.5 text-sm leading-5 transition hover:bg-slate-100 ${
+            <div
+              className={`grid grid-cols-[18px_minmax(0,1fr)] items-center gap-1 px-2 py-1 text-sm leading-5 transition hover:bg-slate-100 ${
                 node.nodeType === "folder" && node.id === currentFolderId
                   ? "bg-slate-100 font-medium text-slate-900"
                   : "text-slate-600"
@@ -315,7 +313,7 @@ function FolderTree({
                     event.stopPropagation();
                     onToggleFolder(node.id);
                   }}
-                  className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-[11px] leading-none text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                  className="inline-flex h-[18px] w-[18px] items-center justify-center text-[11px] leading-none text-slate-400 hover:bg-slate-200 hover:text-slate-700"
                   aria-label={expandedFolderIds.has(node.id) ? "折叠文件夹" : "展开文件夹"}
                 >
                   {expandedFolderIds.has(node.id) ? "▾" : "▸"}
@@ -323,11 +321,20 @@ function FolderTree({
               ) : (
                 <span className="block h-[18px] w-[18px]" />
               )}
-              <span className="flex h-5 w-5 items-center justify-center text-[15px] text-slate-400">
-                {node.nodeType === "folder" ? "📁" : "📄"}
-              </span>
-              <span className="truncate pl-0.5">{node.title}</span>
-            </Link>
+              <Link
+                href={href}
+                target={shouldOpenNewWindow ? "_blank" : undefined}
+                rel={shouldOpenNewWindow ? "noreferrer" : undefined}
+                draggable={false}
+                onClick={(event) => event.stopPropagation()}
+                className="grid min-w-0 grid-cols-[20px_minmax(0,1fr)] items-center gap-1.5 py-0.5"
+              >
+                <span className="flex h-5 w-5 items-center justify-center text-[15px] text-slate-400">
+                  {node.nodeType === "folder" ? "📁" : "📄"}
+                </span>
+                <span className="truncate pl-0.5">{node.title}</span>
+              </Link>
+            </div>
             {dropIndicator?.key === `${node.nodeType}:${node.id}` && dropIndicator.position === "after" ? (
               <div className="absolute -bottom-1 left-2 right-2 h-0.5 rounded-full bg-blue-400" />
             ) : null}
@@ -411,11 +418,17 @@ export function FolderWorkspaceView({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [notice, setNotice] = useState("");
+  const [showCreateDocument, setShowCreateDocument] = useState(false);
   const [showCreateFolder, setShowCreateFolder] = useState(false);
   const [showUploadPdf, setShowUploadPdf] = useState(false);
   const [showMoveDialog, setShowMoveDialog] = useState<string | null>(null);
   const [showDeleteFolder, setShowDeleteFolder] = useState(false);
   const [showBulkMoveDialog, setShowBulkMoveDialog] = useState(false);
+  const [documentTitle, setDocumentTitle] = useState("");
+  const [documentLocationMode, setDocumentLocationMode] = useState<"existing" | "new-folder">("existing");
+  const [documentFolderId, setDocumentFolderId] = useState(currentFolder?.id ?? "__root__");
+  const [newDocumentFolderTitle, setNewDocumentFolderTitle] = useState("");
+  const [newDocumentFolderParentId, setNewDocumentFolderParentId] = useState(currentFolder?.id ?? "__root__");
   const [folderTitle, setFolderTitle] = useState("");
   const [renameValue, setRenameValue] = useState(currentFolder?.title ?? "");
   const [visibilityValue, setVisibilityValue] = useState<"private" | "public">(
@@ -436,6 +449,25 @@ export function FolderWorkspaceView({
   const currentFolderId = currentFolder?.id ?? null;
   const effectiveFolderTitle = currentFolder?.title ?? "根目录";
 
+  const openCreateDocumentDialog = () => {
+    const defaultFolderId = currentFolderId ?? "__root__";
+    setDocumentTitle("");
+    setDocumentLocationMode("existing");
+    setDocumentFolderId(defaultFolderId);
+    setNewDocumentFolderTitle("");
+    setNewDocumentFolderParentId(defaultFolderId);
+    setShowCreateDocument(true);
+  };
+
+  const closeCreateDocumentDialog = () => {
+    setShowCreateDocument(false);
+    setDocumentTitle("");
+    setDocumentLocationMode("existing");
+    setDocumentFolderId(currentFolderId ?? "__root__");
+    setNewDocumentFolderTitle("");
+    setNewDocumentFolderParentId(currentFolderId ?? "__root__");
+  };
+
   useEffect(() => {
     setLiveTree(tree);
   }, [tree]);
@@ -443,6 +475,20 @@ export function FolderWorkspaceView({
   useEffect(() => {
     setLiveCurrentChildren(currentChildren);
   }, [currentChildren]);
+
+  useEffect(() => {
+    return subscribeDocumentLibraryBrowserEvents((event) => {
+      const docId = event.document_id || event.document?.id;
+      if (!docId || event.event_type !== "document.deleted") {
+        return;
+      }
+      setLiveTree((current) => removeTreeNode(current, docId, "document"));
+      setLiveCurrentChildren((current) =>
+        current ? { ...current, children: removeTreeNode(current.children, docId, "document") } : current,
+      );
+      setSelectedNodeKeys((current) => current.filter((key) => key !== `document:${docId}`));
+    });
+  }, []);
 
   useEffect(() => {
     if (!selectedSpace || apiUnavailable) {
@@ -670,12 +716,22 @@ export function FolderWorkspaceView({
     startTransition(async () => {
       try {
         setNotice("");
+        let targetFolderId = documentFolderId === "__root__" ? null : documentFolderId;
+        if (documentLocationMode === "new-folder") {
+          const folder = await createFolder({
+            title: newDocumentFolderTitle.trim() || "未命名文件夹",
+            spaceId: selectedSpace.id,
+            parentFolderId: newDocumentFolderParentId === "__root__" ? null : newDocumentFolderParentId,
+          });
+          targetFolderId = folder.id;
+        }
         const document = await createDocument({
-          title: "未命名文档",
+          title: documentTitle.trim() || "未命名文档",
           spaceId: selectedSpace.id,
-          folderId: currentFolderId,
+          folderId: targetFolderId,
           documentType: "doc",
         });
+        closeCreateDocumentDialog();
         router.push(`/docs/${document.id}`);
         router.refresh();
       } catch {
@@ -812,9 +868,9 @@ export function FolderWorkspaceView({
   const breadcrumbItems = ancestors ?? [];
 
   return (
-    <div className="flex w-full gap-4 px-4 py-5">
-      <aside className="w-[340px] shrink-0 rounded-3xl bg-white p-4 shadow-panel">
-        <div className="flex items-center justify-between gap-3">
+    <div className="flex h-screen w-full gap-3 overflow-hidden px-3 py-3">
+      <aside className="flex h-full w-[360px] shrink-0 flex-col overflow-hidden border border-slate-200 bg-white p-3 shadow-panel">
+        <div className="shrink-0 flex items-center justify-between gap-3">
           <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">文档树</div>
           <label className="flex items-center gap-1.5 text-xs text-slate-500">
             <span>打开</span>
@@ -829,7 +885,7 @@ export function FolderWorkspaceView({
             </select>
           </label>
         </div>
-        <div className="mt-3 space-y-4">
+        <div className="mt-2.5 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
               {spaces.map((space) => (
             <div key={space.id} className="space-y-2">
               <div
@@ -848,7 +904,7 @@ export function FolderWorkspaceView({
               >
                 <Link
                   href={`/documents?space=${space.id}`}
-                  className={`block rounded-lg px-2.5 py-2 text-sm font-medium ${
+                  className={`block px-2.5 py-1.5 text-sm font-medium ${
                     selectedSpace?.id === space.id ? "bg-slate-100 text-slate-900" : "text-slate-600 hover:bg-slate-50"
                   }`}
                 >
@@ -875,10 +931,10 @@ export function FolderWorkspaceView({
         </div>
       </aside>
 
-      <section className="min-w-0 flex-1 space-y-4">
+      <section className="h-full min-w-0 flex-1 space-y-3 overflow-y-auto pr-1">
         {apiUnavailable ? <ApiUnavailableNotice /> : null}
-        <div className="rounded-3xl bg-white p-5 shadow-panel">
-          <div className="flex items-start justify-between gap-4">
+        <div className="border border-slate-200 bg-white px-4 py-3 shadow-panel">
+          <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <nav className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.14em] text-slate-400">
                 <Link href={`/documents?space=${selectedSpace?.id ?? ""}`} className="hover:text-slate-700">
@@ -893,40 +949,43 @@ export function FolderWorkspaceView({
                   </div>
                 ))}
               </nav>
-              <h1 className="mt-3 text-3xl font-semibold tracking-tight">{effectiveFolderTitle}</h1>
-              <p className="mt-2 text-sm text-slate-600">
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{effectiveFolderTitle}</h1>
+              <p className="mt-1.5 text-sm text-slate-600">
                 {currentFolder
                   ? "当前文件夹中的子文件夹和文档。"
                   : "空间根目录内容。历史文档已统一归档到 newdoc。"}
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => setShowCreateFolder(true)}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                disabled={isPending || !selectedSpace}
+                className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 新建文件夹
               </button>
               <button
                 type="button"
-                onClick={handleCreateDocument}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                onClick={openCreateDocumentDialog}
+                disabled={isPending || !selectedSpace}
+                className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                新建文档
+                {isPending ? "处理中..." : "新建文档"}
               </button>
               <button
                 type="button"
                 onClick={() => setShowUploadPdf(true)}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                disabled={isPending || !selectedSpace}
+                className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 上传 PDF
               </button>
               <button
                 type="button"
                 onClick={() => setShowBulkMoveDialog(true)}
-                disabled={selectedNodeKeys.length === 0}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={isPending || selectedNodeKeys.length === 0}
+                className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 批量移动
               </button>
@@ -934,16 +993,16 @@ export function FolderWorkspaceView({
           </div>
 
           {currentFolder?.canManage ? (
-            <div className="mt-4 flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="mt-3 flex flex-wrap items-center gap-2 border border-slate-200 bg-slate-50 px-3 py-2">
               <input
                 value={renameValue}
                 onChange={(event) => setRenameValue(event.target.value)}
-                className="min-w-[240px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="min-w-[240px] border border-slate-200 bg-white px-3 py-1.5 text-sm"
               />
               <select
                 value={visibilityValue}
                 onChange={(event) => setVisibilityValue(event.target.value as "private" | "public")}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="border border-slate-200 bg-white px-3 py-1.5 text-sm"
               >
                 <option value="private">私有</option>
                 <option value="public">公开</option>
@@ -952,7 +1011,7 @@ export function FolderWorkspaceView({
                 type="button"
                 onClick={handleRenameFolder}
                 disabled={isPending}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700"
               >
                 重命名
               </button>
@@ -960,7 +1019,7 @@ export function FolderWorkspaceView({
                 type="button"
                 onClick={() => setShowDeleteFolder(true)}
                 disabled={isPending}
-                className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm text-rose-600"
+                className="border border-rose-200 bg-white px-3 py-1.5 text-sm text-rose-600"
               >
                 删除空文件夹
               </button>
@@ -970,14 +1029,14 @@ export function FolderWorkspaceView({
           {notice ? <div className="mt-4 text-sm text-rose-500">{notice}</div> : null}
         </div>
 
-        <div className="rounded-3xl bg-white p-5 shadow-panel">
-          <div className="mb-3 text-lg font-semibold">当前目录内容</div>
-          <div className="space-y-2">
+        <div className="border border-slate-200 bg-white px-4 py-3 shadow-panel">
+          <div className="mb-2 text-lg font-semibold">当前目录内容</div>
+          <div className="space-y-1.5">
             {(liveCurrentChildren?.children ?? []).length > 0 ? (
               liveCurrentChildren!.children.map((node) => (
                 <div
                   key={`${node.nodeType}-${node.id}`}
-                  className="flex items-center justify-between rounded-xl border border-slate-100 px-4 py-3"
+                  className="flex items-center justify-between border border-slate-200 px-3 py-2"
                   draggable
                   onDragStart={(event) => {
                     event.dataTransfer.setData(
@@ -1004,6 +1063,8 @@ export function FolderWorkspaceView({
                     <div className="min-w-0">
                       <Link
                         href={node.nodeType === "folder" ? `/folders/${node.id}` : `/docs/${node.id}`}
+                        draggable={false}
+                        onClick={(event) => event.stopPropagation()}
                         className="block truncate text-sm font-medium text-slate-900 hover:text-accent"
                       >
                         {node.nodeType === "folder" ? "📁 " : "📄 "}
@@ -1018,7 +1079,7 @@ export function FolderWorkspaceView({
                     <button
                       type="button"
                       onClick={() => setShowMoveDialog(`${node.nodeType}:${node.id}`)}
-                      className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600"
+                      className="border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600"
                     >
                       移动
                     </button>
@@ -1032,6 +1093,118 @@ export function FolderWorkspaceView({
         </div>
       </section>
 
+      {showCreateDocument ? (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/30 px-4" role="dialog" aria-modal="true">
+          <div className="absolute inset-0" onClick={closeCreateDocumentDialog} aria-hidden="true" />
+          <div className="relative z-10 w-full max-w-lg rounded-lg border border-slate-200 bg-white p-5 shadow-[0_24px_64px_rgba(15,23,42,0.18)]">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-lg font-semibold text-slate-900">新建文档</div>
+                <div className="mt-1 text-sm text-slate-500">确认文档创建位置，默认使用当前目录。</div>
+              </div>
+              <button
+                type="button"
+                onClick={closeCreateDocumentDialog}
+                disabled={isPending}
+                className="rounded-lg px-2 py-1 text-sm text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:opacity-60"
+              >
+                关闭
+              </button>
+            </div>
+            <label className="mt-4 block text-sm font-medium text-slate-700">
+              文档标题
+              <input
+                value={documentTitle}
+                onChange={(event) => setDocumentTitle(event.target.value)}
+                placeholder="未命名文档"
+                className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+              />
+            </label>
+            <div className="mt-4 grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="radio"
+                  name="document-location-mode"
+                  checked={documentLocationMode === "existing"}
+                  onChange={() => setDocumentLocationMode("existing")}
+                  className="h-4 w-4 border-slate-300 text-accent"
+                />
+                选择已有位置
+              </label>
+              {documentLocationMode === "existing" ? (
+                <select
+                  value={documentFolderId}
+                  onChange={(event) => setDocumentFolderId(event.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                  aria-label="选择文档创建位置"
+                >
+                  <option value="__root__">{selectedSpace?.name ?? "空间"} / 根目录</option>
+                  {folderOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="radio"
+                  name="document-location-mode"
+                  checked={documentLocationMode === "new-folder"}
+                  onChange={() => setDocumentLocationMode("new-folder")}
+                  className="h-4 w-4 border-slate-300 text-accent"
+                />
+                新建文件夹后创建
+              </label>
+              {documentLocationMode === "new-folder" ? (
+                <div className="grid gap-3">
+                  <input
+                    value={newDocumentFolderTitle}
+                    onChange={(event) => setNewDocumentFolderTitle(event.target.value)}
+                    placeholder="新文件夹名称"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                  />
+                  <select
+                    value={newDocumentFolderParentId}
+                    onChange={(event) => setNewDocumentFolderParentId(event.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                    aria-label="选择新文件夹父级位置"
+                  >
+                    <option value="__root__">{selectedSpace?.name ?? "空间"} / 根目录</option>
+                    {folderOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="text-xs text-slate-500">
+                    文档会创建在这个新文件夹中。
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeCreateDocumentDialog}
+                disabled={isPending}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 disabled:opacity-60"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateDocument}
+                disabled={isPending}
+                className="rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isPending ? "创建中..." : "确认创建"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showCreateFolder ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/30 px-4">
           <div className="absolute inset-0" onClick={() => setShowCreateFolder(false)} aria-hidden="true" />
@@ -1044,11 +1217,11 @@ export function FolderWorkspaceView({
               className="mt-4 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
             />
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setShowCreateFolder(false)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+              <button type="button" onClick={() => setShowCreateFolder(false)} disabled={isPending} className="rounded-lg border border-slate-200 px-3 py-2 text-sm disabled:opacity-60">
                 取消
               </button>
-              <button type="button" onClick={handleCreateFolder} className="rounded-lg bg-accent px-3 py-2 text-sm text-white">
-                创建
+              <button type="button" onClick={handleCreateFolder} disabled={isPending} className="rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:opacity-60">
+                {isPending ? "创建中..." : "创建"}
               </button>
             </div>
           </div>
@@ -1073,11 +1246,11 @@ export function FolderWorkspaceView({
               className="mt-3 block w-full text-sm text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2"
             />
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setShowUploadPdf(false)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+              <button type="button" onClick={() => setShowUploadPdf(false)} disabled={isPending} className="rounded-lg border border-slate-200 px-3 py-2 text-sm disabled:opacity-60">
                 取消
               </button>
-              <button type="button" onClick={handleUploadPdf} className="rounded-lg bg-accent px-3 py-2 text-sm text-white" disabled={!pdfFile}>
-                上传
+              <button type="button" onClick={handleUploadPdf} className="rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:opacity-60" disabled={isPending || !pdfFile}>
+                {isPending ? "上传中..." : "上传"}
               </button>
             </div>
           </div>
@@ -1093,7 +1266,8 @@ export function FolderWorkspaceView({
               <button
                 type="button"
                 onClick={() => handleMoveNode("__root__")}
-                className="block w-full rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:bg-slate-50"
+                disabled={isPending}
+                className="block w-full rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-60"
               >
                 根目录
               </button>
@@ -1102,7 +1276,8 @@ export function FolderWorkspaceView({
                   key={option.id}
                   type="button"
                   onClick={() => handleMoveNode(option.id)}
-                  className="block w-full rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:bg-slate-50"
+                  disabled={isPending}
+                  className="block w-full rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-60"
                 >
                   {option.label}
                 </button>
@@ -1122,7 +1297,8 @@ export function FolderWorkspaceView({
               <button
                 type="button"
                 onClick={() => handleBulkMove("__root__")}
-                className="block w-full rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:bg-slate-50"
+                disabled={isPending}
+                className="block w-full rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-60"
               >
                 根目录
               </button>
@@ -1131,7 +1307,8 @@ export function FolderWorkspaceView({
                   key={option.id}
                   type="button"
                   onClick={() => handleBulkMove(option.id)}
-                  className="block w-full rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:bg-slate-50"
+                  disabled={isPending}
+                  className="block w-full rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-60"
                 >
                   {option.label}
                 </button>
@@ -1149,6 +1326,7 @@ export function FolderWorkspaceView({
         cancelLabel="取消"
         onCancel={() => setShowDeleteFolder(false)}
         onConfirm={handleDeleteFolder}
+        pending={isPending}
       />
     </div>
   );

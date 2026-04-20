@@ -23,6 +23,7 @@ import {
   type ShareLinkSettings,
   replyCommentThread,
   softDeleteDocument,
+  subscribeDocumentLibraryBrowserEvents,
   unfavoriteDocument,
   updateCommentThreadStatus,
   uploadImageAsset,
@@ -785,6 +786,13 @@ export function DocumentPage({
   ];
   const currentMode = isEditing ? "edit" : "read";
   const currentModeOption = modeOptions.find((item) => item.value === currentMode) ?? modeOptions[1];
+  const documentFallbackUrl = useMemo(
+    () =>
+      breadcrumbs && breadcrumbs.length > 0
+        ? `/folders/${breadcrumbs[breadcrumbs.length - 1].id}`
+        : `/documents${currentDocument.spaceId ? `?space=${currentDocument.spaceId}` : ""}`,
+    [breadcrumbs, currentDocument.spaceId],
+  );
 
   useEffect(() => {
     setCurrentDocument(document);
@@ -801,6 +809,19 @@ export function DocumentPage({
     setHoveredCommentThreadId(null);
     setCurrentShareSettings(shareSettings ?? null);
   }, [document, initialActiveThreadId, shareSettings]);
+
+  useEffect(() => {
+    return subscribeDocumentLibraryBrowserEvents((event) => {
+      if (event.document_id !== currentDocument.id || event.event_type !== "document.deleted") {
+        return;
+      }
+      setIsEditing(false);
+      setShowDeleteConfirm(false);
+      setShowShareDialog(false);
+      router.replace(documentFallbackUrl);
+      router.refresh();
+    });
+  }, [currentDocument.id, documentFallbackUrl, router]);
 
   useEffect(() => {
     if (!showCommentSidebar) {
@@ -858,8 +879,21 @@ export function DocumentPage({
     };
     const handleDocumentEvent = (event: MessageEvent<string>) => {
       try {
-        const payload = JSON.parse(event.data) as { document_id?: string; event_type?: string; document?: { title?: string; visibility?: string } };
+        const payload = JSON.parse(event.data) as {
+          document_id?: string;
+          event_type?: string;
+          document?: { title?: string; visibility?: string; is_deleted?: boolean };
+        };
         if (payload.document_id !== currentDocument.id) {
+          return;
+        }
+        if (payload.event_type === "document.deleted" || payload.document?.is_deleted) {
+          setIsEditing(false);
+          setShowDeleteConfirm(false);
+          setShowShareDialog(false);
+          setNotice("当前文档已在其他标签页或设备中被删除，正在返回文档列表。");
+          router.replace(documentFallbackUrl);
+          router.refresh();
           return;
         }
         if (payload.event_type === "document.content_updated") {
@@ -895,7 +929,7 @@ export function DocumentPage({
         // Ignore malformed stream payloads.
       }
     };
-    const documentEvents = ["document.updated", "document.content_updated", "document.permission_changed"];
+    const documentEvents = ["document.updated", "document.content_updated", "document.permission_changed", "document.deleted"];
     const commentEvents = ["comment.thread_created", "comment.created", "comment.updated", "comment.deleted", "comment.resolved", "comment.reopened"];
     for (const eventName of documentEvents) {
       source.addEventListener(eventName, handleDocumentEvent);
@@ -922,7 +956,9 @@ export function DocumentPage({
     canManageDocument,
     currentDocument.id,
     currentDocument.isSharedView,
+    documentFallbackUrl,
     isEditing,
+    router,
     showCommentSidebar,
   ]);
 
@@ -1463,10 +1499,6 @@ export function DocumentPage({
     if (!canDeleteDocument) {
       return;
     }
-    const fallbackUrl =
-      breadcrumbs && breadcrumbs.length > 0
-        ? `/folders/${breadcrumbs[breadcrumbs.length - 1].id}`
-        : `/documents${currentDocument.spaceId ? `?space=${currentDocument.spaceId}` : ""}`;
     startTransition(async () => {
       try {
         await softDeleteDocument(currentDocument.id);
@@ -1476,7 +1508,7 @@ export function DocumentPage({
           window.setTimeout(() => router.refresh(), 100);
           return;
         }
-        router.replace(fallbackUrl);
+        router.replace(documentFallbackUrl);
         router.refresh();
       } catch {
         setNotice("删除失败");
@@ -1524,8 +1556,8 @@ export function DocumentPage({
         showCommentSidebar ? "xl:grid-cols-[260px_minmax(0,1fr)_340px]" : "xl:grid-cols-[260px_minmax(0,1fr)]"
       }`}
     >
-      <aside className="hidden border-r border-slate-200/80 bg-white/55 px-5 py-5 xl:block">
-        <div className="sticky top-5 max-h-[calc(100vh-2.5rem)] overflow-y-auto pr-1">
+      <aside className="hidden border-r border-slate-300 bg-white px-4 py-4 xl:block">
+        <div className="sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto pr-1">
           <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">页面目录</div>
           <div className="mt-3 space-y-1">
             {currentDocument.outline.map((item) => (
@@ -1554,10 +1586,10 @@ export function DocumentPage({
         </div>
       </aside>
 
-      <section className="min-w-0 bg-[#fcfbf8] px-3 py-4 md:px-4">
-        <header className="mx-auto mb-4 max-w-[1240px]">
-          <div className="space-y-3">
-            <div className="flex items-start justify-between gap-4">
+      <section className="min-w-0 bg-sand px-3 py-3 md:px-4">
+        <header className="mx-auto mb-3 max-w-[1320px]">
+          <div className="space-y-2.5">
+            <div className="flex items-start justify-between gap-3">
               <nav className="flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-slate-400">
                 <Link href={`/documents${currentDocument.spaceId ? `?space=${currentDocument.spaceId}` : ""}`} className="transition hover:text-slate-700">
                   {spaceName ?? "空间"}
@@ -1580,7 +1612,7 @@ export function DocumentPage({
                   <button
                     type="button"
                     onClick={toggleFavorite}
-                    className={`rounded-lg border px-3 py-1.5 text-sm ${
+                    className={`border px-3 py-1.5 text-sm ${
                       currentDocument.isFavorited
                         ? "border-amber-200 bg-amber-50 text-amber-700"
                         : "border-slate-200 bg-white/80 text-slate-600"
@@ -1593,7 +1625,7 @@ export function DocumentPage({
                   <button
                     type="button"
                     onClick={() => setShowShareDialog(true)}
-                    className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-600"
+                    className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600"
                   >
                     权限/分享
                   </button>
@@ -1603,7 +1635,7 @@ export function DocumentPage({
                     type="button"
                     disabled={isMutating || isSaving}
                     onClick={() => setShowDeleteConfirm(true)}
-                    className="rounded-lg border border-rose-200 bg-white/80 px-3 py-1.5 text-sm text-rose-600 disabled:cursor-not-allowed disabled:opacity-70"
+                    className="border border-rose-200 bg-white px-3 py-1.5 text-sm text-rose-600 disabled:cursor-not-allowed disabled:opacity-70"
                   >
                     删除
                   </button>
@@ -1617,7 +1649,7 @@ export function DocumentPage({
                         undoDraftChange();
                         setNotice("已撤销");
                       }}
-                      className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:opacity-45"
+                      className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:opacity-45"
                       title="撤销（⌘Z / Ctrl+Z）"
                     >
                       撤销
@@ -1629,7 +1661,7 @@ export function DocumentPage({
                         redoDraftChange();
                         setNotice("已重做");
                       }}
-                      className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:opacity-45"
+                      className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:opacity-45"
                       title="重做（⌘⇧Z / Ctrl+Shift+Z / Ctrl+Y）"
                     >
                       重做
@@ -1655,7 +1687,7 @@ export function DocumentPage({
                         keepModeMenuOpen();
                         setIsModeMenuOpen(true);
                       }}
-                      className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/88 px-3.5 py-1.5 text-sm text-slate-800 shadow-[0_1px_0_rgba(15,23,42,0.03)] transition hover:border-slate-300 hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
+                      className="flex items-center gap-2 border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-800 shadow-[0_1px_0_rgba(15,23,42,0.03)] transition hover:border-slate-300 hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
                     >
                       <currentModeOption.icon active />
                       <span className="font-medium">{currentModeOption.label}</span>
@@ -1664,7 +1696,7 @@ export function DocumentPage({
                     <div
                       onPointerEnter={keepModeMenuOpen}
                       onPointerLeave={hideModeMenuWithDelay}
-                      className={`absolute right-0 top-[calc(100%+10px)] z-30 w-44 origin-top-right rounded-lg border border-slate-200 bg-white/96 p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)] backdrop-blur-sm transition duration-180 ease-out ${
+                      className={`absolute right-0 top-[calc(100%+8px)] z-30 w-44 origin-top-right border border-slate-200 bg-white p-1 shadow-[0_8px_20px_rgba(15,23,42,0.12)] transition duration-180 ease-out ${
                         isModeMenuOpen
                           ? "pointer-events-auto translate-y-0 scale-100 opacity-100"
                           : "pointer-events-none -translate-y-1 scale-95 opacity-0"
@@ -1681,7 +1713,7 @@ export function DocumentPage({
                             onClick={() => {
                               void handleModeChange(option.value);
                             }}
-                            className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition ${
+                            className={`flex w-full items-start gap-3 px-3 py-2 text-left transition ${
                               selected ? "bg-slate-100/90" : "hover:bg-slate-50"
                             } disabled:cursor-not-allowed disabled:opacity-70`}
                           >
@@ -1701,11 +1733,11 @@ export function DocumentPage({
                     </div>
                   </div>
                 ) : isPdfDocument ? (
-                  <span className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-500">
+                  <span className="border border-slate-200 bg-white px-2.5 py-1 text-sm text-slate-500">
                     PDF 暂不支持编辑
                   </span>
                 ) : (
-                  <span className="rounded-lg border border-slate-200 bg-white/80 px-3 py-1.5 text-sm text-slate-500">
+                  <span className="border border-slate-200 bg-white px-2.5 py-1 text-sm text-slate-500">
                     {currentDocument.isSharedView ? "分享只读视图" : "只读"}
                   </span>
                 )}
@@ -1731,7 +1763,7 @@ export function DocumentPage({
                   {currentDocument.title}
                 </h1>
               )}
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-500">
+              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-slate-500">
                 <span>{currentDocument.updatedAt}</span>
                 <span>·</span>
                 <span>{isSaving ? "保存中..." : currentDocument.saveStatus}</span>
@@ -1745,34 +1777,34 @@ export function DocumentPage({
             </div>
           </div>
 
-          <div className={`mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500 ${isEditing ? "opacity-75" : ""}`}>
-            <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">
+          <div className={`mt-2 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 ${isEditing ? "opacity-75" : ""}`}>
+            <span className="border border-slate-200 bg-white px-2 py-0.5">
               {currentDocument.documentType}
             </span>
-            <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1" title={visibilityHint}>
+            <span className="border border-slate-200 bg-white px-2 py-0.5" title={visibilityHint}>
               {visibilityLabel}
             </span>
             {currentDocument.isSharedView ? (
-              <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">独立分享链接访问</span>
+              <span className="border border-slate-200 bg-white px-2 py-0.5">独立分享链接访问</span>
             ) : (
-              <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">
+              <span className="border border-slate-200 bg-white px-2 py-0.5">
                 {canEditDocument ? "可编辑" : "只读"}
               </span>
             )}
             {currentShareSettings?.isEnabled ? (
-              <span className="rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">
+              <span className="border border-slate-200 bg-white px-2 py-0.5">
                 已启用分享
               </span>
             ) : null}
             {summaryLabel ? (
-              <span className="max-w-full truncate rounded-lg border border-slate-200 bg-white/70 px-2.5 py-1">
+              <span className="max-w-full truncate border border-slate-200 bg-white px-2 py-0.5">
                 {summaryLabel}
               </span>
             ) : null}
           </div>
         </header>
 
-        <article className="mx-auto max-w-[1240px] bg-transparent px-0 py-4">
+        <article className="mx-auto max-w-[1320px] bg-transparent px-0 py-2">
           {isPdfDocument ? (
             <PdfPreview
               fileUrl={currentDocument.fileUrl}

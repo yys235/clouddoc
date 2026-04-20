@@ -19,7 +19,7 @@ export function SearchForm({ initialQuery = "" }: { initialQuery?: string }) {
   return (
     <form
       onSubmit={handleSubmit}
-      className="mt-4 flex w-full max-w-xl items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3"
+      className="mt-3 flex w-full max-w-xl items-center gap-2 border border-slate-200 bg-slate-50 px-3 py-2"
     >
       <input
         value={query}
@@ -30,7 +30,7 @@ export function SearchForm({ initialQuery = "" }: { initialQuery?: string }) {
       <button
         type="submit"
         disabled={isPending}
-        className="rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-70"
+        className="bg-accent px-3.5 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-70"
       >
         {isPending ? "搜索中..." : "搜索"}
       </button>

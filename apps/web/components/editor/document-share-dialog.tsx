@@ -159,6 +159,7 @@ export function DocumentShareDialog({
   }
 
   const handleSave = async () => {
+    if (saving) return;
     setSaving(true);
     setNotice("");
     try {
@@ -211,7 +212,7 @@ export function DocumentShareDialog({
   };
 
   const handleAddPermission = async () => {
-    if (!newSubjectId.trim()) return;
+    if (saving || !newSubjectId.trim()) return;
     setSaving(true);
     setNotice("");
     try {
@@ -232,6 +233,7 @@ export function DocumentShareDialog({
   };
 
   const handleUpdatePermission = async (permissionId: string, permissionLevel: string) => {
+    if (saving) return;
     setSaving(true);
     setNotice("");
     try {
@@ -246,6 +248,7 @@ export function DocumentShareDialog({
   };
 
   const handleDeletePermission = async (permissionId: string) => {
+    if (saving) return;
     if (!window.confirm("确认删除这个协作者权限吗？")) return;
     setSaving(true);
     setNotice("");
@@ -261,6 +264,7 @@ export function DocumentShareDialog({
   };
 
   const handleTransferOwner = async () => {
+    if (saving) return;
     const nextOwnerId = transferOwnerId.trim();
     if (!nextOwnerId) {
       setNotice("请先选择新所有者");
@@ -305,6 +309,7 @@ export function DocumentShareDialog({
   };
 
   const handleRotate = async () => {
+    if (saving) return;
     setSaving(true);
     setNotice("");
     try {
@@ -320,6 +325,7 @@ export function DocumentShareDialog({
   };
 
   const handleDisableShare = async () => {
+    if (saving) return;
     setSaving(true);
     setNotice("");
     try {
@@ -488,16 +494,22 @@ export function DocumentShareDialog({
                     <div className="min-w-0">{renderMemberMeta(member.subjectId)}</div>
                     <select
                       value={member.permissionLevel}
+                      disabled={saving}
                       onChange={(event) => void handleUpdatePermission(member.id, event.target.value)}
-                      className="rounded-lg border border-slate-200 px-2 py-1 text-sm"
+                      className="rounded-lg border border-slate-200 px-2 py-1 text-sm disabled:opacity-60"
                     >
                       <option value="view">可查看</option>
                       <option value="comment">可评论</option>
                       <option value="edit">可编辑</option>
                       <option value="full_access">可管理</option>
                     </select>
-                    <button type="button" onClick={() => void handleDeletePermission(member.id)} className="rounded-lg border border-rose-200 px-3 py-1 text-sm text-rose-600">
-                      删除
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => void handleDeletePermission(member.id)}
+                      className="rounded-lg border border-rose-200 px-3 py-1 text-sm text-rose-600 disabled:opacity-60"
+                    >
+                      {saving ? "处理中..." : "删除"}
                     </button>
                   </div>
                 ))}

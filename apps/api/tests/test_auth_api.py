@@ -4,12 +4,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
 from app.core.db import SessionLocal
+from app.core.config import settings
 from app.main import app
 from app.models.organization import Organization, OrganizationMember
 from app.models.preference import UserPreference
 from app.models.session import UserSession
 from app.models.space import Space
 from app.models.user import User
+from app.services.submission_guard_service import submission_guard
 
 
 client = TestClient(app)
@@ -64,6 +66,27 @@ def test_login_and_logout_demo_user() -> None:
 
     logout_response = authed_client.post("/api/auth/logout")
     assert logout_response.status_code == 204
+
+
+def test_duplicate_submission_key_rejects_in_flight_mutation() -> None:
+    login_response = client.post(
+        "/api/auth/login",
+        json={"email": "demo@clouddoc.local", "password": "demo123456"},
+    )
+    assert login_response.status_code == 200
+
+    authed_client = TestClient(app)
+    authed_client.cookies = login_response.cookies
+    session_token = login_response.cookies.get(settings.session_cookie_name)
+    submission_key = f"pytest-{uuid4()}"
+    guard_key = f"{session_token}:POST:/api/auth/logout:{submission_key}"
+    assert submission_guard.acquire(guard_key)
+    try:
+        response = authed_client.post("/api/auth/logout", headers={"X-CloudDoc-Submission-Key": submission_key})
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Duplicate submission is already being processed"
+    finally:
+        submission_guard.release(guard_key)
 
 
 def test_list_and_revoke_sessions() -> None:

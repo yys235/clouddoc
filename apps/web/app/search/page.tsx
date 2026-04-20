@@ -18,11 +18,11 @@ export default async function SearchPage({
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-6xl px-5 pt-5">
-        <section className="rounded-3xl bg-white p-6 shadow-panel">
+      <div className="mx-auto max-w-[1280px] px-4 pt-3">
+        <section className="border border-slate-200 bg-white px-5 py-4 shadow-panel">
           <div className="max-w-2xl">
             <div className="text-sm font-medium text-accent">Search Workspace</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight">搜索 CloudDoc 文档</h1>
+            <h1 className="mt-1.5 text-3xl font-semibold tracking-tight text-slate-950">搜索 CloudDoc 文档</h1>
             <SearchForm initialQuery={query} />
           </div>
         </section>
