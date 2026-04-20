@@ -3,9 +3,9 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, event, select
 
-from app.core.db import SessionLocal
+from app.core.db import SessionLocal, engine
 from app.main import app
 from app.models.comment import Comment, CommentThread
 from app.models.document import Document, DocumentContent, DocumentPermission, DocumentVersion
@@ -535,6 +535,24 @@ def test_soft_delete_and_restore_document() -> None:
         assert any(item["id"] == document_id for item in active_after_restore.json())
     finally:
         cleanup_document(document_id)
+
+
+def test_document_list_uses_batched_permission_queries() -> None:
+    statements: list[str] = []
+
+    def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()))
+
+    event.listen(engine, "before_cursor_execute", before_cursor_execute)
+    try:
+        response = client.get("/api/documents?state=active")
+    finally:
+        event.remove(engine, "before_cursor_execute", before_cursor_execute)
+
+    assert response.status_code == 200
+    assert len(response.json()) >= 1
+    assert len(statements) <= 12
+    assert sum("document_permission_settings" in statement for statement in statements) <= 1
 
 
 def test_upload_pdf_document() -> None:

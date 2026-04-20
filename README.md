@@ -277,3 +277,4 @@ npm run build
 - 用户系统：[user-system-design.md](/Users/yys235/projects/clouddoc/已归档/user-system-design.md)
 - 权限与分享：[document-permission-sharing-prd.md](/Users/yys235/projects/clouddoc/已归档/document-permission-sharing-prd.md)
 - MCP 接入：[clouddoc-mcp-design.md](/Users/yys235/projects/clouddoc/已归档/clouddoc-mcp-design.md)
+- AI 开放接入：[ai-integration-open-platform-prd.md](/Users/yys235/projects/clouddoc/已归档/ai-integration-open-platform-prd.md)

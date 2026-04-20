@@ -14,6 +14,7 @@ from app.models.document import (
     DocumentContent,
     DocumentFavorite,
     DocumentPermission,
+    DocumentPermissionSettings,
     DocumentVersion,
 )
 from app.models.folder import Folder
@@ -29,6 +30,7 @@ from app.services.folder_service import (
 )
 from app.services.event_stream_service import publish_document_event
 from app.services.permission_service import (
+    ROLE_RANK,
     can_comment_document as permission_can_comment_document,
     can_copy_document as permission_can_copy_document,
     can_delete_document as permission_can_delete_document,
@@ -36,11 +38,14 @@ from app.services.permission_service import (
     can_export_document as permission_can_export_document,
     can_share_document as permission_can_share_document,
     can_transfer_document_owner as permission_can_transfer_document_owner,
-    get_effective_document_role,
     can_manage_document as permission_can_manage_document,
     can_manage_space,
     can_mcp_read_document,
     can_view_document as permission_can_view_document,
+    get_effective_document_role,
+    normalize_permission_level,
+    role_at_least,
+    setting_allows,
 )
 from app.schemas.document import (
     DocumentContentPayload,
@@ -446,6 +451,15 @@ def ensure_supported_document_types(db: Session) -> None:
     db.commit()
 
 
+def _default_permission_settings() -> dict[str, str]:
+    return {
+        "comment_scope": "can_edit",
+        "share_collaborator_scope": "full_access",
+        "copy_scope": "can_view",
+        "export_scope": "full_access",
+    }
+
+
 def list_documents(db: Session, state: str = "active", user_id: str | None = None) -> list[DocumentSummary]:
     favorite_ids = get_favorite_document_ids(db, user_id)
     statement = select(Document)
@@ -455,34 +469,120 @@ def list_documents(db: Session, state: str = "active", user_id: str | None = Non
         statement = statement.where(Document.is_deleted.is_(True))
 
     statement = statement.order_by(Document.sort_order.asc(), Document.updated_at.desc())
-    return [
-        DocumentSummary(
-            id=doc.id,
-            title=doc.title,
-            owner_id=doc.owner_id,
-            document_type=doc.document_type,
-            status=doc.status,
-            visibility=doc.visibility,
-            updated_at=doc.updated_at,
-            space_id=doc.space_id,
-            folder_id=doc.folder_id,
-            sort_order=doc.sort_order,
-            is_deleted=doc.is_deleted,
-            is_favorited=doc.id in favorite_ids,
-            can_edit=can_edit_document(db, doc, user_id),
-            can_manage=can_manage_document(db, doc, user_id),
-            can_comment=can_comment_document(db, doc, user_id),
-            can_share=can_share_document(db, doc, user_id),
-            can_copy=can_copy_document(db, doc, user_id),
-            can_export=can_export_document(db, doc, user_id),
-            can_delete=can_delete_document(db, doc, user_id),
-            can_transfer_owner=can_transfer_document_owner(db, doc, user_id),
-            effective_role=get_effective_document_role(db, doc, user_id),
-            is_shared_view=False,
+    documents = list(db.scalars(statement).all())
+    if not documents:
+        return []
+
+    document_ids = [doc.id for doc in documents]
+    space_ids = {doc.space_id for doc in documents}
+    spaces = {space.id: space for space in db.scalars(select(Space).where(Space.id.in_(space_ids))).all()}
+
+    user = db.get(User, user_id) if user_id else None
+    is_system_admin = bool(user and user.is_active and user.is_super_admin)
+    organization_roles: dict[str, str] = {}
+    if user_id:
+        organization_roles = {
+            organization_id: role
+            for organization_id, role in db.execute(
+                select(OrganizationMember.organization_id, OrganizationMember.role)
+                .where(OrganizationMember.user_id == user_id)
+                .where(OrganizationMember.status == "active")
+            ).all()
+        }
+
+    permission_conditions = []
+    if user_id:
+        permission_conditions.append(
+            (DocumentPermission.subject_type == "user") & (DocumentPermission.subject_id == user_id)
         )
-        for doc in db.scalars(statement).all()
-        if can_view_document(db, doc, user_id) or (state == "trash" and user_id in {doc.owner_id, doc.creator_id})
-    ]
+    if organization_roles:
+        permission_conditions.append(
+            (DocumentPermission.subject_type == "organization")
+            & (DocumentPermission.subject_id.in_(organization_roles.keys()))
+        )
+
+    document_roles: dict[str, str] = {}
+    if permission_conditions:
+        for document_id, permission_level in db.execute(
+            select(DocumentPermission.document_id, DocumentPermission.permission_level)
+            .where(DocumentPermission.document_id.in_(document_ids))
+            .where(
+                permission_conditions[0]
+                if len(permission_conditions) == 1
+                else permission_conditions[0] | permission_conditions[1]
+            )
+        ).all():
+            normalized = normalize_permission_level(permission_level)
+            current = document_roles.get(document_id, "none")
+            if ROLE_RANK.get(normalized, 0) > ROLE_RANK.get(current, 0):
+                document_roles[document_id] = normalized
+
+    settings_by_document = {
+        row.document_id: {
+            "comment_scope": row.comment_scope,
+            "share_collaborator_scope": row.share_collaborator_scope,
+            "copy_scope": row.copy_scope,
+            "export_scope": row.export_scope,
+        }
+        for row in db.scalars(
+            select(DocumentPermissionSettings).where(DocumentPermissionSettings.document_id.in_(document_ids))
+        ).all()
+    }
+
+    def effective_role(document: Document) -> str:
+        if document.is_deleted:
+            return "none"
+        if user_id and (document.owner_id == user_id or document.creator_id == user_id):
+            return "owner"
+        space = spaces.get(document.space_id)
+        organization_id = space.organization_id if space else None
+        if is_system_admin or (organization_id and organization_roles.get(organization_id) in {"owner", "admin"}):
+            return "view"
+        member_role = document_roles.get(document.id, "none")
+        if member_role != "none":
+            return member_role
+        if document.visibility == "public":
+            return "view"
+        return "none"
+
+    summaries: list[DocumentSummary] = []
+    default_settings = _default_permission_settings()
+    for doc in documents:
+        role = effective_role(doc)
+        is_owner = bool(user_id and (doc.owner_id == user_id or doc.creator_id == user_id))
+        if not role_at_least(role, "view") and not (state == "trash" and is_owner):
+            continue
+
+        settings = settings_by_document.get(doc.id, default_settings)
+        can_manage = not doc.is_deleted and role_at_least(role, "full_access")
+        can_edit = not doc.is_deleted and role_at_least(role, "edit")
+        summaries.append(
+            DocumentSummary(
+                id=doc.id,
+                title=doc.title,
+                owner_id=doc.owner_id,
+                document_type=doc.document_type,
+                status=doc.status,
+                visibility=doc.visibility,
+                updated_at=doc.updated_at,
+                space_id=doc.space_id,
+                folder_id=doc.folder_id,
+                sort_order=doc.sort_order,
+                is_deleted=doc.is_deleted,
+                is_favorited=doc.id in favorite_ids,
+                can_edit=can_edit,
+                can_manage=can_manage,
+                can_comment=not doc.is_deleted and setting_allows(settings["comment_scope"], role),
+                can_share=setting_allows(settings["share_collaborator_scope"], role),
+                can_copy=setting_allows(settings["copy_scope"], role),
+                can_export=setting_allows(settings["export_scope"], role),
+                can_delete=can_manage,
+                can_transfer_owner=not doc.is_deleted and is_owner,
+                effective_role=role,
+                is_shared_view=False,
+            )
+        )
+    return summaries
 
 
 def list_documents_for_mcp(

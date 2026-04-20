@@ -685,3 +685,27 @@ CloudDoc 应先实现 SSE 文档库事件流，解决“后端变更前端必须
 - BroadcastChannel 只作为同浏览器标签页兜底，不替代后端 SSE。
 - 跨浏览器、跨设备仍依赖 SSE。
 - 分享只读页不允许编辑，也不需要通过广播执行删除跳转。
+
+## 19. 2026-04-20 3100 开发服务器 SSE 代理修正
+
+### 19.1 问题
+
+前端页面通过 `http://127.0.0.1:3100/api/events/stream` 建立 SSE 连接。
+
+原实现依赖 Next.js 通用 rewrite 将 `/api/:path*` 转发到后端 `8000`，但该路径对 `text/event-stream` 存在缓冲或阻塞风险：后端 `8000/api/events/stream` 可以立即收到 `connection.ready` 和 `document.deleted`，而 `3100/api/events/stream` 不会实时下发事件。
+
+这会导致用户在一个标签页删除文档后，另一个标签页仍显示旧文档或旧目录项，直到手动刷新才消失。
+
+### 19.2 处理规则
+
+- SSE 不再走通用 rewrite。
+- Web 层必须提供专用 `/api/events/stream` route handler。
+- 该 route handler 只做协议透传：转发 cookie、请求后端 `/api/events/stream`、直接返回后端 `ReadableStream`。
+- 响应头必须保持流式语义：`Content-Type: text/event-stream`、`Cache-Control: no-cache, no-transform`、`Connection: keep-alive`、`X-Accel-Buffering: no`。
+- 其他 REST API 继续走通用 rewrite，不受影响。
+
+### 19.3 验收标准
+
+- 通过 `3100/api/events/stream` 可以立即收到 `connection.ready`。
+- 通过 `3100/api/events/stream` 订阅后，在另一个请求删除文档，可以立即收到 `document.deleted`。
+- 前端仍使用相对地址 `/api/events/stream`，保证未来通过 Nginx 或其他网段代理访问时不需要改后端地址。
