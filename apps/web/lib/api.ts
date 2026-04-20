@@ -456,6 +456,7 @@ export type FolderSummary = {
   isDeleted: boolean;
   updatedAt: string;
   canManage: boolean;
+  isFavorited: boolean;
 };
 
 export type TreeNode = {
@@ -470,6 +471,8 @@ export type TreeNode = {
   canManage: boolean;
   documentType?: string;
   isDeleted: boolean;
+  isPinned: boolean;
+  isFavorited: boolean;
   children: TreeNode[];
 };
 
@@ -1887,6 +1890,8 @@ function buildTreeNode(item: {
   can_manage: boolean;
   document_type?: string | null;
   is_deleted: boolean;
+  is_pinned?: boolean;
+  is_favorited?: boolean;
   children?: Array<any>;
 }): TreeNode {
   return {
@@ -1901,6 +1906,8 @@ function buildTreeNode(item: {
     canManage: Boolean(item.can_manage),
     documentType: item.document_type ?? undefined,
     isDeleted: Boolean(item.is_deleted),
+    isPinned: Boolean(item.is_pinned),
+    isFavorited: Boolean(item.is_favorited),
     children: (item.children ?? []).map(buildTreeNode),
   };
 }
@@ -1916,6 +1923,7 @@ function buildFolderSummary(item: {
   is_deleted: boolean;
   updated_at: string;
   can_manage: boolean;
+  is_favorited?: boolean;
 }): FolderSummary {
   return {
     id: item.id,
@@ -1928,6 +1936,7 @@ function buildFolderSummary(item: {
     isDeleted: Boolean(item.is_deleted),
     updatedAt: formatDateTime(item.updated_at),
     canManage: Boolean(item.can_manage),
+    isFavorited: Boolean(item.is_favorited),
   };
 }
 
@@ -2006,6 +2015,25 @@ export async function fetchFolderChildren(folderId: string): Promise<ApiItemResu
     };
   } catch {
     return { data: null, unavailable: true };
+  }
+}
+
+export async function fetchFavoriteFolders(): Promise<ApiListResult<FolderSummary>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/folders/favorites`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return {
+      data: (data ?? []).map(buildFolderSummary),
+      unavailable: false,
+    };
+  } catch {
+    return { data: [], unavailable: true };
   }
 }
 
@@ -2228,6 +2256,47 @@ export async function deleteDocument(docId: string) {
   });
 }
 
+export async function duplicateDocument(docId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/duplicate`, {
+    method: "POST",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error("Failed to duplicate document");
+  }
+  const data = await response.json();
+  return buildDocumentViewModel({
+    ...data,
+    file_url: resolveApiAssetUrl(data.file_url),
+  });
+}
+
+export async function pinTreeNode(input: { nodeType: "folder" | "document"; nodeId: string }) {
+  const response = await apiFetch(`${API_BASE_URL}/folders/pins`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ node_type: input.nodeType, node_id: input.nodeId }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to pin tree node");
+  }
+  return response.json() as Promise<{ node_type: "folder" | "document"; node_id: string; is_pinned: boolean }>;
+}
+
+export async function unpinTreeNode(input: { nodeType: "folder" | "document"; nodeId: string }) {
+  const response = await apiFetch(`${API_BASE_URL}/folders/pins`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ node_type: input.nodeType, node_id: input.nodeId }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to unpin tree node");
+  }
+  return response.json() as Promise<{ node_type: "folder" | "document"; node_id: string; is_pinned: boolean }>;
+}
+
 export async function bulkMoveNodes(input: {
   spaceId: string;
   targetFolderId?: string | null;
@@ -2401,6 +2470,32 @@ export async function unfavoriteDocument(docId: string) {
 
   if (!response.ok) {
     throw new Error("Failed to unfavorite document");
+  }
+
+  return response.json();
+}
+
+export async function favoriteFolder(folderId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/folders/${folderId}/favorite`, {
+    method: "POST",
+    credentials: "same-origin",
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to favorite folder");
+  }
+
+  return response.json();
+}
+
+export async function unfavoriteFolder(folderId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/folders/${folderId}/favorite`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to unfavorite folder");
   }
 
   return response.json();

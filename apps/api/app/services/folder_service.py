@@ -4,8 +4,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.document import Document, DocumentPermission
-from app.models.folder import Folder
+from app.models.document import Document, DocumentFavorite, DocumentPermission
+from app.models.folder import Folder, FolderFavorite, UserTreePin
 from app.models.organization import OrganizationMember
 from app.models.space import Space
 from app.models.user import User
@@ -14,16 +14,24 @@ from app.schemas.folder import (
     FolderBulkMoveRequest,
     FolderChildrenResponse,
     FolderCreateRequest,
+    FolderFavoriteStatusResponse,
     FolderReorderRequest,
     FolderSummary,
+    TreePinRequest,
+    TreePinResponse,
+    TreeNodeActionsResponse,
     TreeNodeSummary,
 )
 from app.services.permission_service import (
     ROLE_RANK,
     can_access_space as permission_can_access_space,
+    can_copy_document as permission_can_copy_document,
+    can_delete_document as permission_can_delete_document,
     can_manage_document as permission_can_manage_document,
     can_manage_folder as permission_can_manage_folder,
     can_manage_space as permission_can_manage_space,
+    can_share_document as permission_can_share_document,
+    can_transfer_document_owner as permission_can_transfer_document_owner,
     can_view_document as permission_can_view_document,
     can_view_folder as permission_can_view_folder,
     normalize_permission_level,
@@ -232,7 +240,39 @@ def build_folder_summary(db: Session, folder: Folder, user_id: str | None) -> Fo
         is_deleted=folder.is_deleted,
         updated_at=folder.updated_at,
         can_manage=can_manage_folder(db, folder, user_id),
+        is_favorited=folder.id in get_favorite_folder_ids(db, user_id),
     )
+
+
+def get_favorite_folder_ids(db: Session, user_id: str | None) -> set[str]:
+    if not user_id:
+        return set()
+    return set(
+        db.scalars(
+            select(FolderFavorite.folder_id).where(FolderFavorite.user_id == user_id)
+        ).all()
+    )
+
+
+def get_favorite_document_ids(db: Session, user_id: str | None) -> set[str]:
+    if not user_id:
+        return set()
+    return set(
+        db.scalars(
+            select(DocumentFavorite.document_id).where(DocumentFavorite.user_id == user_id)
+        ).all()
+    )
+
+
+def get_pinned_node_keys(db: Session, user_id: str | None, space_id: str) -> set[tuple[str, str]]:
+    if not user_id:
+        return set()
+    rows = db.execute(
+        select(UserTreePin.node_type, UserTreePin.node_id)
+        .where(UserTreePin.user_id == user_id)
+        .where(UserTreePin.space_id == space_id)
+    ).all()
+    return {(node_type, node_id) for node_type, node_id in rows}
 
 
 def build_folder_tree_node(
@@ -240,6 +280,8 @@ def build_folder_tree_node(
     folder: Folder,
     user_id: str | None,
     resolver: SpaceTreePermissionResolver | None = None,
+    pinned_keys: set[tuple[str, str]] | None = None,
+    favorite_folder_ids: set[str] | None = None,
 ) -> TreeNodeSummary:
     return TreeNodeSummary(
         id=folder.id,
@@ -253,6 +295,8 @@ def build_folder_tree_node(
         can_manage=resolver.can_manage_folder(folder) if resolver else can_manage_folder(db, folder, user_id),
         document_type=None,
         is_deleted=folder.is_deleted,
+        is_pinned=("folder", folder.id) in (pinned_keys or set()),
+        is_favorited=folder.id in (favorite_folder_ids or set()),
         children=[],
     )
 
@@ -262,6 +306,8 @@ def build_document_tree_node(
     document: Document,
     user_id: str | None,
     resolver: SpaceTreePermissionResolver | None = None,
+    pinned_keys: set[tuple[str, str]] | None = None,
+    favorite_document_ids: set[str] | None = None,
 ) -> TreeNodeSummary:
     return TreeNodeSummary(
         id=document.id,
@@ -275,12 +321,14 @@ def build_document_tree_node(
         can_manage=resolver.can_manage_document(document) if resolver else can_manage_document(db, document, user_id),
         document_type=document.document_type,
         is_deleted=document.is_deleted,
+        is_pinned=("document", document.id) in (pinned_keys or set()),
+        is_favorited=document.id in (favorite_document_ids or set()),
         children=[],
     )
 
 
 def sort_tree_nodes(nodes: list[TreeNodeSummary]) -> list[TreeNodeSummary]:
-    return sorted(nodes, key=lambda node: (node.sort_order, node.title.lower(), node.node_type, node.id))
+    return sorted(nodes, key=lambda node: (0 if node.is_pinned else 1, node.sort_order, node.title.lower(), node.node_type, node.id))
 
 
 def get_folder_detail(db: Session, folder_id: str, user_id: str | None = None) -> FolderSummary | None:
@@ -412,14 +460,17 @@ def list_space_root_children(db: Session, space_id: str, user_id: str | None = N
         .order_by(Document.sort_order.asc(), Document.updated_at.desc())
     ).all()
     resolver = SpaceTreePermissionResolver(db, space, user_id, documents)
+    pinned_keys = get_pinned_node_keys(db, user_id, space_id)
+    favorite_folder_ids = get_favorite_folder_ids(db, user_id)
+    favorite_document_ids = get_favorite_document_ids(db, user_id)
 
     children: list[TreeNodeSummary] = [
-        build_folder_tree_node(db, folder, user_id, resolver)
+        build_folder_tree_node(db, folder, user_id, resolver, pinned_keys, favorite_folder_ids)
         for folder in folders
         if resolver.can_view_folder(folder)
     ]
     children.extend(
-        build_document_tree_node(db, document, user_id, resolver)
+        build_document_tree_node(db, document, user_id, resolver, pinned_keys, favorite_document_ids)
         for document in documents
         if resolver.can_view_document(document)
     )
@@ -449,13 +500,16 @@ def list_folder_children(db: Session, folder_id: str, user_id: str | None = None
         .order_by(Document.sort_order.asc(), Document.updated_at.desc())
     ).all()
     resolver = SpaceTreePermissionResolver(db, space, user_id, documents)
+    pinned_keys = get_pinned_node_keys(db, user_id, space.id)
+    favorite_folder_ids = get_favorite_folder_ids(db, user_id)
+    favorite_document_ids = get_favorite_document_ids(db, user_id)
     children: list[TreeNodeSummary] = [
-        build_folder_tree_node(db, child, user_id, resolver)
+        build_folder_tree_node(db, child, user_id, resolver, pinned_keys, favorite_folder_ids)
         for child in folders
         if resolver.can_view_folder(child)
     ]
     children.extend(
-        build_document_tree_node(db, document, user_id, resolver)
+        build_document_tree_node(db, document, user_id, resolver, pinned_keys, favorite_document_ids)
         for document in documents
         if resolver.can_view_document(document)
     )
@@ -472,6 +526,9 @@ def _build_folder_tree(
     parent_id: str | None,
     user_id: str | None,
     resolver: SpaceTreePermissionResolver | None = None,
+    pinned_keys: set[tuple[str, str]] | None = None,
+    favorite_folder_ids: set[str] | None = None,
+    favorite_document_ids: set[str] | None = None,
 ) -> list[TreeNodeSummary]:
     nodes: list[TreeNodeSummary] = []
     for folder in folders_by_parent.get(parent_id, []):
@@ -480,8 +537,18 @@ def _build_folder_tree(
                 continue
         elif not can_view_folder(db, folder, user_id):
             continue
-        node = build_folder_tree_node(db, folder, user_id, resolver)
-        node.children = _build_folder_tree(db, folders_by_parent, docs_by_folder, folder.id, user_id, resolver)
+        node = build_folder_tree_node(db, folder, user_id, resolver, pinned_keys, favorite_folder_ids)
+        node.children = _build_folder_tree(
+            db,
+            folders_by_parent,
+            docs_by_folder,
+            folder.id,
+            user_id,
+            resolver,
+            pinned_keys,
+            favorite_folder_ids,
+            favorite_document_ids,
+        )
         nodes.append(node)
     for document in docs_by_folder.get(parent_id, []):
         if resolver:
@@ -489,7 +556,7 @@ def _build_folder_tree(
                 continue
         elif not can_view_document(db, document, user_id):
             continue
-        nodes.append(build_document_tree_node(db, document, user_id, resolver))
+        nodes.append(build_document_tree_node(db, document, user_id, resolver, pinned_keys, favorite_document_ids))
     return sort_tree_nodes(nodes)
 
 
@@ -518,7 +585,213 @@ def get_space_tree(db: Session, space_id: str, user_id: str | None = None) -> li
     for document in documents:
         docs_by_folder.setdefault(document.folder_id, []).append(document)
     resolver = SpaceTreePermissionResolver(db, space, user_id, documents)
-    return _build_folder_tree(db, folders_by_parent, docs_by_folder, None, user_id, resolver)
+    pinned_keys = get_pinned_node_keys(db, user_id, space_id)
+    favorite_folder_ids = get_favorite_folder_ids(db, user_id)
+    favorite_document_ids = get_favorite_document_ids(db, user_id)
+    return _build_folder_tree(
+        db,
+        folders_by_parent,
+        docs_by_folder,
+        None,
+        user_id,
+        resolver,
+        pinned_keys,
+        favorite_folder_ids,
+        favorite_document_ids,
+    )
+
+
+def get_tree_pin_target(
+    db: Session,
+    payload: TreePinRequest,
+    user_id: str,
+) -> tuple[str, str, str | None]:
+    if payload.node_type == "folder":
+        folder = db.get(Folder, payload.node_id)
+        if folder is None or folder.is_deleted:
+            raise ValueError("Folder not found")
+        if not can_view_folder(db, folder, user_id):
+            raise PermissionError("Not allowed to pin folder")
+        return folder.space_id, folder.id, folder.parent_folder_id
+    if payload.node_type == "document":
+        document = db.get(Document, payload.node_id)
+        if document is None or document.is_deleted:
+            raise ValueError("Document not found")
+        if not can_view_document(db, document, user_id):
+            raise PermissionError("Not allowed to pin document")
+        return document.space_id, document.id, document.folder_id
+    raise ValueError("Unsupported node type")
+
+
+def get_tree_node_actions(db: Session, node_type: str, node_id: str, user_id: str | None) -> TreeNodeActionsResponse:
+    if node_type == "document":
+        document = db.get(Document, node_id)
+        if document is None or document.is_deleted:
+            raise ValueError("Document not found")
+        can_view = can_view_document(db, document, user_id)
+        if not can_view:
+            raise PermissionError("Not allowed to access document")
+        can_manage = can_manage_document(db, document, user_id)
+        return TreeNodeActionsResponse(
+            node_type="document",
+            node_id=document.id,
+            can_open=True,
+            can_share=permission_can_share_document(db, document, user_id),
+            can_copy_link=True,
+            can_duplicate=permission_can_copy_document(db, document, user_id),
+            can_move=can_manage,
+            can_create_shortcut=False,
+            can_pin=True,
+            can_favorite=True,
+            can_transfer_owner=permission_can_transfer_document_owner(db, document, user_id),
+            can_rename=can_manage,
+            can_set_security=can_manage,
+            can_delete=permission_can_delete_document(db, document, user_id),
+        )
+
+    if node_type == "folder":
+        folder = db.get(Folder, node_id)
+        if folder is None or folder.is_deleted:
+            raise ValueError("Folder not found")
+        can_view = can_view_folder(db, folder, user_id)
+        if not can_view:
+            raise PermissionError("Not allowed to access folder")
+        can_manage = can_manage_folder(db, folder, user_id)
+        has_children = db.scalar(
+            select(Folder.id)
+            .where(Folder.parent_folder_id == folder.id)
+            .where(Folder.is_deleted.is_(False))
+            .limit(1)
+        ) or db.scalar(
+            select(Document.id)
+            .where(Document.folder_id == folder.id)
+            .where(Document.is_deleted.is_(False))
+            .limit(1)
+        )
+        return TreeNodeActionsResponse(
+            node_type="folder",
+            node_id=folder.id,
+            can_open=True,
+            can_share=False,
+            can_copy_link=True,
+            can_duplicate=False,
+            can_move=can_manage,
+            can_create_shortcut=False,
+            can_pin=True,
+            can_favorite=True,
+            can_transfer_owner=False,
+            can_rename=can_manage,
+            can_set_security=False,
+            can_delete=can_manage and not bool(has_children),
+            delete_disabled_reason="请先移动或删除文件夹内内容" if can_manage and has_children else None,
+        )
+
+    raise ValueError("Unsupported node type")
+
+
+def pin_tree_node(db: Session, payload: TreePinRequest, user_id: str) -> TreePinResponse:
+    space_id, node_id, parent_folder_id = get_tree_pin_target(db, payload, user_id)
+    existing = db.scalar(
+        select(UserTreePin)
+        .where(UserTreePin.user_id == user_id)
+        .where(UserTreePin.node_type == payload.node_type)
+        .where(UserTreePin.node_id == node_id)
+        .limit(1)
+    )
+    if existing is None:
+        max_sort_order = db.scalar(
+            select(func.max(UserTreePin.sort_order))
+            .where(UserTreePin.user_id == user_id)
+            .where(UserTreePin.space_id == space_id)
+            .where(UserTreePin.parent_folder_id == parent_folder_id)
+        ) or 0
+        existing = UserTreePin(
+            user_id=user_id,
+            space_id=space_id,
+            parent_folder_id=parent_folder_id,
+            node_type=payload.node_type,
+            node_id=node_id,
+            sort_order=int(max_sort_order) + 1,
+        )
+        db.add(existing)
+    else:
+        existing.space_id = space_id
+        existing.parent_folder_id = parent_folder_id
+        existing.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return TreePinResponse(node_type=payload.node_type, node_id=node_id, is_pinned=True)
+
+
+def unpin_tree_node(db: Session, payload: TreePinRequest, user_id: str) -> TreePinResponse:
+    _, node_id, _ = get_tree_pin_target(db, payload, user_id)
+    existing = db.scalar(
+        select(UserTreePin)
+        .where(UserTreePin.user_id == user_id)
+        .where(UserTreePin.node_type == payload.node_type)
+        .where(UserTreePin.node_id == node_id)
+        .limit(1)
+    )
+    if existing is not None:
+        db.delete(existing)
+        db.commit()
+    return TreePinResponse(node_type=payload.node_type, node_id=node_id, is_pinned=False)
+
+
+def list_favorite_folders(db: Session, user_id: str) -> list[FolderSummary]:
+    folders = db.scalars(
+        select(Folder)
+        .join(FolderFavorite, FolderFavorite.folder_id == Folder.id)
+        .where(FolderFavorite.user_id == user_id)
+        .where(Folder.is_deleted.is_(False))
+        .order_by(FolderFavorite.updated_at.desc(), Folder.title.asc())
+    ).all()
+    return [
+        build_folder_summary(db, folder, user_id)
+        for folder in folders
+        if can_view_folder(db, folder, user_id)
+    ]
+
+
+def favorite_folder(db: Session, folder_id: str, user_id: str) -> FolderFavoriteStatusResponse | None:
+    folder = db.get(Folder, folder_id)
+    if folder is None or folder.is_deleted:
+        return None
+    if not can_view_folder(db, folder, user_id):
+        raise PermissionError("Not allowed to favorite folder")
+    existing = db.scalar(
+        select(FolderFavorite)
+        .where(FolderFavorite.user_id == user_id)
+        .where(FolderFavorite.folder_id == folder_id)
+        .limit(1)
+    )
+    if existing is None:
+        db.add(FolderFavorite(user_id=user_id, folder_id=folder_id))
+    else:
+        existing.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    publish_folder_event(db, "folder.favorited", folder, user_id)
+    db.commit()
+    return FolderFavoriteStatusResponse(folder_id=folder_id, is_favorited=True)
+
+
+def unfavorite_folder(db: Session, folder_id: str, user_id: str) -> FolderFavoriteStatusResponse | None:
+    folder = db.get(Folder, folder_id)
+    if folder is None or folder.is_deleted:
+        return None
+    if not can_view_folder(db, folder, user_id):
+        raise PermissionError("Not allowed to unfavorite folder")
+    existing = db.scalar(
+        select(FolderFavorite)
+        .where(FolderFavorite.user_id == user_id)
+        .where(FolderFavorite.folder_id == folder_id)
+        .limit(1)
+    )
+    if existing is not None:
+        db.delete(existing)
+        db.commit()
+        publish_folder_event(db, "folder.unfavorited", folder, user_id)
+        db.commit()
+    return FolderFavoriteStatusResponse(folder_id=folder_id, is_favorited=False)
 
 
 def get_folder_ancestors(db: Session, folder_id: str, user_id: str | None = None) -> list[AncestorItem]:

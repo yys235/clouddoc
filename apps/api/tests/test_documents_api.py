@@ -8,9 +8,9 @@ from sqlalchemy import delete, event, select
 from app.core.db import SessionLocal, engine
 from app.main import app
 from app.models.comment import Comment, CommentThread
-from app.models.document import Document, DocumentContent, DocumentPermission, DocumentVersion
+from app.models.document import Document, DocumentContent, DocumentFavorite, DocumentPermission, DocumentVersion
 from app.models.event import EventLog
-from app.models.folder import Folder
+from app.models.folder import Folder, FolderFavorite, UserTreePin
 from app.models.notification import UserNotification
 from app.models.organization import Organization, OrganizationInvitation, OrganizationMember
 from app.models.share import ShareLink
@@ -54,8 +54,10 @@ def cleanup_document(document_id: str) -> None:
             db.execute(delete(UserNotification).where(UserNotification.thread_id.in_(thread_ids)))
         db.execute(delete(UserNotification).where(UserNotification.document_id == document_id))
         db.execute(delete(EventLog).where(EventLog.document_id == document_id))
+        db.execute(delete(UserTreePin).where(UserTreePin.node_type == "document").where(UserTreePin.node_id == document_id))
         db.execute(delete(Comment).where(Comment.document_id == document_id))
         db.execute(delete(CommentThread).where(CommentThread.document_id == document_id))
+        db.execute(delete(DocumentFavorite).where(DocumentFavorite.document_id == document_id))
         db.execute(delete(DocumentPermission).where(DocumentPermission.document_id == document_id))
         db.execute(delete(ShareLink).where(ShareLink.document_id == document_id))
         db.execute(delete(DocumentVersion).where(DocumentVersion.document_id == document_id))
@@ -87,6 +89,9 @@ def cleanup_user(email: str) -> None:
             return
         db.execute(delete(UserNotification).where(UserNotification.user_id == user.id))
         db.execute(delete(UserNotification).where(UserNotification.actor_id == user.id))
+        db.execute(delete(UserTreePin).where(UserTreePin.user_id == user.id))
+        db.execute(delete(DocumentFavorite).where(DocumentFavorite.user_id == user.id))
+        db.execute(delete(FolderFavorite).where(FolderFavorite.user_id == user.id))
         db.execute(delete(UserSession).where(UserSession.user_id == user.id))
         db.execute(delete(OrganizationInvitation).where(OrganizationInvitation.invited_by == user.id))
         db.execute(delete(Folder).where(Folder.owner_id == user.id))
@@ -216,6 +221,221 @@ def test_document_owner_can_rename_document() -> None:
         assert detail_response.json()["title"] == "pytest-after-rename"
     finally:
         cleanup_document(document_id)
+        cleanup_user(email)
+
+
+def test_document_owner_can_duplicate_document() -> None:
+    email = f"pytest-duplicate-owner-{uuid4()}@example.com"
+    owner_client = register_user_client("Pytest Duplicate Owner", email, "duplicate-password")
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == email))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    create_response = owner_client.post(
+        "/api/documents",
+        json={
+            "title": "pytest-duplicate-source",
+            "space_id": space_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    source_id = create_response.json()["id"]
+    duplicate_id = None
+
+    try:
+        duplicate_response = owner_client.post(f"/api/documents/{source_id}/duplicate")
+        assert duplicate_response.status_code == 200
+        duplicate_payload = duplicate_response.json()
+        duplicate_id = duplicate_payload["id"]
+        assert duplicate_id != source_id
+        assert duplicate_payload["title"] == "pytest-duplicate-source 副本"
+        assert duplicate_payload["space_id"] == space_id
+        assert duplicate_payload["content"]["plain_text"] == create_response.json()["content"]["plain_text"]
+    finally:
+        if duplicate_id:
+            cleanup_document(duplicate_id)
+        cleanup_document(source_id)
+        cleanup_user(email)
+
+
+def test_user_can_pin_and_unpin_tree_document() -> None:
+    email = f"pytest-pin-owner-{uuid4()}@example.com"
+    owner_client = register_user_client("Pytest Pin Owner", email, "pin-password")
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == email))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    create_response = owner_client.post(
+        "/api/documents",
+        json={
+            "title": "pytest-pin-target",
+            "space_id": space_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    document_id = create_response.json()["id"]
+
+    try:
+        pin_response = owner_client.post(
+            "/api/folders/pins",
+            json={"node_type": "document", "node_id": document_id},
+        )
+        assert pin_response.status_code == 200
+        assert pin_response.json()["is_pinned"] is True
+
+        tree_response = owner_client.get(f"/api/spaces/{space_id}/tree")
+        assert tree_response.status_code == 200
+        pinned_node = next(node for node in tree_response.json() if node["id"] == document_id)
+        assert pinned_node["is_pinned"] is True
+
+        unpin_response = owner_client.request(
+            "DELETE",
+            "/api/folders/pins",
+            json={"node_type": "document", "node_id": document_id},
+        )
+        assert unpin_response.status_code == 200
+        assert unpin_response.json()["is_pinned"] is False
+    finally:
+        cleanup_document(document_id)
+        cleanup_user(email)
+
+
+def test_user_can_favorite_and_unfavorite_folder() -> None:
+    email = f"pytest-folder-favorite-{uuid4()}@example.com"
+    owner_client = register_user_client("Pytest Folder Favorite", email, "favorite-password")
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == email))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    create_response = owner_client.post(
+        "/api/folders",
+        json={
+            "title": "pytest-favorite-folder",
+            "space_id": space_id,
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    folder_id = create_response.json()["id"]
+
+    try:
+        favorite_response = owner_client.post(f"/api/folders/{folder_id}/favorite")
+        assert favorite_response.status_code == 200
+        assert favorite_response.json() == {"folder_id": folder_id, "is_favorited": True}
+
+        list_response = owner_client.get("/api/folders/favorites")
+        assert list_response.status_code == 200
+        listed_folder = next(folder for folder in list_response.json() if folder["id"] == folder_id)
+        assert listed_folder["is_favorited"] is True
+
+        tree_response = owner_client.get(f"/api/spaces/{space_id}/tree")
+        assert tree_response.status_code == 200
+        tree_folder = next(node for node in tree_response.json() if node["id"] == folder_id)
+        assert tree_folder["is_favorited"] is True
+
+        unfavorite_response = owner_client.delete(f"/api/folders/{folder_id}/favorite")
+        assert unfavorite_response.status_code == 200
+        assert unfavorite_response.json() == {"folder_id": folder_id, "is_favorited": False}
+
+        list_after_response = owner_client.get("/api/folders/favorites")
+        assert list_after_response.status_code == 200
+        assert all(folder["id"] != folder_id for folder in list_after_response.json())
+    finally:
+        db = SessionLocal()
+        try:
+            db.execute(delete(FolderFavorite).where(FolderFavorite.folder_id == folder_id))
+            db.execute(delete(UserTreePin).where(UserTreePin.node_type == "folder").where(UserTreePin.node_id == folder_id))
+            db.execute(delete(Folder).where(Folder.id == folder_id))
+            db.commit()
+        finally:
+            db.close()
+        cleanup_user(email)
+
+
+def test_tree_node_actions_summarize_document_and_folder_permissions() -> None:
+    email = f"pytest-tree-actions-{uuid4()}@example.com"
+    owner_client = register_user_client("Pytest Tree Actions", email, "actions-password")
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == email))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    folder_response = owner_client.post(
+        "/api/folders",
+        json={"title": "pytest-actions-folder", "space_id": space_id, "visibility": "private"},
+    )
+    assert folder_response.status_code == 200
+    folder_id = folder_response.json()["id"]
+    document_response = owner_client.post(
+        "/api/documents",
+        json={
+            "title": "pytest-actions-document",
+            "space_id": space_id,
+            "folder_id": folder_id,
+            "document_type": "doc",
+            "visibility": "private",
+        },
+    )
+    assert document_response.status_code == 200
+    document_id = document_response.json()["id"]
+
+    try:
+        document_actions = owner_client.get(f"/api/folders/actions/document/{document_id}")
+        assert document_actions.status_code == 200
+        document_payload = document_actions.json()
+        assert document_payload["can_open"] is True
+        assert document_payload["can_duplicate"] is True
+        assert document_payload["can_transfer_owner"] is True
+        assert document_payload["can_set_security"] is True
+
+        folder_actions = owner_client.get(f"/api/folders/actions/folder/{folder_id}")
+        assert folder_actions.status_code == 200
+        folder_payload = folder_actions.json()
+        assert folder_payload["can_open"] is True
+        assert folder_payload["can_favorite"] is True
+        assert folder_payload["can_delete"] is False
+        assert folder_payload["delete_disabled_reason"] == "请先移动或删除文件夹内内容"
+    finally:
+        cleanup_document(document_id)
+        db = SessionLocal()
+        try:
+            db.execute(delete(FolderFavorite).where(FolderFavorite.folder_id == folder_id))
+            db.execute(delete(UserTreePin).where(UserTreePin.node_type == "folder").where(UserTreePin.node_id == folder_id))
+            db.execute(delete(Folder).where(Folder.id == folder_id))
+            db.commit()
+        finally:
+            db.close()
         cleanup_user(email)
 
 

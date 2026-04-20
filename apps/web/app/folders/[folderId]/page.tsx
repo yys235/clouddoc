@@ -2,7 +2,16 @@ import Link from "next/link";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { FolderWorkspaceView } from "@/components/folders/folder-workspace-view";
-import { fetchFolder, fetchFolderAncestors, fetchFolderChildren, fetchSpaces, fetchSpaceTree, fetchUserPreference } from "@/lib/api";
+import {
+  fetchCurrentOrganization,
+  fetchFolder,
+  fetchFolderAncestors,
+  fetchFolderChildren,
+  fetchOrganizationMembers,
+  fetchSpaces,
+  fetchSpaceTree,
+  fetchUserPreference,
+} from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -34,16 +43,27 @@ export default async function FolderPage({
     );
   }
 
-  const [{ data: spaces }, { data: tree, unavailable: treeUnavailable }, { data: children, unavailable: childrenUnavailable }, { data: ancestors, unavailable: ancestorsUnavailable }, { data: userPreference, unavailable: preferenceUnavailable }] =
+  const [
+    { data: spaces },
+    { data: tree, unavailable: treeUnavailable },
+    { data: children, unavailable: childrenUnavailable },
+    { data: ancestors, unavailable: ancestorsUnavailable },
+    { data: userPreference, unavailable: preferenceUnavailable },
+    { data: currentOrganization },
+  ] =
     await Promise.all([
       fetchSpaces(),
       fetchSpaceTree(folder.spaceId),
       fetchFolderChildren(folder.id),
       fetchFolderAncestors(folder.id),
       fetchUserPreference(),
+      fetchCurrentOrganization(),
     ]);
 
   const selectedSpace = spaces.find((space) => space.id === folder.spaceId) ?? null;
+  const { data: organizationMembers } = currentOrganization
+    ? await fetchOrganizationMembers(currentOrganization.id)
+    : { data: [] };
 
   return (
     <AppShell>
@@ -56,6 +76,7 @@ export default async function FolderPage({
         ancestors={ancestors}
         apiUnavailable={unavailable || treeUnavailable || childrenUnavailable || ancestorsUnavailable || preferenceUnavailable}
         initialDocumentTreeOpenMode={userPreference?.documentTreeOpenMode ?? "same-page"}
+        mentionCandidates={organizationMembers}
       />
     </AppShell>
   );

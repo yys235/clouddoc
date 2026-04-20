@@ -7,6 +7,7 @@ import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice
 import {
   CurrentOrganization,
   DashboardDocument,
+  FolderSummary,
   OrganizationMember,
   SpaceSummary,
   subscribeDocumentLibraryBrowserEvents,
@@ -190,6 +191,45 @@ export function DocumentListSection({
                 }`}
               >
                 {badge ? "已收藏" : statusLabel(doc.status)}
+              </div>
+            </Link>
+          ))
+        ) : (
+          <p className="text-sm leading-6 text-slate-600">{emptyText}</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+export function FolderListSection({
+  title,
+  folders,
+  emptyText,
+  badge = false,
+}: {
+  title: string;
+  folders: FolderSummary[];
+  emptyText: string;
+  badge?: boolean;
+}) {
+  return (
+    <section className="border border-slate-200 bg-white px-4 py-3 shadow-panel">
+      <h2 className="text-lg font-semibold">{title}</h2>
+      <div className="mt-2 space-y-1.5">
+        {folders.length > 0 ? (
+          folders.map((folder) => (
+            <Link
+              key={folder.id}
+              href={`/folders/${folder.id}`}
+              className="flex items-center justify-between border border-slate-200 px-3 py-2 transition hover:border-slate-300 hover:bg-slate-50"
+            >
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium">{folder.title}</div>
+                <div className="mt-0.5 text-xs text-slate-500">{folder.updatedAt}</div>
+              </div>
+              <div className={`px-2.5 py-0.5 text-xs font-medium ${badge ? "bg-amber-50 text-amber-700" : "bg-mist text-slate-600"}`}>
+                {badge ? "已收藏" : "文件夹"}
               </div>
             </Link>
           ))

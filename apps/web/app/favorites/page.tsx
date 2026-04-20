@@ -1,12 +1,13 @@
 import { AppShell } from "@/components/layout/app-shell";
-import { DashboardPageFrame, DocumentListSection } from "@/components/dashboard/dashboard-sections";
-import { fetchCurrentUser, fetchDocuments } from "@/lib/api";
+import { DashboardPageFrame, DocumentListSection, FolderListSection } from "@/components/dashboard/dashboard-sections";
+import { fetchCurrentUser, fetchDocuments, fetchFavoriteFolders } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
 export default async function FavoritesPage() {
-  const [{ data: documents, unavailable }, { data: currentUser }] = await Promise.all([
+  const [{ data: documents, unavailable }, { data: folders, unavailable: foldersUnavailable }, { data: currentUser }] = await Promise.all([
     fetchDocuments("all"),
+    fetchFavoriteFolders(),
     fetchCurrentUser(),
   ]);
   const favoriteDocuments = documents.filter((item) => item.isFavorited && !item.isDeleted);
@@ -15,9 +16,15 @@ export default async function FavoritesPage() {
     <AppShell>
       <DashboardPageFrame
         title="收藏"
-        description="查看已收藏文档。收藏状态来自真实后端数据。"
-        apiUnavailable={unavailable}
+        description="查看已收藏文档和文件夹。收藏状态来自真实后端数据。"
+        apiUnavailable={unavailable || foldersUnavailable}
       >
+        <FolderListSection
+          title="收藏文件夹"
+          folders={folders}
+          emptyText="当前还没有真实收藏文件夹。"
+          badge
+        />
         <DocumentListSection
           title="收藏文档"
           documents={favoriteDocuments}

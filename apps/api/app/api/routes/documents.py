@@ -24,6 +24,7 @@ from app.services.auth_service import (
 from app.services.document_service import (
     create_document,
     create_pdf_document,
+    duplicate_document,
     favorite_document,
     fetch_link_preview,
     get_document_detail,
@@ -174,6 +175,21 @@ def rename_document_route(
 ) -> DocumentDetail:
     try:
         document = rename_document(db, doc_id, payload.title, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return document
+
+
+@router.post("/{doc_id}/duplicate", response_model=DocumentDetail)
+def duplicate_document_route(
+    doc_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> DocumentDetail:
+    try:
+        document = duplicate_document(db, doc_id, current_user.id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if document is None:

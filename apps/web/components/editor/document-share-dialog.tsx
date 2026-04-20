@@ -59,6 +59,7 @@ export function DocumentShareDialog({
   documentId,
   currentVisibility,
   canTransferOwner = false,
+  initialTab = "visibility",
   mentionCandidates,
   onClose,
   onSaved,
@@ -67,6 +68,7 @@ export function DocumentShareDialog({
   documentId: string;
   currentVisibility: "private" | "public";
   canTransferOwner?: boolean;
+  initialTab?: "visibility" | "members" | "share" | "security" | "integrations" | "audit";
   mentionCandidates: OrganizationMember[];
   onClose: () => void;
   onSaved: (next: { visibility: "private" | "public"; share: ShareLinkSettings | null }) => void;
@@ -128,6 +130,7 @@ export function DocumentShareDialog({
       return;
     }
     setVisibility(currentVisibility);
+    setActiveTab(initialTab);
     setPassword("");
     setTransferOwnerId("");
     setTransferOwnerQuery("");
@@ -155,7 +158,7 @@ export function DocumentShareDialog({
         setAuditLogs(auditResult.data);
       })
       .finally(() => setLoading(false));
-  }, [currentVisibility, documentId, open]);
+  }, [currentVisibility, documentId, initialTab, open]);
 
   const resolvedShareUrl = useMemo(() => absoluteShareUrl(share?.shareUrl), [share?.shareUrl]);
 

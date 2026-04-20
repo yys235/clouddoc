@@ -308,6 +308,45 @@ def ensure_runtime_schema(db: Session) -> None:
         )
     )
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_user_preferences_user ON user_preferences(user_id)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS user_tree_pins (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id),
+                space_id UUID NOT NULL REFERENCES spaces(id),
+                parent_folder_id UUID REFERENCES folders(id),
+                node_type VARCHAR(32) NOT NULL,
+                node_id VARCHAR(128) NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT uq_user_tree_pin_node UNIQUE (user_id, node_type, node_id),
+                CONSTRAINT chk_user_tree_pin_node_type CHECK (node_type IN ('folder', 'document'))
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_user_tree_pins_user ON user_tree_pins(user_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_user_tree_pins_space ON user_tree_pins(space_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_user_tree_pins_parent ON user_tree_pins(parent_folder_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_user_tree_pins_node ON user_tree_pins(node_type, node_id)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS folder_favorites (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id),
+                folder_id UUID NOT NULL REFERENCES folders(id),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT uq_folder_favorite UNIQUE (user_id, folder_id)
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_folder_favorites_user ON folder_favorites(user_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_folder_favorites_folder ON folder_favorites(folder_id)"))
     db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0"))
     db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS folder_id UUID REFERENCES folders(id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_visibility ON documents(visibility)"))

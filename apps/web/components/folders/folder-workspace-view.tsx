@@ -1,20 +1,24 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, useTransition, type DragEvent, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 
 import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { DocumentShareDialog } from "@/components/editor/document-share-dialog";
 import {
   createDocument,
   createFolder,
   bulkMoveNodes,
   deleteDocument,
   deleteFolder,
+  duplicateDocument,
   favoriteDocument,
+  favoriteFolder,
   moveDocumentToFolder,
   moveFolder,
+  pinTreeNode,
   reorderFolderChildren,
   renameDocument,
   renameFolder,
@@ -23,8 +27,12 @@ import {
   type DocumentTreeOpenMode,
   type FolderChildrenResult,
   type FolderSummary,
+  type OrganizationMember,
   type SpaceSummary,
   type TreeNode,
+  unpinTreeNode,
+  unfavoriteDocument,
+  unfavoriteFolder,
   updateUserPreference,
   uploadPdfDocument,
 } from "@/lib/api";
@@ -32,6 +40,10 @@ import {
 type NodeDragPayload = { id: string; nodeType: "folder" | "document" };
 type TreeDropPosition = "before" | "inside" | "after";
 type ActiveTreeMenu = { node: TreeNode; x: number; y: number };
+type TreeShareDialogTarget = {
+  node: TreeNode;
+  tab: "visibility" | "members" | "share" | "security" | "integrations" | "audit";
+};
 type LibraryEvent = {
   event_id?: string;
   event_type?: string;
@@ -113,7 +125,13 @@ function findFolderChildren(nodes: TreeNode[], folderId: string | null): TreeNod
 }
 
 function sortNodes(nodes: TreeNode[]) {
-  return [...nodes].sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title) || a.nodeType.localeCompare(b.nodeType));
+  return [...nodes].sort(
+    (a, b) =>
+      Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned)) ||
+      a.sortOrder - b.sortOrder ||
+      a.title.localeCompare(b.title) ||
+      a.nodeType.localeCompare(b.nodeType),
+  );
 }
 
 function removeTreeNode(nodes: TreeNode[], nodeId: string, nodeType: TreeNode["nodeType"]): TreeNode[] {
@@ -143,6 +161,67 @@ function updateTreeNodeTitle(nodes: TreeNode[], nodeId: string, nodeType: TreeNo
       return { ...node, title };
     }
     const children = updateTreeNodeTitle(node.children, nodeId, nodeType, title);
+    if (children !== node.children) {
+      changed = true;
+      return { ...node, children };
+    }
+    return node;
+  });
+  return changed ? next : nodes;
+}
+
+function updateTreeNodePinned(nodes: TreeNode[], nodeId: string, nodeType: TreeNode["nodeType"], isPinned: boolean): TreeNode[] {
+  let changed = false;
+  const next = nodes.map((node) => {
+    if (node.id === nodeId && node.nodeType === nodeType) {
+      changed = true;
+      return { ...node, isPinned };
+    }
+    const children = updateTreeNodePinned(node.children, nodeId, nodeType, isPinned);
+    if (children !== node.children) {
+      changed = true;
+      return { ...node, children };
+    }
+    return node;
+  });
+  return changed ? sortNodes(next) : nodes;
+}
+
+function updateTreeNodeFavorited(
+  nodes: TreeNode[],
+  nodeId: string,
+  nodeType: TreeNode["nodeType"],
+  isFavorited: boolean,
+): TreeNode[] {
+  let changed = false;
+  const next = nodes.map((node) => {
+    if (node.id === nodeId && node.nodeType === nodeType) {
+      changed = true;
+      return { ...node, isFavorited };
+    }
+    const children = updateTreeNodeFavorited(node.children, nodeId, nodeType, isFavorited);
+    if (children !== node.children) {
+      changed = true;
+      return { ...node, children };
+    }
+    return node;
+  });
+  return changed ? next : nodes;
+}
+
+function updateTreeNodeVisibility(
+  nodes: TreeNode[],
+  nodeId: string,
+  nodeType: TreeNode["nodeType"],
+  visibility: string,
+): TreeNode[] {
+  let changed = false;
+  const next = nodes.map((node) => {
+    if (node.id === nodeId && node.nodeType === nodeType) {
+      changed = true;
+      return { ...node, visibility };
+    }
+    const children = updateTreeNodeVisibility(node.children, nodeId, nodeType, visibility);
     if (children !== node.children) {
       changed = true;
       return { ...node, children };
@@ -191,6 +270,8 @@ function eventDocumentToNode(document: NonNullable<LibraryEvent["document"]>): T
     canManage: true,
     documentType: document.document_type ?? "doc",
     isDeleted: Boolean(document.is_deleted),
+    isPinned: false,
+    isFavorited: false,
     children: [],
   };
 }
@@ -212,6 +293,8 @@ function eventFolderToNode(folder: NonNullable<LibraryEvent["folder"]>): TreeNod
     }).format(new Date(folder.updated_at)) : "",
     canManage: true,
     isDeleted: Boolean(folder.is_deleted),
+    isPinned: false,
+    isFavorited: false,
     children: [],
   };
 }
@@ -272,11 +355,15 @@ function FolderTree({
   onOpenMenu: (node: TreeNode, event: MouseEvent<HTMLElement>) => void;
 }) {
   return (
-    <div className="space-y-0.5">
+    <div className="space-y-0.5" role="tree">
       {nodes.map((node) => (
         <div key={`${node.nodeType}-${node.id}`} className="space-y-0.5">
           <div
             onContextMenu={(event) => onOpenMenu(node, event)}
+            tabIndex={0}
+            role="treeitem"
+            aria-expanded={node.nodeType === "folder" ? expandedFolderIds.has(node.id) : undefined}
+            aria-label={`${node.title}${node.nodeType === "folder" ? " 文件夹" : " 文档"}`}
             className={`group relative rounded-lg ${
               dropIndicator?.key === `${node.nodeType}:${node.id}` && dropIndicator.position === "inside"
                 ? "bg-blue-50 ring-1 ring-blue-200"
@@ -314,6 +401,27 @@ function FolderTree({
               onReorderNode(payload, { id: node.id, nodeType: node.nodeType }, position === "inside" ? "after" : position);
             }}
             onDragEnd={() => onDropIndicatorChange(null)}
+            onKeyDown={(event: ReactKeyboardEvent<HTMLDivElement>) => {
+              const isDocument = node.nodeType === "document";
+              const href = node.nodeType === "folder" ? `/folders/${node.id}` : `/docs/${node.id}`;
+              if (event.key === "Enter") {
+                event.preventDefault();
+                if (isDocument && documentOpenMode === "new-window") {
+                  window.open(href, "_blank", "noopener,noreferrer");
+                } else {
+                  window.location.href = href;
+                }
+              } else if (event.key === "ArrowRight" && node.nodeType === "folder" && !expandedFolderIds.has(node.id)) {
+                event.preventDefault();
+                onToggleFolder(node.id);
+              } else if (event.key === "ArrowLeft" && node.nodeType === "folder" && expandedFolderIds.has(node.id)) {
+                event.preventDefault();
+                onToggleFolder(node.id);
+              } else if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                event.preventDefault();
+                onOpenMenu(node, event as unknown as MouseEvent<HTMLElement>);
+              }
+            }}
           >
             {(() => {
               const isDocument = node.nodeType === "document";
@@ -445,6 +553,7 @@ export function FolderWorkspaceView({
   ancestors,
   apiUnavailable = false,
   initialDocumentTreeOpenMode = "same-page",
+  mentionCandidates = [],
 }: {
   spaces: SpaceSummary[];
   selectedSpace: SpaceSummary | null;
@@ -454,6 +563,7 @@ export function FolderWorkspaceView({
   ancestors?: AncestorItem[];
   apiUnavailable?: boolean;
   initialDocumentTreeOpenMode?: DocumentTreeOpenMode;
+  mentionCandidates?: OrganizationMember[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -468,6 +578,7 @@ export function FolderWorkspaceView({
   const [treeRenameTarget, setTreeRenameTarget] = useState<TreeNode | null>(null);
   const [treeRenameValue, setTreeRenameValue] = useState("");
   const [treeDeleteTarget, setTreeDeleteTarget] = useState<TreeNode | null>(null);
+  const [treeShareDialogTarget, setTreeShareDialogTarget] = useState<TreeShareDialogTarget | null>(null);
   const [documentTitle, setDocumentTitle] = useState("");
   const [documentLocationMode, setDocumentLocationMode] = useState<"existing" | "new-folder">("existing");
   const [documentFolderId, setDocumentFolderId] = useState(currentFolder?.id ?? "__root__");
@@ -781,15 +892,82 @@ export function FolderWorkspaceView({
     });
   };
 
-  const handleFavoriteTreeDocument = (node: TreeNode) => {
+  const handleToggleTreeFavorite = (node: TreeNode) => {
+    startTransition(async () => {
+      try {
+        setNotice("");
+        if (node.nodeType === "document") {
+          if (node.isFavorited) {
+            await unfavoriteDocument(node.id);
+          } else {
+            await favoriteDocument(node.id);
+          }
+        } else if (node.isFavorited) {
+          await unfavoriteFolder(node.id);
+        } else {
+          await favoriteFolder(node.id);
+        }
+        const nextFavorited = !node.isFavorited;
+        setLiveTree((current) => updateTreeNodeFavorited(current, node.id, node.nodeType, nextFavorited));
+        setLiveCurrentChildren((current) =>
+          current
+            ? { ...current, children: updateTreeNodeFavorited(current.children, node.id, node.nodeType, nextFavorited) }
+            : current,
+        );
+        setNotice(nextFavorited ? "已收藏" : "已取消收藏");
+      } catch {
+        setNotice(node.isFavorited ? "取消收藏失败" : "收藏失败");
+      }
+    });
+  };
+
+  const handleDuplicateTreeDocument = (node: TreeNode) => {
     if (node.nodeType !== "document") return;
     startTransition(async () => {
       try {
         setNotice("");
-        await favoriteDocument(node.id);
-        setNotice("已收藏");
+        const document = await duplicateDocument(node.id);
+        setNotice("已创建副本");
+        if (document.folderId === currentFolderId) {
+          refreshView();
+        } else {
+          refreshView();
+        }
       } catch {
-        setNotice("收藏失败");
+        setNotice("创建副本失败");
+      }
+    });
+  };
+
+  const openTreeDocumentShareDialog = (node: TreeNode, tab: TreeShareDialogTarget["tab"]) => {
+    if (node.nodeType !== "document") {
+      setNotice("文件夹分享和密级设置暂未开放");
+      return;
+    }
+    setTreeShareDialogTarget({ node, tab });
+  };
+
+  const handleToggleTreePin = (node: TreeNode) => {
+    startTransition(async () => {
+      try {
+        setNotice("");
+        if (node.isPinned) {
+          await unpinTreeNode({ nodeType: node.nodeType, nodeId: node.id });
+          setLiveTree((current) => updateTreeNodePinned(current, node.id, node.nodeType, false));
+          setLiveCurrentChildren((current) =>
+            current ? { ...current, children: updateTreeNodePinned(current.children, node.id, node.nodeType, false) } : current,
+          );
+          setNotice("已取消置顶");
+        } else {
+          await pinTreeNode({ nodeType: node.nodeType, nodeId: node.id });
+          setLiveTree((current) => updateTreeNodePinned(current, node.id, node.nodeType, true));
+          setLiveCurrentChildren((current) =>
+            current ? { ...current, children: updateTreeNodePinned(current.children, node.id, node.nodeType, true) } : current,
+          );
+          setNotice("已置顶");
+        }
+      } catch {
+        setNotice("更新置顶状态失败");
       }
     });
   };
@@ -1296,13 +1474,23 @@ export function FolderWorkspaceView({
           {activeTreeMenu.node.nodeType === "document" ? (
             <button
               type="button"
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100"
-              onClick={() => runTreeMenuAction(() => handleFavoriteTreeDocument(activeTreeMenu.node))}
+              disabled={!activeTreeMenu.node.canManage}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
+              onClick={() => runTreeMenuAction(() => openTreeDocumentShareDialog(activeTreeMenu.node, "share"))}
+              title={activeTreeMenu.node.canManage ? undefined : "你没有分享该文档的权限"}
             >
-              <span className="w-4 text-slate-400">☆</span>
-              <span>收藏</span>
+              <span className="w-4 text-slate-400">↗</span>
+              <span>分享</span>
             </button>
           ) : null}
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100"
+            onClick={() => runTreeMenuAction(() => handleToggleTreeFavorite(activeTreeMenu.node))}
+          >
+            <span className="w-4 text-slate-400">{activeTreeMenu.node.isFavorited ? "★" : "☆"}</span>
+            <span>{activeTreeMenu.node.isFavorited ? "取消收藏" : "收藏"}</span>
+          </button>
           <div className="my-1 border-t border-slate-100" />
           <button
             type="button"
@@ -1324,24 +1512,48 @@ export function FolderWorkspaceView({
             <span className="w-4 text-slate-400">✎</span>
             <span>重命名</span>
           </button>
+          {activeTreeMenu.node.nodeType === "document" ? (
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100"
+              onClick={() => runTreeMenuAction(() => handleDuplicateTreeDocument(activeTreeMenu.node))}
+            >
+              <span className="w-4 text-slate-400">⧉</span>
+              <span>创建副本</span>
+            </button>
+          ) : null}
           <button
             type="button"
-            disabled
-            className="flex w-full cursor-not-allowed items-center gap-2 px-3 py-1.5 text-left text-slate-300"
-            title="后续版本实现创建副本"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100"
+            onClick={() => runTreeMenuAction(() => handleToggleTreePin(activeTreeMenu.node))}
           >
-            <span className="w-4">⧉</span>
-            <span>创建副本</span>
+            <span className="w-4 text-slate-400">{activeTreeMenu.node.isPinned ? "⌄" : "⌃"}</span>
+            <span>{activeTreeMenu.node.isPinned ? "取消置顶" : "添加到置顶"}</span>
           </button>
-          <button
-            type="button"
-            disabled
-            className="flex w-full cursor-not-allowed items-center gap-2 px-3 py-1.5 text-left text-slate-300"
-            title="后续版本实现置顶"
-          >
-            <span className="w-4">⌃</span>
-            <span>添加到置顶</span>
-          </button>
+          {activeTreeMenu.node.nodeType === "document" ? (
+            <>
+              <button
+                type="button"
+                disabled={!activeTreeMenu.node.canManage}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
+                onClick={() => runTreeMenuAction(() => openTreeDocumentShareDialog(activeTreeMenu.node, "members"))}
+                title={activeTreeMenu.node.canManage ? undefined : "你没有转移所有权的权限"}
+              >
+                <span className="w-4 text-slate-400">⇄</span>
+                <span>转移所有权</span>
+              </button>
+              <button
+                type="button"
+                disabled={!activeTreeMenu.node.canManage}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
+                onClick={() => runTreeMenuAction(() => openTreeDocumentShareDialog(activeTreeMenu.node, "security"))}
+                title={activeTreeMenu.node.canManage ? undefined : "你没有设置密级的权限"}
+              >
+                <span className="w-4 text-slate-400">⚙</span>
+                <span>设置密级</span>
+              </button>
+            </>
+          ) : null}
           <div className="my-1 border-t border-slate-100" />
           <button
             type="button"
@@ -1363,6 +1575,31 @@ export function FolderWorkspaceView({
             <span>删除</span>
           </button>
         </div>
+      ) : null}
+
+      {treeShareDialogTarget ? (
+        <DocumentShareDialog
+          open={Boolean(treeShareDialogTarget)}
+          documentId={treeShareDialogTarget.node.id}
+          currentVisibility={treeShareDialogTarget.node.visibility === "public" ? "public" : "private"}
+          canTransferOwner={treeShareDialogTarget.node.canManage}
+          initialTab={treeShareDialogTarget.tab}
+          mentionCandidates={mentionCandidates}
+          onClose={() => setTreeShareDialogTarget(null)}
+          onSaved={({ visibility }) => {
+            setLiveTree((current) =>
+              updateTreeNodeVisibility(current, treeShareDialogTarget.node.id, "document", visibility),
+            );
+            setLiveCurrentChildren((current) =>
+              current
+                ? {
+                    ...current,
+                    children: updateTreeNodeVisibility(current.children, treeShareDialogTarget.node.id, "document", visibility),
+                  }
+                : current,
+            );
+          }}
+        />
       ) : null}
 
       {showCreateDocument ? (

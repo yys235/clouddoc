@@ -1,4 +1,5 @@
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -1101,6 +1102,70 @@ def rename_document(
     publish_document_event(db, "document.renamed", document, current_user_id)
     db.commit()
     return get_document_detail(db, doc_id, current_user_id)
+
+
+def duplicate_document(db: Session, doc_id: str, current_user_id: str) -> DocumentDetail | None:
+    source = db.get(Document, doc_id)
+    if not source or source.is_deleted:
+        return None
+    if not can_copy_document(db, source, current_user_id):
+        raise PermissionError("Not allowed to duplicate document")
+
+    space = db.get(Space, source.space_id)
+    if space is None:
+        return None
+    if not can_create_document_in_space(db, space, current_user_id):
+        raise PermissionError("Not allowed to create document in this space")
+    if source.folder_id is not None:
+        ensure_parent_folder_valid(db, source.space_id, source.folder_id, current_user_id)
+
+    latest_content = get_or_create_latest_content(db, source)
+    document = Document(
+        space_id=source.space_id,
+        parent_id=None,
+        folder_id=source.folder_id,
+        creator_id=current_user_id,
+        owner_id=current_user_id,
+        title=f"{source.title} 副本"[:255],
+        document_type=source.document_type,
+        status=source.status,
+        visibility=source.visibility,
+        icon=source.icon,
+        sort_order=get_next_document_sort_order(db, source.space_id, source.folder_id),
+        cover_url=source.cover_url,
+        summary=source.summary,
+    )
+    db.add(document)
+    db.flush()
+
+    content = DocumentContent(
+        document_id=document.id,
+        version_no=1,
+        schema_version=latest_content.schema_version,
+        content_json=deepcopy(latest_content.content_json),
+        plain_text=latest_content.plain_text,
+        created_by=current_user_id,
+    )
+    db.add(content)
+    db.flush()
+
+    version = DocumentVersion(
+        document_id=document.id,
+        content_id=content.id,
+        version_no=1,
+        message=f"Duplicated from {source.id}",
+        created_by=current_user_id,
+    )
+    db.add(version)
+    db.flush()
+
+    document.current_version_id = version.id
+    db.commit()
+    db.refresh(document)
+    publish_document_event(db, "document.created", document, current_user_id)
+    publish_document_event(db, "document.duplicated", document, current_user_id)
+    db.commit()
+    return get_document_detail(db, document.id, current_user_id)
 
 
 def soft_delete_document(db: Session, doc_id: str, user_id: str | None = None) -> DocumentDetail | None:
