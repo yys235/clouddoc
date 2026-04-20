@@ -150,6 +150,13 @@ def store_and_publish_event(
     )
     db.flush()
     event_bus.publish(visible_user_ids, event)
+    try:
+        from app.services.integration_service import dispatch_webhooks_for_event
+
+        dispatch_webhooks_for_event(db, event)
+    except Exception:
+        # Webhook delivery failures must not break the primary document/comment mutation path.
+        pass
     return event
 
 

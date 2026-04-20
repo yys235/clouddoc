@@ -839,3 +839,43 @@ CloudDoc 当前已经具备 AI 接入 MVP：
 7. OAuth。
 
 完成这些能力后，CloudDoc 才能从“本项目自己的 AI 可接入”升级为“第三方 AI 工具可以像接 Notion 一样接入 CloudDoc”。
+
+## 19. 2026-04-20 第一轮实现状态
+
+### 19.1 已完成
+
+- 新增开放平台基础数据模型：`integrations`、`integration_tokens`、`integration_resource_scopes`、`integration_audit_logs`、`integration_webhooks`、`integration_webhook_deliveries`。
+- 新增 Personal Access Token 管理 API：创建、列表、禁用、审计日志查询。
+- 新增 Integration 管理 API：创建、列表、更新、删除。
+- 新增 Integration 授权范围 API：添加、列表、删除。
+- 新增 `/api/open/documents`、`/api/open/documents/{document_id}`、`/api/open/documents/from-markdown`、`/api/open/documents/{document_id}/from-markdown`、`/api/open/search`、`/api/open/folders/tree/{space_id}`。
+- 新增 Bearer Token 认证，token 明文只在创建时返回，数据库只保存 hash。
+- 新增基础限流：按 token 区分读写请求窗口。
+- 新增 Integration 授权范围与用户自身权限的交集校验。Integration 默认没有任何文档权限。
+- 新增 Markdown 转 CloudDoc `content_json` 能力，覆盖 heading、paragraph、bullet list、ordered list、task list、blockquote、code fence、image、link block。
+- MCP 新增 `clouddoc.create_document_from_markdown` 和 `clouddoc.update_document_from_markdown`。
+- MCP `clouddoc.list_documents` 和 `clouddoc.get_document` 支持通过 `CLOUDDOC_MCP_TOKEN` 或工具参数 `mcp_token` 走开放平台 token 认证。
+- 个人配置页新增“AI 与开放接入”区域，支持加载 Token/Integration、创建 PAT、显示一次性 token、禁用 token、创建 Integration。
+- 个人配置页新增 Integration 授权范围管理，支持选择公开文档、空间、文件夹、文档，并设置 view/edit 权限；文件夹授权可包含子级。
+- 文档权限弹窗新增“开放接入”标签，文档所有者/权限管理员可以直接查看当前文档被哪些 Integration 通过何种 scope 来源授权访问，并看到最近访问时间与只读/可写状态。
+- 新增 Integration Webhook endpoint 管理：支持列表、创建、一次性返回 secret、启用/禁用、删除；个人配置页已提供基础管理界面。
+- 新增 Webhook 首轮签名投递与投递日志：文档事件会匹配具备 scope 的 active webhook，按 `X-CloudDoc-*` 头和 `sha256=` 签名同步投递一次，并记录 `integration_webhook_deliveries` 供前端查看最近投递结果。
+- 新增 Webhook 手动重放能力：可针对单条 delivery 重新触发一次投递，便于对方服务恢复后人工补发。
+
+### 19.2 已验证
+
+- PAT 可以通过 Markdown 创建文档，创建后有审计记录。
+- PAT 禁用后，开放 API 立即返回 401。
+- Integration 默认无法读取私有文档。
+- Integration 授权指定文档 view 后可以读取。
+- Integration 只有 view scope 时不能写入。
+- Integration 授权指定文档 edit 后可以通过 Markdown 更新。
+- MCP 可以通过 Markdown 创建和更新文档。
+- 自动化测试：`apps/api .venv/bin/pytest -q` 通过，`apps/mcp ../api/.venv/bin/pytest -q` 通过，`apps/web npm run build` 通过。
+
+### 19.3 剩余工作
+
+- Web 端还需要补开放平台审计日志展示和更细的授权范围搜索体验。
+- Webhook 还缺后台失败重试执行器、投递日志筛选能力，以及更完善的失败详情展示。
+- OAuth 第三方应用安装流程仍未实现。
+- Embedding/RAG 与 LLM Wiki 联动仍未实现。

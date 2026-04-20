@@ -5,6 +5,7 @@ from app.core.db import get_db
 from app.models.user import User
 from app.schemas.permission import (
     DocumentCapabilities,
+    DocumentIntegrationAccessResponse,
     DocumentPermissionAuditLogResponse,
     DocumentPermissionBatchCreateRequest,
     DocumentPermissionCreateRequest,
@@ -19,6 +20,7 @@ from app.services.document_permission_service import (
     delete_document_permission,
     get_document_capabilities,
     get_permission_settings,
+    list_document_integrations,
     list_document_permissions,
     list_permission_audit_logs,
     transfer_document_owner,
@@ -79,6 +81,20 @@ def list_document_permissions_route(
 ) -> list[DocumentPermissionResponse]:
     try:
         return list_document_permissions(db, document_id, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/documents/{document_id}/integrations", response_model=list[DocumentIntegrationAccessResponse])
+def list_document_integrations_route(
+    document_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> list[DocumentIntegrationAccessResponse]:
+    try:
+        return list_document_integrations(db, document_id, current_user.id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

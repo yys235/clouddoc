@@ -267,6 +267,16 @@ export type DocumentPermissionAuditLog = {
   createdAt: string;
 };
 
+export type DocumentIntegrationAccess = {
+  integrationId: string;
+  integrationName: string;
+  integrationStatus: string;
+  accessSource: string;
+  permissionLevel: string;
+  canWrite: boolean;
+  recentAccessAt?: string;
+};
+
 export type SharedDocumentResponse = {
   status: string;
   document: DocumentViewModel | null;
@@ -296,6 +306,88 @@ export type UserPreference = {
   id: string;
   userId: string;
   documentTreeOpenMode: DocumentTreeOpenMode;
+  updatedAt: string;
+};
+
+export type IntegrationTokenSummary = {
+  id: string;
+  integrationId?: string;
+  userId: string;
+  tokenType: string;
+  tokenPrefix: string;
+  name: string;
+  scopes: string[];
+  expiresAt?: string;
+  revokedAt?: string;
+  lastUsedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type IntegrationSummary = {
+  id: string;
+  organizationId?: string;
+  createdBy: string;
+  name: string;
+  description?: string;
+  iconUrl?: string;
+  status: string;
+  clientId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type IntegrationScopeSummary = {
+  id: string;
+  integrationId: string;
+  resourceType: string;
+  resourceId?: string;
+  includeChildren: boolean;
+  permissionLevel: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type IntegrationAuditLogSummary = {
+  id: string;
+  integrationId?: string;
+  tokenId?: string;
+  actorId?: string;
+  actorType: string;
+  source: string;
+  operation: string;
+  targetType?: string;
+  targetId?: string;
+  requestSummary: Record<string, unknown>;
+  responseStatus: string;
+  errorMessage?: string;
+  ipAddress?: string;
+  userAgent?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type IntegrationWebhookSummary = {
+  id: string;
+  integrationId: string;
+  url: string;
+  eventTypes: string[];
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type IntegrationWebhookDeliverySummary = {
+  id: string;
+  webhookId: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  responseStatus?: string;
+  attemptCount: number;
+  nextRetryAt?: string;
+  deliveredAt?: string;
+  createdAt: string;
   updatedAt: string;
 };
 
@@ -491,6 +583,190 @@ function buildUserPreference(item: {
   };
 }
 
+function buildIntegrationToken(item: {
+  id: string;
+  integration_id?: string | null;
+  user_id: string;
+  token_type: string;
+  token_prefix: string;
+  name: string;
+  scopes: string[];
+  expires_at?: string | null;
+  revoked_at?: string | null;
+  last_used_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}): IntegrationTokenSummary {
+  return {
+    id: item.id,
+    integrationId: item.integration_id ?? undefined,
+    userId: item.user_id,
+    tokenType: item.token_type,
+    tokenPrefix: item.token_prefix,
+    name: item.name,
+    scopes: item.scopes ?? [],
+    expiresAt: item.expires_at ?? undefined,
+    revokedAt: item.revoked_at ?? undefined,
+    lastUsedAt: item.last_used_at ?? undefined,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+  };
+}
+
+function buildIntegration(item: {
+  id: string;
+  organization_id?: string | null;
+  created_by: string;
+  name: string;
+  description?: string | null;
+  icon_url?: string | null;
+  status: string;
+  client_id: string;
+  created_at: string;
+  updated_at: string;
+}): IntegrationSummary {
+  return {
+    id: item.id,
+    organizationId: item.organization_id ?? undefined,
+    createdBy: item.created_by,
+    name: item.name,
+    description: item.description ?? undefined,
+    iconUrl: item.icon_url ?? undefined,
+    status: item.status,
+    clientId: item.client_id,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+  };
+}
+
+function buildIntegrationScope(item: {
+  id: string;
+  integration_id: string;
+  resource_type: string;
+  resource_id?: string | null;
+  include_children: boolean;
+  permission_level: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}): IntegrationScopeSummary {
+  return {
+    id: item.id,
+    integrationId: item.integration_id,
+    resourceType: item.resource_type,
+    resourceId: item.resource_id ?? undefined,
+    includeChildren: Boolean(item.include_children),
+    permissionLevel: item.permission_level,
+    createdBy: item.created_by,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+  };
+}
+
+function buildIntegrationAuditLog(item: {
+  id: string;
+  integration_id?: string | null;
+  token_id?: string | null;
+  actor_id?: string | null;
+  actor_type: string;
+  source: string;
+  operation: string;
+  target_type?: string | null;
+  target_id?: string | null;
+  request_summary?: Record<string, unknown> | null;
+  response_status: string;
+  error_message?: string | null;
+  ip_address?: string | null;
+  user_agent?: string | null;
+  created_at: string;
+  updated_at: string;
+}): IntegrationAuditLogSummary {
+  return {
+    id: item.id,
+    integrationId: item.integration_id ?? undefined,
+    tokenId: item.token_id ?? undefined,
+    actorId: item.actor_id ?? undefined,
+    actorType: item.actor_type,
+    source: item.source,
+    operation: item.operation,
+    targetType: item.target_type ?? undefined,
+    targetId: item.target_id ?? undefined,
+    requestSummary: item.request_summary ?? {},
+    responseStatus: item.response_status,
+    errorMessage: item.error_message ?? undefined,
+    ipAddress: item.ip_address ?? undefined,
+    userAgent: item.user_agent ?? undefined,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+  };
+}
+
+function buildIntegrationWebhook(item: {
+  id: string;
+  integration_id: string;
+  url: string;
+  event_types: string[];
+  status: string;
+  created_at: string;
+  updated_at: string;
+}): IntegrationWebhookSummary {
+  return {
+    id: item.id,
+    integrationId: item.integration_id,
+    url: item.url,
+    eventTypes: item.event_types ?? [],
+    status: item.status,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+  };
+}
+
+function buildIntegrationWebhookDelivery(item: {
+  id: string;
+  webhook_id: string;
+  event_type: string;
+  payload: Record<string, unknown>;
+  response_status?: string | null;
+  attempt_count: number;
+  next_retry_at?: string | null;
+  delivered_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}): IntegrationWebhookDeliverySummary {
+  return {
+    id: item.id,
+    webhookId: item.webhook_id,
+    eventType: item.event_type,
+    payload: item.payload ?? {},
+    responseStatus: item.response_status ?? undefined,
+    attemptCount: item.attempt_count,
+    nextRetryAt: item.next_retry_at ?? undefined,
+    deliveredAt: item.delivered_at ?? undefined,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+  };
+}
+
+function buildDocumentIntegrationAccess(item: {
+  integration_id: string;
+  integration_name: string;
+  integration_status: string;
+  access_source: string;
+  permission_level: string;
+  can_write: boolean;
+  recent_access_at?: string | null;
+}): DocumentIntegrationAccess {
+  return {
+    integrationId: item.integration_id,
+    integrationName: item.integration_name,
+    integrationStatus: item.integration_status,
+    accessSource: item.access_source,
+    permissionLevel: item.permission_level,
+    canWrite: Boolean(item.can_write),
+    recentAccessAt: item.recent_access_at ?? undefined,
+  };
+}
+
 export async function fetchCurrentUser(options?: { bootstrap?: boolean }): Promise<ApiItemResult<CurrentUser>> {
   try {
     const bootstrap = options?.bootstrap ?? false;
@@ -541,6 +817,300 @@ export async function updateUserPreference(input: {
     throw new Error("Failed to update user preferences");
   }
   return buildUserPreference(await response.json());
+}
+
+export async function fetchIntegrationTokens(): Promise<ApiListResult<IntegrationTokenSummary>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/tokens`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (response.status === 401) {
+      return { data: [], unavailable: false };
+    }
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return { data: (data ?? []).map(buildIntegrationToken), unavailable: false };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
+export async function createIntegrationToken(input: {
+  name: string;
+  scopes: string[];
+  expiresAt?: string;
+  integrationId?: string;
+}): Promise<{ token: string; tokenSummary: IntegrationTokenSummary }> {
+  const response = await apiFetch(`${API_BASE_URL}/tokens`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      name: input.name,
+      scopes: input.scopes,
+      expires_at: input.expiresAt || null,
+      integration_id: input.integrationId || null,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to create token");
+  }
+  const payload = await response.json();
+  return {
+    token: payload.token,
+    tokenSummary: buildIntegrationToken(payload.token_summary),
+  };
+}
+
+export async function revokeIntegrationToken(tokenId: string): Promise<void> {
+  const response = await apiFetch(`${API_BASE_URL}/tokens/${tokenId}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error("Failed to revoke token");
+  }
+}
+
+export async function fetchIntegrations(): Promise<ApiListResult<IntegrationSummary>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/integrations`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (response.status === 401) {
+      return { data: [], unavailable: false };
+    }
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return { data: (data ?? []).map(buildIntegration), unavailable: false };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
+export async function createIntegration(input: { name: string; description?: string }): Promise<IntegrationSummary> {
+  const response = await apiFetch(`${API_BASE_URL}/integrations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ name: input.name, description: input.description || null }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to create integration");
+  }
+  return buildIntegration(await response.json());
+}
+
+export async function fetchIntegrationScopes(integrationId: string): Promise<ApiListResult<IntegrationScopeSummary>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/integrations/${integrationId}/scopes`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return { data: (data ?? []).map(buildIntegrationScope), unavailable: false };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
+export async function fetchIntegrationAuditLogs(
+  integrationId: string,
+): Promise<ApiListResult<IntegrationAuditLogSummary>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/integrations/${integrationId}/audit-logs`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (response.status === 401) {
+      return { data: [], unavailable: false };
+    }
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return { data: (data ?? []).map(buildIntegrationAuditLog), unavailable: false };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
+export async function fetchTokenAuditLogs(tokenId: string): Promise<ApiListResult<IntegrationAuditLogSummary>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/tokens/${tokenId}/audit-logs`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (response.status === 401) {
+      return { data: [], unavailable: false };
+    }
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return { data: (data ?? []).map(buildIntegrationAuditLog), unavailable: false };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
+export async function fetchIntegrationWebhooks(
+  integrationId: string,
+): Promise<ApiListResult<IntegrationWebhookSummary>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/integrations/${integrationId}/webhooks`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (response.status === 401) {
+      return { data: [], unavailable: false };
+    }
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return { data: (data ?? []).map(buildIntegrationWebhook), unavailable: false };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
+export async function createIntegrationWebhook(input: {
+  integrationId: string;
+  url: string;
+  eventTypes: string[];
+}): Promise<{ secret: string; webhook: IntegrationWebhookSummary }> {
+  const response = await apiFetch(`${API_BASE_URL}/integrations/${input.integrationId}/webhooks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      url: input.url,
+      event_types: input.eventTypes,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to create integration webhook");
+  }
+  const payload = await response.json();
+  return {
+    secret: payload.secret,
+    webhook: buildIntegrationWebhook(payload.webhook),
+  };
+}
+
+export async function updateIntegrationWebhook(input: {
+  integrationId: string;
+  webhookId: string;
+  status?: string;
+  eventTypes?: string[];
+}): Promise<IntegrationWebhookSummary> {
+  const response = await apiFetch(`${API_BASE_URL}/integrations/${input.integrationId}/webhooks/${input.webhookId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      status: input.status,
+      event_types: input.eventTypes,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to update integration webhook");
+  }
+  return buildIntegrationWebhook(await response.json());
+}
+
+export async function deleteIntegrationWebhook(integrationId: string, webhookId: string): Promise<void> {
+  const response = await apiFetch(`${API_BASE_URL}/integrations/${integrationId}/webhooks/${webhookId}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error("Failed to delete integration webhook");
+  }
+}
+
+export async function fetchIntegrationWebhookDeliveries(
+  integrationId: string,
+  webhookId: string,
+): Promise<ApiListResult<IntegrationWebhookDeliverySummary>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/integrations/${integrationId}/webhooks/${webhookId}/deliveries`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (response.status === 401) {
+      return { data: [], unavailable: false };
+    }
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return { data: (data ?? []).map(buildIntegrationWebhookDelivery), unavailable: false };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
+export async function retryIntegrationWebhookDelivery(input: {
+  integrationId: string;
+  webhookId: string;
+  deliveryId: string;
+}): Promise<IntegrationWebhookDeliverySummary> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/integrations/${input.integrationId}/webhooks/${input.webhookId}/deliveries/${input.deliveryId}/retry`,
+    {
+      method: "POST",
+      credentials: "same-origin",
+    },
+  );
+  if (!response.ok) {
+    throw new Error("Failed to retry integration webhook delivery");
+  }
+  return buildIntegrationWebhookDelivery(await response.json());
+}
+
+export async function createIntegrationScope(input: {
+  integrationId: string;
+  resourceType: string;
+  resourceId?: string;
+  includeChildren?: boolean;
+  permissionLevel: string;
+}): Promise<IntegrationScopeSummary> {
+  const response = await apiFetch(`${API_BASE_URL}/integrations/${input.integrationId}/scopes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      resource_type: input.resourceType,
+      resource_id: input.resourceId || null,
+      include_children: Boolean(input.includeChildren),
+      permission_level: input.permissionLevel,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to create integration scope");
+  }
+  return buildIntegrationScope(await response.json());
+}
+
+export async function deleteIntegrationScope(integrationId: string, scopeId: string): Promise<void> {
+  const response = await apiFetch(`${API_BASE_URL}/integrations/${integrationId}/scopes/${scopeId}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    throw new Error("Failed to delete integration scope");
+  }
 }
 
 export async function login(input: { email: string; password: string }): Promise<AuthPayload> {
@@ -2019,6 +2589,25 @@ export async function fetchDocumentPermissions(docId: string): Promise<ApiListRe
     }
     const data = await response.json();
     return { data: (data ?? []).map(buildPermissionMember), unavailable: false };
+  } catch {
+    return { data: [], unavailable: true };
+  }
+}
+
+export async function fetchDocumentIntegrations(docId: string): Promise<ApiListResult<DocumentIntegrationAccess>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/documents/${docId}/integrations`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (response.status === 401) {
+      return { data: [], unavailable: false };
+    }
+    if (!response.ok) {
+      return { data: [], unavailable: true };
+    }
+    const data = await response.json();
+    return { data: (data ?? []).map(buildDocumentIntegrationAccess), unavailable: false };
   } catch {
     return { data: [], unavailable: true };
   }

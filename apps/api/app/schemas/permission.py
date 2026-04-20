@@ -90,3 +90,13 @@ class DocumentPermissionAuditLogResponse(BaseModel):
     after_json: dict[str, Any] | None
     reason: str | None
     created_at: datetime
+
+
+class DocumentIntegrationAccessResponse(BaseModel):
+    integration_id: str
+    integration_name: str
+    integration_status: str
+    access_source: str
+    permission_level: str
+    can_write: bool
+    recent_access_at: datetime | None = None

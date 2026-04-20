@@ -28,6 +28,7 @@ from app.schemas.document import (
     DocumentCreateRequest,
 )
 from app.schemas.folder import FolderCreateRequest
+from app.schemas.integration import MarkdownDocumentCreateRequest, MarkdownDocumentUpdateRequest
 from app.services.actor_context import ActorContext
 from app.services.comment_service import create_comment_thread, list_comment_threads, reply_comment_thread
 from app.services.comment_service import delete_comment as delete_comment_service
@@ -45,6 +46,15 @@ from app.services.document_service import (
     update_document_content,
 )
 from app.services.folder_service import create_folder
+from app.services.integration_service import (
+    authenticate_open_actor_by_token,
+    create_audit_log,
+    create_open_document_from_markdown,
+    get_open_document,
+    list_open_documents,
+    update_open_document_from_markdown,
+)
+from app.services.markdown_service import markdown_to_content_json, markdown_to_plain_text
 from app.services.permission_service import (
     actor_user_id,
     can_mcp_delete_comment,
@@ -291,11 +301,12 @@ def _run_write_tool(
     request_payload: dict[str, Any],
     user_email: str | None,
     action,
+    mcp_token: str | None = None,
 ) -> dict[str, Any]:
     actor_id: str | None = None
     try:
         with SessionLocal() as db:
-            actor_id = _get_actor_user_id(db, user_email)
+            actor_id = _get_actor_user_id(db, user_email, mcp_token)
             if actor_id is None:
                 raise MCPBridgeError("unauthenticated", "No MCP actor user is available")
             result = action(db, actor_id)
@@ -322,7 +333,15 @@ def _run_write_tool(
         raise mapped
 
 
-def _get_actor_context(db: Session, user_email: str | None = None) -> ActorContext:
+def _resolve_mcp_token(mcp_token: str | None = None) -> str:
+    return (mcp_token or os.getenv("CLOUDDOC_MCP_TOKEN") or "").strip()
+
+
+def _get_actor_context(db: Session, user_email: str | None = None, mcp_token: str | None = None) -> ActorContext:
+    raw_token = _resolve_mcp_token(mcp_token)
+    if raw_token:
+        return authenticate_open_actor_by_token(db, raw_token).actor
+
     actor_email = (user_email or os.getenv("CLOUDDOC_MCP_ACTOR_EMAIL") or "").strip()
     if actor_email:
         user = db.scalar(
@@ -342,8 +361,8 @@ def _get_actor_context(db: Session, user_email: str | None = None) -> ActorConte
     return ActorContext.from_user(guest, actor_type="guest")
 
 
-def _get_actor_user_id(db: Session, user_email: str | None = None) -> str | None:
-    return actor_user_id(_get_actor_context(db, user_email))
+def _get_actor_user_id(db: Session, user_email: str | None = None, mcp_token: str | None = None) -> str | None:
+    return actor_user_id(_get_actor_context(db, user_email, mcp_token))
 
 
 def _comment_payload(db: Session, comment: Comment) -> dict[str, Any]:
@@ -388,18 +407,24 @@ def list_documents_tool(
     limit: int = 50,
     folder_id: str | None = None,
     user_email: str | None = None,
+    mcp_token: str | None = None,
 ) -> dict[str, Any]:
     normalized_state = state if state in {"active", "trash", "all"} else "active"
     safe_limit = max(1, min(limit, 200))
     with SessionLocal() as db:
-        user_id = _get_actor_user_id(db, user_email)
-        items = list_documents_for_mcp(
-            db,
-            state=normalized_state,
-            user_id=user_id,
-            folder_id=folder_id,
-            limit=safe_limit,
-        )
+        raw_token = _resolve_mcp_token(mcp_token)
+        if raw_token:
+            context = authenticate_open_actor_by_token(db, raw_token)
+            items = list_open_documents(db, context, normalized_state)[:safe_limit]
+        else:
+            user_id = _get_actor_user_id(db, user_email)
+            items = list_documents_for_mcp(
+                db,
+                state=normalized_state,
+                user_id=user_id,
+                folder_id=folder_id,
+                limit=safe_limit,
+            )
         return {"documents": _dump(items), "state": normalized_state, "folder_id": folder_id, "count": len(items)}
 
 
@@ -428,10 +453,16 @@ def get_document_tool(
     document_id: str,
     user_email: str | None = None,
     format: str = "markdown",
+    mcp_token: str | None = None,
 ) -> dict[str, Any]:
     with SessionLocal() as db:
-        user_id = _get_actor_user_id(db, user_email)
-        document = get_document_detail_for_mcp(db, document_id, user_id=user_id)
+        raw_token = _resolve_mcp_token(mcp_token)
+        if raw_token:
+            context = authenticate_open_actor_by_token(db, raw_token)
+            document = get_open_document(db, context, document_id)
+        else:
+            user_id = _get_actor_user_id(db, user_email)
+            document = get_document_detail_for_mcp(db, document_id, user_id=user_id)
         if document is None:
             raise MCPBridgeError("unauthorized", "MCP tools can only read actor-owned documents or public documents")
         return {"document": _format_document_payload(document, format)}
@@ -570,6 +601,130 @@ def update_document_content_tool(
         target_type="document",
         target_id=document_id,
         request_payload=payload,
+        user_email=user_email,
+        action=action,
+    )
+
+
+def create_document_from_markdown_tool(
+    *,
+    space_id: str,
+    title: str,
+    markdown: str,
+    folder_id: str | None = None,
+    visibility: str = "private",
+    user_email: str | None = None,
+    mcp_token: str | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "space_id": space_id,
+        "title": title,
+        "markdown": markdown,
+        "folder_id": folder_id,
+        "visibility": visibility,
+    }
+    raw_token = _resolve_mcp_token(mcp_token)
+    if raw_token:
+        with SessionLocal() as db:
+            context = authenticate_open_actor_by_token(db, raw_token)
+            document = create_open_document_from_markdown(db, context, MarkdownDocumentCreateRequest(**payload))
+            create_audit_log(
+                db,
+                context,
+                operation="mcp.create_document_from_markdown",
+                target_type="document",
+                target_id=document.id,
+                request_summary={"space_id": space_id, "folder_id": folder_id, "title": title},
+                source="mcp",
+            )
+            return {"document": _dump(document)}
+
+    def action(db: Session, actor_id: str):
+        document = create_document(
+            db,
+            DocumentCreateRequest(
+                title=title,
+                space_id=space_id,
+                folder_id=folder_id,
+                document_type="doc",
+                visibility=visibility,
+            ),
+            actor_id,
+        )
+        updated = update_document_content(
+            db,
+            document.id,
+            DocumentContentUpdateRequest(
+                schema_version=1,
+                content_json=markdown_to_content_json(markdown),
+                plain_text=markdown_to_plain_text(markdown),
+            ),
+            actor_id,
+        )
+        return {"document": updated or document}
+
+    return _run_write_tool(
+        tool_name="clouddoc.create_document_from_markdown",
+        target_type="space",
+        target_id=space_id,
+        request_payload={**payload, "markdown": f"{len(markdown)} chars"},
+        user_email=user_email,
+        action=action,
+    )
+
+
+def update_document_from_markdown_tool(
+    *,
+    document_id: str,
+    markdown: str,
+    title: str | None = None,
+    user_email: str | None = None,
+    mcp_token: str | None = None,
+) -> dict[str, Any]:
+    payload = {"document_id": document_id, "markdown": markdown, "title": title}
+    raw_token = _resolve_mcp_token(mcp_token)
+    if raw_token:
+        with SessionLocal() as db:
+            context = authenticate_open_actor_by_token(db, raw_token)
+            document = update_open_document_from_markdown(
+                db,
+                context,
+                document_id,
+                MarkdownDocumentUpdateRequest(markdown=markdown, title=title),
+            )
+            if document is None:
+                raise MCPBridgeError("not_found", "Document not found")
+            create_audit_log(
+                db,
+                context,
+                operation="mcp.update_document_from_markdown",
+                target_type="document",
+                target_id=document_id,
+                request_summary={"title": title},
+                source="mcp",
+            )
+            return {"document": _dump(document)}
+
+    def action(db: Session, actor_id: str):
+        document = update_document_content(
+            db,
+            document_id,
+            DocumentContentUpdateRequest(
+                schema_version=1,
+                content_json=markdown_to_content_json(markdown),
+                plain_text=markdown_to_plain_text(markdown),
+            ),
+            actor_id,
+        )
+        if document is None:
+            raise MCPBridgeError("not_found", "Document not found")
+        return {"document": document}
+
+    return _run_write_tool(
+        tool_name="clouddoc.update_document_from_markdown",
+        target_type="document",
+        target_id=document_id,
+        request_payload={**payload, "markdown": f"{len(markdown)} chars"},
         user_email=user_email,
         action=action,
     )

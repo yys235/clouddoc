@@ -30,6 +30,7 @@ from app.services.auth_service import hash_password
 from clouddoc_mcp.bridge import (
     MCPBridgeError,
     create_comment_tool,
+    create_document_from_markdown_tool,
     create_document_tool,
     create_folder_tool,
     delete_comment_tool,
@@ -45,6 +46,7 @@ from clouddoc_mcp.bridge import (
     search_documents_tool,
     update_comment_tool,
     update_document_content_tool,
+    update_document_from_markdown_tool,
 )
 
 DEMO_EMAIL = "demo@clouddoc.local"
@@ -243,6 +245,35 @@ def test_mcp_markdown_format_preserves_common_block_structure() -> None:
         assert "[Example](https://example.com)" in markdown
     finally:
         _cleanup_document(document_id)
+
+
+def test_mcp_can_create_and_update_document_from_markdown() -> None:
+    space_id = _first_space_id()
+    created_document_id: str | None = None
+    try:
+        payload = create_document_from_markdown_tool(
+            space_id=space_id,
+            title="pytest-mcp-md-create",
+            markdown="# MCP Markdown\n\n- item one\n- item two",
+            user_email=DEMO_EMAIL,
+        )
+        document = payload["document"]
+        created_document_id = document["id"]
+        assert document["title"] == "MCP Markdown"
+        blocks = document["content"]["content_json"]["content"]
+        assert any(block["type"] == "bullet_list" for block in blocks)
+
+        updated = update_document_from_markdown_tool(
+            document_id=created_document_id,
+            markdown="# MCP Markdown Updated\n\n```python\nprint('ok')\n```",
+            user_email=DEMO_EMAIL,
+        )
+        assert updated["document"]["title"] == "MCP Markdown Updated"
+        updated_blocks = updated["document"]["content"]["content_json"]["content"]
+        assert any(block["type"] == "code_block" for block in updated_blocks)
+    finally:
+        if created_document_id is not None:
+            _cleanup_document(created_document_id)
 
 
 def test_read_only_mcp_space_tool() -> None:

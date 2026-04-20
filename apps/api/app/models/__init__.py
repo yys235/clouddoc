@@ -10,6 +10,14 @@ from app.models.document import (
 )
 from app.models.folder import Folder
 from app.models.event import EventLog
+from app.models.integration import (
+    Integration,
+    IntegrationAuditLog,
+    IntegrationResourceScope,
+    IntegrationToken,
+    IntegrationWebhook,
+    IntegrationWebhookDelivery,
+)
 from app.models.mcp import MCPAuditLog
 from app.models.notification import UserNotification
 from app.models.organization import Organization, OrganizationInvitation, OrganizationMember
@@ -32,6 +40,12 @@ __all__ = [
     "DocumentVersion",
     "EventLog",
     "Folder",
+    "Integration",
+    "IntegrationAuditLog",
+    "IntegrationResourceScope",
+    "IntegrationToken",
+    "IntegrationWebhook",
+    "IntegrationWebhookDelivery",
     "MCPAuditLog",
     "UserNotification",
     "Organization",

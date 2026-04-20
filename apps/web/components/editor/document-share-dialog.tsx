@@ -6,6 +6,7 @@ import {
   addDocumentPermission,
   deleteDocumentPermission,
   disableDocumentShare,
+  fetchDocumentIntegrations,
   fetchDocumentPermissionAuditLogs,
   fetchDocumentPermissions,
   fetchDocumentPermissionSettings,
@@ -13,6 +14,7 @@ import {
   rotateDocumentShare,
   transferDocumentOwner,
   type DocumentPermissionAuditLog,
+  type DocumentIntegrationAccess,
   type DocumentPermissionMember,
   type DocumentPermissionSettings,
   type OrganizationMember,
@@ -78,8 +80,9 @@ export function DocumentShareDialog({
   const [share, setShare] = useState<ShareLinkSettings | null>(null);
   const [permissionSettings, setPermissionSettings] = useState<DocumentPermissionSettings | null>(null);
   const [permissionMembers, setPermissionMembers] = useState<DocumentPermissionMember[]>([]);
+  const [documentIntegrations, setDocumentIntegrations] = useState<DocumentIntegrationAccess[]>([]);
   const [auditLogs, setAuditLogs] = useState<DocumentPermissionAuditLog[]>([]);
-  const [activeTab, setActiveTab] = useState<"visibility" | "members" | "share" | "security" | "audit">("visibility");
+  const [activeTab, setActiveTab] = useState<"visibility" | "members" | "share" | "security" | "integrations" | "audit">("visibility");
   const [newSubjectId, setNewSubjectId] = useState("");
   const [newSubjectQuery, setNewSubjectQuery] = useState("");
   const [newPermissionLevel, setNewPermissionLevel] = useState("view");
@@ -136,9 +139,10 @@ export function DocumentShareDialog({
       fetchDocumentShareSettings(documentId),
       fetchDocumentPermissionSettings(documentId),
       fetchDocumentPermissions(documentId),
+      fetchDocumentIntegrations(documentId),
       fetchDocumentPermissionAuditLogs(documentId),
     ])
-      .then(([result, permissionSettingsResult, membersResult, auditResult]) => {
+      .then(([result, permissionSettingsResult, membersResult, integrationsResult, auditResult]) => {
         const nextShare = result.data;
         setShare(nextShare);
         setEnabled(Boolean(nextShare?.isEnabled));
@@ -147,6 +151,7 @@ export function DocumentShareDialog({
         setAllowExport(Boolean(nextShare?.allowExport));
         setPermissionSettings(permissionSettingsResult.data);
         setPermissionMembers(membersResult.data);
+        setDocumentIntegrations(integrationsResult.data);
         setAuditLogs(auditResult.data);
       })
       .finally(() => setLoading(false));
@@ -379,6 +384,7 @@ export function DocumentShareDialog({
             ["members", "协作者"],
             ["share", "分享链接"],
             ["security", "安全设置"],
+            ["integrations", "开放接入"],
             ["audit", "操作记录"],
           ].map(([value, label]) => (
             <button
@@ -717,6 +723,45 @@ export function DocumentShareDialog({
                 />
                 允许组织外访问
               </label>
+            </section>
+          ) : null}
+
+          {activeTab === "integrations" ? (
+            <section className="space-y-3">
+              <div>
+                <div className="text-sm font-medium text-slate-900">可访问当前文档的开放接入</div>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  这里展示已经通过 Integration 作用域授权到当前文档的接入方。增删授权范围在个人设置页完成。
+                </p>
+              </div>
+              {documentIntegrations.length === 0 ? (
+                <div className="rounded-lg border border-slate-100 px-3 py-3 text-sm text-slate-500">
+                  当前没有 Integration 可访问这篇文档。
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {documentIntegrations.map((integration) => (
+                    <div key={integration.integrationId} className="rounded-lg border border-slate-100 px-3 py-3 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-slate-800">{integration.integrationName}</div>
+                          <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
+                            <span>状态 {integration.integrationStatus}</span>
+                            <span>来源 {integration.accessSource}</span>
+                            <span>权限 {integration.permissionLevel}</span>
+                            <span>{integration.canWrite ? "可写入" : "只读"}</span>
+                          </div>
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          {integration.recentAccessAt
+                            ? `最近访问 ${new Date(integration.recentAccessAt).toLocaleString("zh-CN")}`
+                            : "暂无访问记录"}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
           ) : null}
 

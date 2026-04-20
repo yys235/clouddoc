@@ -247,9 +247,9 @@ function FolderTree({
   onDropIndicatorChange: (indicator: { key: string; position: TreeDropPosition } | null) => void;
 }) {
   return (
-    <div className="space-y-1">
+    <div className="space-y-0.5">
       {nodes.map((node) => (
-        <div key={`${node.nodeType}-${node.id}`} className="space-y-1">
+        <div key={`${node.nodeType}-${node.id}`} className="space-y-0.5">
           <div
             className={`relative rounded-lg ${
               dropIndicator?.key === `${node.nodeType}:${node.id}` && dropIndicator.position === "inside"
@@ -299,7 +299,7 @@ function FolderTree({
               <div className="absolute -top-1 left-2 right-2 h-0.5 rounded-full bg-blue-400" />
             ) : null}
             <div
-              className={`grid grid-cols-[18px_minmax(0,1fr)] items-center gap-1 px-2 py-1 text-sm leading-5 transition hover:bg-slate-100 ${
+              className={`grid grid-cols-[16px_minmax(0,1fr)] items-center gap-1 px-1.5 py-0.5 text-[13px] leading-4 transition hover:bg-slate-100 ${
                 node.nodeType === "folder" && node.id === currentFolderId
                   ? "bg-slate-100 font-medium text-slate-900"
                   : "text-slate-600"
@@ -313,13 +313,13 @@ function FolderTree({
                     event.stopPropagation();
                     onToggleFolder(node.id);
                   }}
-                  className="inline-flex h-[18px] w-[18px] items-center justify-center text-[11px] leading-none text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                  className="inline-flex h-4 w-4 items-center justify-center text-[10px] leading-none text-slate-400 hover:bg-slate-200 hover:text-slate-700"
                   aria-label={expandedFolderIds.has(node.id) ? "折叠文件夹" : "展开文件夹"}
                 >
                   {expandedFolderIds.has(node.id) ? "▾" : "▸"}
                 </button>
               ) : (
-                <span className="block h-[18px] w-[18px]" />
+                <span className="block h-4 w-4" />
               )}
               <Link
                 href={href}
@@ -327,9 +327,9 @@ function FolderTree({
                 rel={shouldOpenNewWindow ? "noreferrer" : undefined}
                 draggable={false}
                 onClick={(event) => event.stopPropagation()}
-                className="grid min-w-0 grid-cols-[20px_minmax(0,1fr)] items-center gap-1.5 py-0.5"
+                className="grid min-w-0 grid-cols-[17px_minmax(0,1fr)] items-center gap-1 py-0"
               >
-                <span className="flex h-5 w-5 items-center justify-center text-[15px] text-slate-400">
+                <span className="flex h-4 w-4 items-center justify-center text-[13px] text-slate-400">
                   {node.nodeType === "folder" ? "📁" : "📄"}
                 </span>
                 <span className="truncate pl-0.5">{node.title}</span>
@@ -343,7 +343,7 @@ function FolderTree({
             })()}
           </div>
           {node.children.length > 0 && (node.nodeType !== "folder" || expandedFolderIds.has(node.id)) ? (
-            <div className="ml-[21px] border-l border-slate-200 pl-[9px]">
+            <div className="ml-[18px] border-l border-slate-200 pl-[7px]">
               <FolderTree
                 nodes={node.children}
                 currentFolderId={currentFolderId}
@@ -869,7 +869,7 @@ export function FolderWorkspaceView({
 
   return (
     <div className="flex h-screen w-full gap-3 overflow-hidden px-3 py-3">
-      <aside className="flex h-full w-[360px] shrink-0 flex-col overflow-hidden border border-slate-200 bg-white p-3 shadow-panel">
+      <aside className="flex h-full w-[320px] shrink-0 flex-col overflow-hidden border border-slate-200 bg-white p-2.5 shadow-panel">
         <div className="shrink-0 flex items-center justify-between gap-3">
           <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">文档树</div>
           <label className="flex items-center gap-1.5 text-xs text-slate-500">
@@ -885,9 +885,9 @@ export function FolderWorkspaceView({
             </select>
           </label>
         </div>
-        <div className="mt-2.5 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+        <div className="mt-2 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
               {spaces.map((space) => (
-            <div key={space.id} className="space-y-2">
+            <div key={space.id} className="space-y-1">
               <div
                 onDragOver={(event) => {
                   if (selectedSpace?.id === space.id) {
@@ -904,7 +904,7 @@ export function FolderWorkspaceView({
               >
                 <Link
                   href={`/documents?space=${space.id}`}
-                  className={`block px-2.5 py-1.5 text-sm font-medium ${
+                  className={`block px-2 py-1 text-sm font-medium ${
                     selectedSpace?.id === space.id ? "bg-slate-100 text-slate-900" : "text-slate-600 hover:bg-slate-50"
                   }`}
                 >
@@ -912,7 +912,7 @@ export function FolderWorkspaceView({
                 </Link>
               </div>
               {selectedSpace?.id === space.id ? (
-                <div className="ml-2 border-l border-slate-200 pl-2">
+                <div className="ml-1.5 border-l border-slate-200 pl-1.5">
                   <FolderTree
                     nodes={liveTree}
                     currentFolderId={currentFolderId}

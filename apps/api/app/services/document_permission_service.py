@@ -12,11 +12,14 @@ from app.models.document import (
     DocumentPermissionAuditLog,
     DocumentPermissionSettings,
 )
+from app.models.folder import Folder
+from app.models.integration import Integration, IntegrationAuditLog, IntegrationResourceScope
 from app.models.user import User
 from app.schemas.permission import (
     DocumentCapabilities,
     DocumentPermissionAuditLogResponse,
     DocumentPermissionCreateRequest,
+    DocumentIntegrationAccessResponse,
     DocumentPermissionResponse,
     DocumentPermissionSettingsResponse,
     DocumentPermissionSettingsUpdateRequest,
@@ -34,6 +37,7 @@ from app.services.permission_service import (
     get_effective_document_role,
     get_or_create_document_permission_settings,
     normalize_permission_level,
+    role_at_least,
 )
 from app.services.event_stream_service import publish_document_event
 
@@ -44,6 +48,22 @@ VALID_LINK_SHARE_SCOPES = {"closed", "tenant_readable", "tenant_editable", "anyo
 VALID_COMMENT_SCOPES = {"disabled", "can_view", "can_edit"}
 VALID_OPERATION_SCOPES = {"disabled", "can_view", "can_edit", "full_access", "owner"}
 VALID_SHARE_COLLABORATOR_SCOPES = {"owner", "full_access", "edit"}
+
+
+def _folder_contains(db: Session, folder_id: str | None, target_folder_id: str | None) -> bool:
+    if not folder_id or not target_folder_id:
+        return False
+    current_id = target_folder_id
+    seen: set[str] = set()
+    while current_id and current_id not in seen:
+        if current_id == folder_id:
+            return True
+        seen.add(current_id)
+        current_folder = db.get(Folder, current_id)
+        if current_folder is None or current_folder.is_deleted:
+            return False
+        current_id = current_folder.parent_folder_id
+    return False
 
 
 def _permission_to_response(permission: DocumentPermission) -> DocumentPermissionResponse:
@@ -199,6 +219,78 @@ def list_document_permissions(db: Session, document_id: str, user_id: str) -> li
         .order_by(DocumentPermission.created_at.asc())
     ).all()
     return [_permission_to_response(row) for row in rows]
+
+
+def list_document_integrations(db: Session, document_id: str, user_id: str) -> list[DocumentIntegrationAccessResponse]:
+    document = get_document_or_raise_permission(db, document_id, user_id, manage=True)
+    integrations = db.scalars(
+        select(Integration)
+        .where(Integration.created_by == document.owner_id)
+        .where(Integration.status != "deleted")
+        .order_by(Integration.created_at.asc())
+    ).all()
+    if not integrations:
+        return []
+
+    integration_ids = [integration.id for integration in integrations]
+    scopes = db.scalars(
+        select(IntegrationResourceScope)
+        .where(IntegrationResourceScope.integration_id.in_(integration_ids))
+        .order_by(IntegrationResourceScope.created_at.asc())
+    ).all()
+
+    scopes_by_integration: dict[str, list[IntegrationResourceScope]] = {}
+    for scope in scopes:
+        scopes_by_integration.setdefault(scope.integration_id, []).append(scope)
+
+    latest_access_rows = db.scalars(
+        select(IntegrationAuditLog)
+        .where(IntegrationAuditLog.integration_id.in_(integration_ids))
+        .where(IntegrationAuditLog.target_type == "document")
+        .where(IntegrationAuditLog.target_id == document.id)
+        .where(IntegrationAuditLog.response_status == "success")
+        .order_by(IntegrationAuditLog.created_at.desc())
+    ).all()
+    latest_access_map: dict[str, datetime] = {}
+    for row in latest_access_rows:
+        if row.integration_id and row.integration_id not in latest_access_map:
+            latest_access_map[row.integration_id] = row.created_at
+
+    def resolve_scope(
+        integration_scopes: list[IntegrationResourceScope],
+    ) -> tuple[str, str, bool] | None:
+        for scope in integration_scopes:
+            if scope.resource_type == "public_documents" and document.visibility == "public":
+                return ("公开文档", scope.permission_level, role_at_least(scope.permission_level, "edit"))
+            if scope.resource_type == "document" and scope.resource_id == document.id:
+                return ("文档直连", scope.permission_level, role_at_least(scope.permission_level, "edit"))
+            if scope.resource_type == "space" and scope.resource_id == document.space_id:
+                return ("空间授权", scope.permission_level, role_at_least(scope.permission_level, "edit"))
+            if scope.resource_type == "folder" and scope.resource_id:
+                if scope.resource_id == document.folder_id:
+                    return ("文件夹直连", scope.permission_level, role_at_least(scope.permission_level, "edit"))
+                if scope.include_children and _folder_contains(db, scope.resource_id, document.folder_id):
+                    return ("文件夹继承", scope.permission_level, role_at_least(scope.permission_level, "edit"))
+        return None
+
+    results: list[DocumentIntegrationAccessResponse] = []
+    for integration in integrations:
+        resolved = resolve_scope(scopes_by_integration.get(integration.id, []))
+        if resolved is None:
+            continue
+        access_source, permission_level, can_write = resolved
+        results.append(
+            DocumentIntegrationAccessResponse(
+                integration_id=integration.id,
+                integration_name=integration.name,
+                integration_status=integration.status,
+                access_source=access_source,
+                permission_level=normalize_permission_level(permission_level),
+                can_write=can_write,
+                recent_access_at=latest_access_map.get(integration.id),
+            )
+        )
+    return results
 
 
 def upsert_document_permission(

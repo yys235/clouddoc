@@ -8,6 +8,7 @@ from typing import Any, Callable
 from .bridge import (
     MCPBridgeError,
     create_comment_tool,
+    create_document_from_markdown_tool,
     create_folder_tool,
     create_document_tool,
     delete_comment_tool,
@@ -24,6 +25,7 @@ from .bridge import (
     search_documents_tool,
     update_comment_tool,
     update_document_content_tool,
+    update_document_from_markdown_tool,
 )
 
 
@@ -119,8 +121,9 @@ def build_server(config: MCPServerConfig | None = None):
         limit: int = 50,
         folder_id: str | None = None,
         user_email: str | None = None,
+        mcp_token: str | None = None,
     ) -> dict[str, Any]:
-        return _wrap_tool(list_documents_tool, state=state, limit=limit, folder_id=folder_id, user_email=user_email)
+        return _wrap_tool(list_documents_tool, state=state, limit=limit, folder_id=folder_id, user_email=user_email, mcp_token=mcp_token)
 
     @mcp.tool(name="clouddoc.search_documents")
     def search_documents(
@@ -136,8 +139,9 @@ def build_server(config: MCPServerConfig | None = None):
         document_id: str,
         user_email: str | None = None,
         format: str = "markdown",
+        mcp_token: str | None = None,
     ) -> dict[str, Any]:
-        return _wrap_tool(get_document_tool, document_id=document_id, user_email=user_email, format=format)
+        return _wrap_tool(get_document_tool, document_id=document_id, user_email=user_email, format=format, mcp_token=mcp_token)
 
     @mcp.tool(name="clouddoc.get_comments")
     def get_comments(document_id: str, user_email: str | None = None) -> dict[str, Any]:
@@ -204,6 +208,44 @@ def build_server(config: MCPServerConfig | None = None):
             schema_version=schema_version,
             base_version_no=base_version_no,
             user_email=user_email,
+        )
+
+    @mcp.tool(name="clouddoc.create_document_from_markdown")
+    def create_document_from_markdown(
+        space_id: str,
+        title: str,
+        markdown: str,
+        folder_id: str | None = None,
+        visibility: str = "private",
+        user_email: str | None = None,
+        mcp_token: str | None = None,
+    ) -> dict[str, Any]:
+        return _wrap_tool(
+            create_document_from_markdown_tool,
+            space_id=space_id,
+            title=title,
+            markdown=markdown,
+            folder_id=folder_id,
+            visibility=visibility,
+            user_email=user_email,
+            mcp_token=mcp_token,
+        )
+
+    @mcp.tool(name="clouddoc.update_document_from_markdown")
+    def update_document_from_markdown(
+        document_id: str,
+        markdown: str,
+        title: str | None = None,
+        user_email: str | None = None,
+        mcp_token: str | None = None,
+    ) -> dict[str, Any]:
+        return _wrap_tool(
+            update_document_from_markdown_tool,
+            document_id=document_id,
+            markdown=markdown,
+            title=title,
+            user_email=user_email,
+            mcp_token=mcp_token,
         )
 
     @mcp.tool(name="clouddoc.delete_document")

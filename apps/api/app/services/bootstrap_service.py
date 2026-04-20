@@ -466,5 +466,138 @@ def ensure_runtime_schema(db: Session) -> None:
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_event_logs_space ON event_logs(space_id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_event_logs_document ON event_logs(document_id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_event_logs_folder ON event_logs(folder_id)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS integrations (
+                id UUID PRIMARY KEY,
+                organization_id UUID REFERENCES organizations(id),
+                created_by UUID NOT NULL REFERENCES users(id),
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                icon_url VARCHAR(512),
+                status VARCHAR(32) NOT NULL DEFAULT 'active',
+                client_id VARCHAR(128) NOT NULL UNIQUE,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integrations_created_by ON integrations(created_by)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integrations_client_id ON integrations(client_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integrations_status ON integrations(status)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS integration_tokens (
+                id UUID PRIMARY KEY,
+                integration_id UUID REFERENCES integrations(id),
+                user_id UUID NOT NULL REFERENCES users(id),
+                token_type VARCHAR(32) NOT NULL DEFAULT 'personal',
+                token_prefix VARCHAR(32) NOT NULL,
+                token_hash VARCHAR(128) NOT NULL UNIQUE,
+                name VARCHAR(255) NOT NULL,
+                scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+                expires_at TIMESTAMPTZ,
+                revoked_at TIMESTAMPTZ,
+                last_used_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_tokens_integration ON integration_tokens(integration_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_tokens_user ON integration_tokens(user_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_tokens_prefix ON integration_tokens(token_prefix)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_tokens_hash ON integration_tokens(token_hash)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_tokens_revoked ON integration_tokens(revoked_at)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS integration_resource_scopes (
+                id UUID PRIMARY KEY,
+                integration_id UUID NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+                resource_type VARCHAR(32) NOT NULL,
+                resource_id VARCHAR(128),
+                include_children BOOLEAN NOT NULL DEFAULT FALSE,
+                permission_level VARCHAR(32) NOT NULL DEFAULT 'view',
+                created_by UUID NOT NULL REFERENCES users(id),
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_scopes_integration ON integration_resource_scopes(integration_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_scopes_resource ON integration_resource_scopes(resource_type, resource_id)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS integration_audit_logs (
+                id UUID PRIMARY KEY,
+                integration_id UUID REFERENCES integrations(id),
+                token_id UUID REFERENCES integration_tokens(id),
+                actor_id UUID REFERENCES users(id),
+                actor_type VARCHAR(32) NOT NULL DEFAULT 'user',
+                source VARCHAR(32) NOT NULL DEFAULT 'rest_open_api',
+                operation VARCHAR(128) NOT NULL,
+                target_type VARCHAR(64),
+                target_id VARCHAR(128),
+                request_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+                response_status VARCHAR(32) NOT NULL DEFAULT 'success',
+                error_message TEXT,
+                ip_address VARCHAR(64),
+                user_agent VARCHAR(512),
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_audit_integration ON integration_audit_logs(integration_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_audit_token ON integration_audit_logs(token_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_audit_actor ON integration_audit_logs(actor_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_audit_operation ON integration_audit_logs(operation)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_audit_target ON integration_audit_logs(target_id)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS integration_webhooks (
+                id UUID PRIMARY KEY,
+                integration_id UUID NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+                url VARCHAR(1024) NOT NULL,
+                secret_hash VARCHAR(128) NOT NULL,
+                secret_value TEXT,
+                event_types JSONB NOT NULL DEFAULT '[]'::jsonb,
+                status VARCHAR(32) NOT NULL DEFAULT 'active',
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("ALTER TABLE integration_webhooks ADD COLUMN IF NOT EXISTS secret_value TEXT"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_webhooks_integration ON integration_webhooks(integration_id)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS integration_webhook_deliveries (
+                id UUID PRIMARY KEY,
+                webhook_id UUID NOT NULL REFERENCES integration_webhooks(id) ON DELETE CASCADE,
+                event_type VARCHAR(64) NOT NULL,
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                response_status VARCHAR(32),
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_retry_at TIMESTAMPTZ,
+                delivered_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_webhook_deliveries_webhook ON integration_webhook_deliveries(webhook_id)"))
     db.commit()
     ensure_mcp_guest_user(db)
