@@ -17,6 +17,8 @@ from app.models.integration import (
     IntegrationToken,
     IntegrationWebhook,
     IntegrationWebhookDelivery,
+    OAuthAuthorizationCode,
+    OAuthRefreshToken,
 )
 from app.models.mcp import MCPAuditLog
 from app.models.notification import UserNotification
@@ -49,6 +51,8 @@ __all__ = [
     "IntegrationToken",
     "IntegrationWebhook",
     "IntegrationWebhookDelivery",
+    "OAuthAuthorizationCode",
+    "OAuthRefreshToken",
     "MCPAuditLog",
     "UserNotification",
     "Organization",

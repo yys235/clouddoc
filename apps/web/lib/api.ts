@@ -333,8 +333,15 @@ export type IntegrationSummary = {
   iconUrl?: string;
   status: string;
   clientId: string;
+  oauthEnabled: boolean;
+  redirectUris: string[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type IntegrationOAuthConfigResult = {
+  integration: IntegrationSummary;
+  clientSecret?: string;
 };
 
 export type IntegrationScopeSummary = {
@@ -342,6 +349,7 @@ export type IntegrationScopeSummary = {
   integrationId: string;
   resourceType: string;
   resourceId?: string;
+  resourceTitle?: string;
   includeChildren: boolean;
   permissionLevel: string;
   createdBy: string;
@@ -627,6 +635,8 @@ function buildIntegration(item: {
   icon_url?: string | null;
   status: string;
   client_id: string;
+  oauth_enabled?: boolean;
+  redirect_uris?: string[] | null;
   created_at: string;
   updated_at: string;
 }): IntegrationSummary {
@@ -639,6 +649,8 @@ function buildIntegration(item: {
     iconUrl: item.icon_url ?? undefined,
     status: item.status,
     clientId: item.client_id,
+    oauthEnabled: Boolean(item.oauth_enabled),
+    redirectUris: item.redirect_uris ?? [],
     createdAt: item.created_at,
     updatedAt: item.updated_at,
   };
@@ -649,6 +661,7 @@ function buildIntegrationScope(item: {
   integration_id: string;
   resource_type: string;
   resource_id?: string | null;
+  resource_title?: string | null;
   include_children: boolean;
   permission_level: string;
   created_by: string;
@@ -660,6 +673,7 @@ function buildIntegrationScope(item: {
     integrationId: item.integration_id,
     resourceType: item.resource_type,
     resourceId: item.resource_id ?? undefined,
+    resourceTitle: item.resource_title ?? undefined,
     includeChildren: Boolean(item.include_children),
     permissionLevel: item.permission_level,
     createdBy: item.created_by,
@@ -912,6 +926,90 @@ export async function createIntegration(input: { name: string; description?: str
   return buildIntegration(await response.json());
 }
 
+export async function configureIntegrationOAuth(input: {
+  integrationId: string;
+  oauthEnabled: boolean;
+  redirectUris: string[];
+  rotateClientSecret?: boolean;
+}): Promise<IntegrationOAuthConfigResult> {
+  const response = await apiFetch(`${API_BASE_URL}/integrations/${input.integrationId}/oauth-config`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      oauth_enabled: input.oauthEnabled,
+      redirect_uris: input.redirectUris,
+      rotate_client_secret: Boolean(input.rotateClientSecret),
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to configure integration oauth");
+  }
+  const payload = await response.json();
+  return {
+    integration: buildIntegration(payload.integration),
+    clientSecret: payload.client_secret ?? undefined,
+  };
+}
+
+export async function authorizeOAuth(input: {
+  clientId: string;
+  redirectUri: string;
+  scopes: string[];
+  state?: string;
+}): Promise<{
+  code: string;
+  state?: string;
+  expiresAt: string;
+  integration: IntegrationSummary;
+}> {
+  const response = await apiFetch(`${API_BASE_URL}/oauth/authorize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      client_id: input.clientId,
+      redirect_uri: input.redirectUri,
+      scopes: input.scopes,
+      state: input.state ?? null,
+    }),
+  });
+  if (!response.ok) {
+    let message = "Failed to authorize oauth request";
+    try {
+      const payload = await response.json();
+      if (payload?.detail && typeof payload.detail === "string") {
+        message = payload.detail;
+      }
+    } catch {
+      // ignore JSON parse failures
+    }
+    throw new Error(message);
+  }
+  const payload = await response.json();
+  return {
+    code: payload.code,
+    state: payload.state ?? undefined,
+    expiresAt: payload.expires_at,
+    integration: buildIntegration(payload.integration),
+  };
+}
+
+export async function fetchOAuthClient(clientId: string): Promise<ApiItemResult<IntegrationSummary>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/oauth/clients/${clientId}`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: null, unavailable: response.status >= 500 };
+    }
+    return { data: buildIntegration(await response.json()), unavailable: false };
+  } catch {
+    return { data: null, unavailable: true };
+  }
+}
+
 export async function fetchIntegrationScopes(integrationId: string): Promise<ApiListResult<IntegrationScopeSummary>> {
   try {
     const response = await apiFetch(`${API_BASE_URL}/integrations/${integrationId}/scopes`, {
@@ -930,9 +1028,16 @@ export async function fetchIntegrationScopes(integrationId: string): Promise<Api
 
 export async function fetchIntegrationAuditLogs(
   integrationId: string,
+  filters?: { source?: string; responseStatus?: string; targetType?: string; query?: string },
 ): Promise<ApiListResult<IntegrationAuditLogSummary>> {
   try {
-    const response = await apiFetch(`${API_BASE_URL}/integrations/${integrationId}/audit-logs`, {
+    const params = new URLSearchParams();
+    if (filters?.source) params.set("source", filters.source);
+    if (filters?.responseStatus) params.set("response_status", filters.responseStatus);
+    if (filters?.targetType) params.set("target_type", filters.targetType);
+    if (filters?.query) params.set("q", filters.query);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const response = await apiFetch(`${API_BASE_URL}/integrations/${integrationId}/audit-logs${suffix}`, {
       cache: "no-store",
       credentials: "same-origin",
     });
@@ -949,9 +1054,18 @@ export async function fetchIntegrationAuditLogs(
   }
 }
 
-export async function fetchTokenAuditLogs(tokenId: string): Promise<ApiListResult<IntegrationAuditLogSummary>> {
+export async function fetchTokenAuditLogs(
+  tokenId: string,
+  filters?: { source?: string; responseStatus?: string; targetType?: string; query?: string },
+): Promise<ApiListResult<IntegrationAuditLogSummary>> {
   try {
-    const response = await apiFetch(`${API_BASE_URL}/tokens/${tokenId}/audit-logs`, {
+    const params = new URLSearchParams();
+    if (filters?.source) params.set("source", filters.source);
+    if (filters?.responseStatus) params.set("response_status", filters.responseStatus);
+    if (filters?.targetType) params.set("target_type", filters.targetType);
+    if (filters?.query) params.set("q", filters.query);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const response = await apiFetch(`${API_BASE_URL}/tokens/${tokenId}/audit-logs${suffix}`, {
       cache: "no-store",
       credentials: "same-origin",
     });

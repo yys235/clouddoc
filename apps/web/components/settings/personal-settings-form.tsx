@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useState, useTransition } from "react";
 
 import {
+  configureIntegrationOAuth,
   createIntegration,
   createIntegrationScope,
   createIntegrationToken,
@@ -36,6 +38,7 @@ import {
 
 const DEFAULT_AI_SCOPES = ["documents:read", "folders:read", "comments:read", "search:read"];
 const DEFAULT_WEBHOOK_EVENTS = ["document.created", "document.updated", "document.deleted"];
+const SELECTED_INTEGRATION_STORAGE_KEY = "clouddoc:selected-integration-id";
 
 function flattenScopeTargets(nodes: TreeNode[]): Array<{ key: string; label: string; resourceType: string; resourceId: string; includeChildren: boolean }> {
   const result: Array<{ key: string; label: string; resourceType: string; resourceId: string; includeChildren: boolean }> = [];
@@ -81,6 +84,14 @@ export function PersonalSettingsForm({
   const [integrationScopes, setIntegrationScopes] = useState<IntegrationScopeSummary[]>([]);
   const [selectedAuditKind, setSelectedAuditKind] = useState<"integration" | "token">("integration");
   const [selectedAuditTargetId, setSelectedAuditTargetId] = useState("");
+  const [scopeSearchQuery, setScopeSearchQuery] = useState("");
+  const [auditSourceFilter, setAuditSourceFilter] = useState("");
+  const [auditStatusFilter, setAuditStatusFilter] = useState("");
+  const [auditTargetTypeFilter, setAuditTargetTypeFilter] = useState("");
+  const [auditQuery, setAuditQuery] = useState("");
+  const [oauthEnabled, setOauthEnabled] = useState(false);
+  const [oauthRedirectUrisText, setOauthRedirectUrisText] = useState("");
+  const [oauthClientSecret, setOauthClientSecret] = useState("");
   const [auditLogs, setAuditLogs] = useState<IntegrationAuditLogSummary[]>([]);
   const [webhookUrl, setWebhookUrl] = useState("");
   const [newWebhookSecret, setNewWebhookSecret] = useState("");
@@ -89,6 +100,76 @@ export function PersonalSettingsForm({
   const [webhookDeliveries, setWebhookDeliveries] = useState<IntegrationWebhookDeliverySummary[]>([]);
   const [isPending, startTransition] = useTransition();
   const [isLoadingOpenAccess, setIsLoadingOpenAccess] = useState(false);
+  const filteredScopeTargets = useMemo(() => {
+    const query = scopeSearchQuery.trim().toLowerCase();
+    if (!query) {
+      return scopeTargets;
+    }
+    return scopeTargets.filter((target) => target.label.toLowerCase().includes(query));
+  }, [scopeSearchQuery, scopeTargets]);
+  const selectedIntegration = useMemo(
+    () => integrations.find((item) => item.id === selectedIntegrationId) ?? null,
+    [integrations, selectedIntegrationId],
+  );
+  const recentTokens = useMemo(() => tokens.slice(0, 5), [tokens]);
+  const recentIntegrations = useMemo(() => integrations.slice(0, 5), [integrations]);
+  const recentIntegrationScopes = useMemo(() => integrationScopes.slice(0, 5), [integrationScopes]);
+
+  useEffect(() => {
+    if (!selectedIntegration) {
+      setOauthEnabled(false);
+      setOauthRedirectUrisText("");
+      return;
+    }
+    setOauthEnabled(selectedIntegration.oauthEnabled);
+    setOauthRedirectUrisText(selectedIntegration.redirectUris.join("\n"));
+  }, [selectedIntegration]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const storedIntegrationId = window.localStorage.getItem(SELECTED_INTEGRATION_STORAGE_KEY);
+    if (storedIntegrationId) {
+      setSelectedIntegrationId(storedIntegrationId);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (selectedIntegrationId) {
+      window.localStorage.setItem(SELECTED_INTEGRATION_STORAGE_KEY, selectedIntegrationId);
+    } else {
+      window.localStorage.removeItem(SELECTED_INTEGRATION_STORAGE_KEY);
+    }
+  }, [selectedIntegrationId]);
+
+  const hydrateScopeTargets = async (preferredSpaceId?: string) => {
+    const { data: fetchedSpaces } = await fetchSpaces();
+    setSpaces(fetchedSpaces);
+    const nextSpaceId = preferredSpaceId || selectedSpaceId || fetchedSpaces[0]?.id || "";
+    setSelectedSpaceId(nextSpaceId);
+    if (nextSpaceId) {
+      const { data: tree } = await fetchSpaceTree(nextSpaceId);
+      setScopeTargets(flattenScopeTargets(tree));
+    } else {
+      setScopeTargets([]);
+    }
+    return fetchedSpaces;
+  };
+
+  const hydrateIntegrationResources = async (integrationId: string) => {
+    const [scopesResult, webhooksResult] = await Promise.all([
+      fetchIntegrationScopes(integrationId),
+      fetchIntegrationWebhooks(integrationId),
+    ]);
+    setIntegrationScopes(scopesResult.data);
+    setWebhooks(webhooksResult.data);
+    setSelectedWebhookId(webhooksResult.data[0]?.id ?? "");
+    setWebhookDeliveries([]);
+  };
 
   const loadOpenAccess = () => {
     setIsLoadingOpenAccess(true);
@@ -97,18 +178,29 @@ export function PersonalSettingsForm({
         const [tokenResult, integrationResult] = await Promise.all([fetchIntegrationTokens(), fetchIntegrations()]);
         setTokens(tokenResult.data);
         setIntegrations(integrationResult.data);
-        if (integrationResult.data[0] && !selectedIntegrationId) {
-          setSelectedIntegrationId(integrationResult.data[0].id);
-        }
-        if (integrationResult.data[0]) {
-          const { data: webhooksResult } = await fetchIntegrationWebhooks(integrationResult.data[0].id);
-          setWebhooks(webhooksResult);
-          setSelectedWebhookId(webhooksResult[0]?.id ?? "");
-        }
+
+        const preferredIntegrationId =
+          integrationResult.data.find((item) => item.id === selectedIntegrationId)?.id ??
+          integrationResult.data[0]?.id ??
+          "";
+        setSelectedIntegrationId(preferredIntegrationId);
+
         if (!selectedAuditTargetId) {
-          setSelectedAuditTargetId(integrationResult.data[0]?.id ?? tokenResult.data[0]?.id ?? "");
-          setSelectedAuditKind(integrationResult.data[0] ? "integration" : "token");
+          setSelectedAuditTargetId(preferredIntegrationId || tokenResult.data[0]?.id || "");
+          setSelectedAuditKind(preferredIntegrationId ? "integration" : "token");
         }
+
+        await hydrateScopeTargets();
+        if (preferredIntegrationId) {
+          await hydrateIntegrationResources(preferredIntegrationId);
+        } else {
+          setIntegrationScopes([]);
+          setWebhooks([]);
+          setSelectedWebhookId("");
+          setWebhookDeliveries([]);
+        }
+      } catch {
+        setNotice("加载开放接入失败");
       } finally {
         setIsLoadingOpenAccess(false);
       }
@@ -118,27 +210,21 @@ export function PersonalSettingsForm({
   const loadScopeTargets = () => {
     startTransition(async () => {
       try {
-        const { data: fetchedSpaces } = await fetchSpaces();
-        setSpaces(fetchedSpaces);
-        const nextSpaceId = selectedSpaceId || fetchedSpaces[0]?.id || "";
-        setSelectedSpaceId(nextSpaceId);
-        if (nextSpaceId) {
-          const { data: tree } = await fetchSpaceTree(nextSpaceId);
-          setScopeTargets(flattenScopeTargets(tree));
-        }
+        await hydrateScopeTargets();
         if (selectedIntegrationId) {
-          const [scopesResult, webhooksResult] = await Promise.all([
-            fetchIntegrationScopes(selectedIntegrationId),
-            fetchIntegrationWebhooks(selectedIntegrationId),
-          ]);
-          setIntegrationScopes(scopesResult.data);
-          setWebhooks(webhooksResult.data);
+          await hydrateIntegrationResources(selectedIntegrationId);
         }
       } catch {
         setNotice("加载授权范围失败");
       }
     });
   };
+
+  useEffect(() => {
+    loadOpenAccess();
+    // Initial hydration should run once when the page mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSpaceChange = (spaceId: string) => {
     setSelectedSpaceId(spaceId);
@@ -205,15 +291,40 @@ export function PersonalSettingsForm({
 
   const handleIntegrationChange = (integrationId: string) => {
     setSelectedIntegrationId(integrationId);
+    setOauthClientSecret("");
     startTransition(async () => {
-      const [scopesResult, webhooksResult] = await Promise.all([
-        fetchIntegrationScopes(integrationId),
-        fetchIntegrationWebhooks(integrationId),
-      ]);
-      setIntegrationScopes(scopesResult.data);
-      setWebhooks(webhooksResult.data);
-      setSelectedWebhookId(webhooksResult.data[0]?.id ?? "");
-      setWebhookDeliveries([]);
+      if (!spaces.length) {
+        await hydrateScopeTargets();
+      }
+      await hydrateIntegrationResources(integrationId);
+    });
+  };
+
+  const handleSaveOAuthConfig = (rotateClientSecret = false) => {
+    if (!selectedIntegrationId) {
+      setNotice("请先选择 Integration");
+      return;
+    }
+    const redirectUris = oauthRedirectUrisText
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    startTransition(async () => {
+      try {
+        const result = await configureIntegrationOAuth({
+          integrationId: selectedIntegrationId,
+          oauthEnabled,
+          redirectUris,
+          rotateClientSecret,
+        });
+        setIntegrations((current) =>
+          current.map((item) => (item.id === result.integration.id ? result.integration : item)),
+        );
+        setOauthClientSecret(result.clientSecret ?? "");
+        setNotice(result.clientSecret ? "OAuth 配置已保存，并已生成新的 client secret" : "OAuth 配置已保存");
+      } catch {
+        setNotice("保存 OAuth 配置失败");
+      }
     });
   };
 
@@ -270,8 +381,18 @@ export function PersonalSettingsForm({
       try {
         const result =
           selectedAuditKind === "integration"
-            ? await fetchIntegrationAuditLogs(selectedAuditTargetId)
-            : await fetchTokenAuditLogs(selectedAuditTargetId);
+            ? await fetchIntegrationAuditLogs(selectedAuditTargetId, {
+                source: auditSourceFilter || undefined,
+                responseStatus: auditStatusFilter || undefined,
+                targetType: auditTargetTypeFilter || undefined,
+                query: auditQuery.trim() || undefined,
+              })
+            : await fetchTokenAuditLogs(selectedAuditTargetId, {
+                source: auditSourceFilter || undefined,
+                responseStatus: auditStatusFilter || undefined,
+                targetType: auditTargetTypeFilter || undefined,
+                query: auditQuery.trim() || undefined,
+              });
         setAuditLogs(result.data);
         setNotice("审计日志已加载");
       } catch {
@@ -468,7 +589,12 @@ export function PersonalSettingsForm({
 
         <div className="mt-3 grid gap-3 lg:grid-cols-2">
           <div className="border border-slate-200 p-3">
-            <div className="text-sm font-semibold text-slate-900">Personal Access Token</div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold text-slate-900">Personal Access Token</div>
+              <Link href="/settings/open-access/tokens" className="border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700">
+                查看更多
+              </Link>
+            </div>
             <div className="mt-2 flex gap-2">
               <input
                 value={tokenName}
@@ -491,11 +617,12 @@ export function PersonalSettingsForm({
                 <code className="mt-1 block break-all">{newToken}</code>
               </div>
             ) : null}
+            <div className="mt-2 text-xs text-slate-500">当前页只显示最近 5 个 Token，共 {tokens.length} 个。</div>
             <div className="mt-3 space-y-1.5">
               {tokens.length === 0 ? (
                 <div className="text-sm text-slate-500">暂无 Token。点击“加载开放接入”查看已有配置。</div>
               ) : (
-                tokens.map((token) => (
+                recentTokens.map((token) => (
                   <div key={token.id} className="flex items-center justify-between border border-slate-200 px-2 py-1.5">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-medium text-slate-900">{token.name}</div>
@@ -520,7 +647,12 @@ export function PersonalSettingsForm({
           </div>
 
           <div className="border border-slate-200 p-3">
-            <div className="text-sm font-semibold text-slate-900">Integration</div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold text-slate-900">Integration</div>
+              <Link href="/settings/open-access/integrations" className="border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700">
+                查看更多
+              </Link>
+            </div>
             <p className="mt-1 text-xs leading-5 text-slate-500">Integration 默认无任何文档授权，需要后续在授权范围中显式添加。</p>
             <div className="mt-2 flex gap-2">
               <input
@@ -538,11 +670,12 @@ export function PersonalSettingsForm({
                 创建
               </button>
             </div>
+            <div className="mt-2 text-xs text-slate-500">当前页只显示最近 5 个 Integration，共 {integrations.length} 个。</div>
             <div className="mt-3 space-y-1.5">
               {integrations.length === 0 ? (
                 <div className="text-sm text-slate-500">暂无 Integration。</div>
               ) : (
-                integrations.map((integration) => (
+                recentIntegrations.map((integration) => (
                   <div key={integration.id} className="border border-slate-200 px-2 py-1.5">
                     <div className="text-sm font-medium text-slate-900">{integration.name}</div>
                     <div className="text-xs text-slate-500">
@@ -551,6 +684,94 @@ export function PersonalSettingsForm({
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 border border-slate-200 p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-900">OAuth Client</div>
+              <p className="mt-1 text-xs leading-5 text-slate-500">
+                为 Integration 打开标准 OAuth 授权能力。授权页地址固定为
+                <code className="mx-1 bg-slate-100 px-1 py-0.5">/oauth/authorize</code>
+                ，client secret 明文只在创建或轮换后显示一次。
+              </p>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
+            <label className="text-xs font-medium text-slate-600">
+              Integration
+              <select
+                value={selectedIntegrationId}
+                onChange={(event) => handleIntegrationChange(event.target.value)}
+                className="mt-1 w-full border border-slate-300 px-2 py-1.5 text-sm"
+              >
+                <option value="">请选择</option>
+                {integrations.map((integration) => (
+                  <option key={integration.id} value={integration.id}>
+                    {integration.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="space-y-3">
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={oauthEnabled}
+                  onChange={(event) => setOauthEnabled(event.target.checked)}
+                />
+                启用 OAuth 授权码模式
+              </label>
+              <label className="block text-xs font-medium text-slate-600">
+                Redirect URI
+                <textarea
+                  value={oauthRedirectUrisText}
+                  onChange={(event) => setOauthRedirectUrisText(event.target.value)}
+                  rows={4}
+                  className="mt-1 w-full border border-slate-300 px-2 py-1.5 text-sm"
+                  placeholder={"每行一个回调地址\nhttps://example.com/callback"}
+                />
+              </label>
+              {selectedIntegration ? (
+                <div className="grid gap-2 text-xs text-slate-500 sm:grid-cols-2">
+                  <div className="border border-slate-200 bg-slate-50 px-2 py-2">
+                    <div className="font-medium text-slate-700">client_id</div>
+                    <code className="mt-1 block break-all">{selectedIntegration.clientId}</code>
+                  </div>
+                  <div className="border border-slate-200 bg-slate-50 px-2 py-2">
+                    <div className="font-medium text-slate-700">状态</div>
+                    <div className="mt-1">
+                      {selectedIntegration.oauthEnabled ? "OAuth 已启用" : "OAuth 未启用"}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              {oauthClientSecret ? (
+                <div className="border border-amber-300 bg-amber-50 p-2 text-xs leading-5 text-amber-900">
+                  <div className="font-semibold">新 client secret，仅显示一次：</div>
+                  <code className="mt-1 block break-all">{oauthClientSecret}</code>
+                </div>
+              ) : null}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleSaveOAuthConfig(false)}
+                  disabled={isPending || !selectedIntegrationId}
+                  className="bg-slate-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+                >
+                  保存 OAuth 配置
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSaveOAuthConfig(true)}
+                  disabled={isPending || !selectedIntegrationId}
+                  className="border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-60"
+                >
+                  轮换 client secret
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -606,6 +827,12 @@ export function PersonalSettingsForm({
             </label>
             <label className="text-xs font-medium text-slate-600">
               资源
+              <input
+                value={scopeSearchQuery}
+                onChange={(event) => setScopeSearchQuery(event.target.value)}
+                className="mt-1 w-full border border-slate-300 px-2 py-1.5 text-sm"
+                placeholder="搜索文件夹 / 文档"
+              />
               <select
                 value={selectedScopeTarget}
                 onChange={(event) => setSelectedScopeTarget(event.target.value)}
@@ -613,7 +840,7 @@ export function PersonalSettingsForm({
               >
                 <option value="public_documents">公开文档</option>
                 <option value="space">当前空间</option>
-                {scopeTargets.map((target) => (
+                {filteredScopeTargets.map((target) => (
                   <option key={target.key} value={target.key}>
                     {target.resourceType === "folder" ? "文件夹" : "文档"} · {target.label}
                   </option>
@@ -647,21 +874,55 @@ export function PersonalSettingsForm({
             ) : null}
           </div>
 
-          <div className="mt-3 space-y-1.5">
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <div className="text-xs text-slate-500">
+              已授权范围 {integrationScopes.length} 条。当前页显示最近 5 条，刷新页面后会自动恢复显示。
+            </div>
+            {selectedIntegrationId ? (
+              <Link
+                href={`/settings/integrations/${selectedIntegrationId}/scopes`}
+                className="border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700"
+              >
+                查看更多
+              </Link>
+            ) : null}
+          </div>
+
+          <div className="mt-2 space-y-1.5 border border-slate-200 bg-slate-50 p-2">
             {integrationScopes.length === 0 ? (
               <div className="text-sm text-slate-500">当前 Integration 暂无授权范围。</div>
             ) : (
-              integrationScopes.map((scope) => (
-                <div key={scope.id} className="flex items-center justify-between border border-slate-200 px-2 py-1.5">
-                  <div className="text-sm text-slate-700">
-                    {scope.resourceType} · {scope.resourceId ?? "all-public"} · {scope.permissionLevel}
-                    {scope.includeChildren ? " · 含子级" : ""}
+              recentIntegrationScopes.map((scope) => (
+                <div key={scope.id} className="flex items-start justify-between gap-3 border border-slate-200 bg-white px-2 py-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-slate-700">
+                        {scope.resourceType}
+                      </span>
+                      <span className="border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-slate-700">
+                        {scope.permissionLevel === "edit" ? "可编辑" : "只读"}
+                      </span>
+                      {scope.includeChildren ? (
+                        <span className="border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-slate-700">
+                          含子级
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-1 break-all text-sm leading-5 text-slate-700">
+                      {scope.resourceTitle || scope.resourceId || "all-public"}
+                    </div>
+                    {scope.resourceTitle && scope.resourceId ? (
+                      <div className="mt-1 break-all text-xs text-slate-400">{scope.resourceId}</div>
+                    ) : null}
+                    <div className="mt-1 text-xs text-slate-400">
+                      创建时间 {new Date(scope.createdAt).toLocaleString("zh-CN", { hour12: false })}
+                    </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => handleDeleteScope(scope.id)}
                     disabled={isPending}
-                    className="border border-red-200 px-2 py-1 text-xs font-medium text-red-600 disabled:opacity-60"
+                    className="shrink-0 border border-red-200 px-2 py-1 text-xs font-medium text-red-600 disabled:opacity-60"
                   >
                     移除
                   </button>
@@ -853,6 +1114,55 @@ export function PersonalSettingsForm({
               </select>
             </label>
           </div>
+          <div className="mt-2 grid gap-2 lg:grid-cols-4">
+            <label className="text-xs font-medium text-slate-600">
+              来源
+              <select
+                value={auditSourceFilter}
+                onChange={(event) => setAuditSourceFilter(event.target.value)}
+                className="mt-1 w-full border border-slate-300 px-2 py-1.5 text-sm"
+              >
+                <option value="">全部</option>
+                <option value="rest_open_api">REST Open API</option>
+                <option value="mcp">MCP</option>
+              </select>
+            </label>
+            <label className="text-xs font-medium text-slate-600">
+              状态
+              <select
+                value={auditStatusFilter}
+                onChange={(event) => setAuditStatusFilter(event.target.value)}
+                className="mt-1 w-full border border-slate-300 px-2 py-1.5 text-sm"
+              >
+                <option value="">全部</option>
+                <option value="success">success</option>
+                <option value="denied">denied</option>
+                <option value="not_found">not_found</option>
+              </select>
+            </label>
+            <label className="text-xs font-medium text-slate-600">
+              目标类型
+              <select
+                value={auditTargetTypeFilter}
+                onChange={(event) => setAuditTargetTypeFilter(event.target.value)}
+                className="mt-1 w-full border border-slate-300 px-2 py-1.5 text-sm"
+              >
+                <option value="">全部</option>
+                <option value="document">document</option>
+                <option value="folder">folder</option>
+                <option value="comment">comment</option>
+              </select>
+            </label>
+            <label className="text-xs font-medium text-slate-600">
+              关键词
+              <input
+                value={auditQuery}
+                onChange={(event) => setAuditQuery(event.target.value)}
+                className="mt-1 w-full border border-slate-300 px-2 py-1.5 text-sm"
+                placeholder="操作名 / target_id / error"
+              />
+            </label>
+          </div>
 
           <div className="mt-3 space-y-1.5">
             {auditLogs.length === 0 ? (
@@ -872,6 +1182,11 @@ export function PersonalSettingsForm({
                     <span>actor {log.actorType}</span>
                     {log.ipAddress ? <span>IP {log.ipAddress}</span> : null}
                   </div>
+                  {Object.keys(log.requestSummary ?? {}).length > 0 ? (
+                    <div className="mt-1 text-xs text-slate-500">
+                      request: <code className="break-all">{JSON.stringify(log.requestSummary)}</code>
+                    </div>
+                  ) : null}
                   {log.errorMessage ? (
                     <div className="mt-1 text-xs text-rose-600">{log.errorMessage}</div>
                   ) : null}

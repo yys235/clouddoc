@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from .bridge import (
     MCPBridgeError,
+    append_document_markdown_tool,
     create_comment_tool,
     create_document_from_markdown_tool,
     create_folder_tool,
@@ -16,9 +17,13 @@ from .bridge import (
     favorite_document_tool,
     get_comments_tool,
     get_document_tool,
+    get_folder_tree_tool,
+    get_integration_context_tool,
     get_shared_document_tool,
+    list_authorized_scopes_tool,
     initialize_database,
     list_documents_tool,
+    list_folders_tool,
     list_spaces_tool,
     reply_comment_tool,
     restore_document_tool,
@@ -131,8 +136,9 @@ def build_server(config: MCPServerConfig | None = None):
         limit: int = 20,
         folder_id: str | None = None,
         user_email: str | None = None,
+        mcp_token: str | None = None,
     ) -> dict[str, Any]:
-        return _wrap_tool(search_documents_tool, query=query, limit=limit, folder_id=folder_id, user_email=user_email)
+        return _wrap_tool(search_documents_tool, query=query, limit=limit, folder_id=folder_id, user_email=user_email, mcp_token=mcp_token)
 
     @mcp.tool(name="clouddoc.get_document")
     def get_document(
@@ -150,6 +156,37 @@ def build_server(config: MCPServerConfig | None = None):
     @mcp.tool(name="clouddoc.list_spaces")
     def list_spaces(user_email: str | None = None) -> dict[str, Any]:
         return _wrap_tool(list_spaces_tool, user_email=user_email)
+
+    @mcp.tool(name="clouddoc.list_folders")
+    def list_folders(
+        space_id: str,
+        folder_id: str | None = None,
+        user_email: str | None = None,
+        mcp_token: str | None = None,
+    ) -> dict[str, Any]:
+        return _wrap_tool(list_folders_tool, space_id=space_id, folder_id=folder_id, user_email=user_email, mcp_token=mcp_token)
+
+    @mcp.tool(name="clouddoc.get_folder_tree")
+    def get_folder_tree(
+        space_id: str,
+        user_email: str | None = None,
+        mcp_token: str | None = None,
+    ) -> dict[str, Any]:
+        return _wrap_tool(get_folder_tree_tool, space_id=space_id, user_email=user_email, mcp_token=mcp_token)
+
+    @mcp.tool(name="clouddoc.get_integration_context")
+    def get_integration_context(
+        user_email: str | None = None,
+        mcp_token: str | None = None,
+    ) -> dict[str, Any]:
+        return _wrap_tool(get_integration_context_tool, user_email=user_email, mcp_token=mcp_token)
+
+    @mcp.tool(name="clouddoc.list_authorized_scopes")
+    def list_authorized_scopes(
+        user_email: str | None = None,
+        mcp_token: str | None = None,
+    ) -> dict[str, Any]:
+        return _wrap_tool(list_authorized_scopes_tool, user_email=user_email, mcp_token=mcp_token)
 
     @mcp.tool(name="clouddoc.get_shared_document")
     def get_shared_document(token: str, password: str | None = None) -> dict[str, Any]:
@@ -244,6 +281,21 @@ def build_server(config: MCPServerConfig | None = None):
             document_id=document_id,
             markdown=markdown,
             title=title,
+            user_email=user_email,
+            mcp_token=mcp_token,
+        )
+
+    @mcp.tool(name="clouddoc.append_document_markdown")
+    def append_document_markdown(
+        document_id: str,
+        markdown: str,
+        user_email: str | None = None,
+        mcp_token: str | None = None,
+    ) -> dict[str, Any]:
+        return _wrap_tool(
+            append_document_markdown_tool,
+            document_id=document_id,
+            markdown=markdown,
             user_email=user_email,
             mcp_token=mcp_token,
         )

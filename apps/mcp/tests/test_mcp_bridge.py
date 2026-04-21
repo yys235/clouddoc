@@ -19,6 +19,7 @@ from app.models.document import Document
 from app.models.document import DocumentContent, DocumentFavorite, DocumentPermission, DocumentVersion
 from app.models.folder import Folder
 from app.models.comment import Comment, CommentThread
+from app.models.integration import Integration, IntegrationAuditLog, IntegrationResourceScope, IntegrationToken
 from app.models.mcp import MCPAuditLog
 from app.models.notification import UserNotification
 from app.models.organization import OrganizationMember
@@ -27,8 +28,11 @@ from app.models.space import Space
 from app.models.user import User
 from app.services.bootstrap_service import MCP_GUEST_EMAIL, seed_demo_data
 from app.services.auth_service import hash_password
+from app.services.integration_service import create_integration, create_token
+from app.schemas.integration import IntegrationCreateRequest, TokenCreateRequest
 from clouddoc_mcp.bridge import (
     MCPBridgeError,
+    append_document_markdown_tool,
     create_comment_tool,
     create_document_from_markdown_tool,
     create_document_tool,
@@ -38,8 +42,12 @@ from clouddoc_mcp.bridge import (
     favorite_document_tool,
     get_comments_tool,
     get_document_tool,
+    get_folder_tree_tool,
+    get_integration_context_tool,
     get_shared_document_tool,
+    list_authorized_scopes_tool,
     list_documents_tool,
+    list_folders_tool,
     list_spaces_tool,
     reply_comment_tool,
     restore_document_tool,
@@ -72,6 +80,18 @@ def _first_space_id() -> str:
     spaces = list_spaces_tool(user_email=DEMO_EMAIL)
     assert spaces["count"] >= 1
     return spaces["spaces"][0]["id"]
+
+
+def _first_team_space_id() -> str:
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == DEMO_EMAIL).limit(1))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).where(Space.space_type == "team").limit(1))
+        assert space is not None
+        return space.id
+    finally:
+        db.close()
 
 
 def _cleanup_document(document_id: str) -> None:
@@ -161,6 +181,48 @@ def _remove_outsider_memberships() -> None:
             db.execute(delete(OrganizationMember).where(OrganizationMember.user_id == outsider.id))
             outsider.is_super_admin = False
             db.commit()
+    finally:
+        db.close()
+
+
+def _create_demo_integration_token(space_id: str) -> tuple[str, str, str]:
+    db = SessionLocal()
+    try:
+        user = db.scalar(select(User).where(User.email == DEMO_EMAIL).limit(1))
+        assert user is not None
+        integration = create_integration(db, IntegrationCreateRequest(name="pytest mcp integration"), user.id)
+        scope = IntegrationResourceScope(
+            integration_id=integration.id,
+            resource_type="space",
+            resource_id=space_id,
+            include_children=True,
+            permission_level="edit",
+            created_by=user.id,
+        )
+        db.add(scope)
+        db.commit()
+        token, raw_token = create_token(
+            db,
+            TokenCreateRequest(
+                name="pytest mcp integration token",
+                scopes=["documents:read", "documents:update", "documents:create", "search:read", "folders:read"],
+                integration_id=integration.id,
+            ),
+            user.id,
+        )
+        return integration.id, token.id, raw_token
+    finally:
+        db.close()
+
+
+def _cleanup_integration(integration_id: str) -> None:
+    db = SessionLocal()
+    try:
+        db.execute(delete(IntegrationAuditLog).where(IntegrationAuditLog.integration_id == integration_id))
+        db.execute(delete(IntegrationResourceScope).where(IntegrationResourceScope.integration_id == integration_id))
+        db.execute(delete(IntegrationToken).where(IntegrationToken.integration_id == integration_id))
+        db.execute(delete(Integration).where(Integration.id == integration_id))
+        db.commit()
     finally:
         db.close()
 
@@ -440,7 +502,7 @@ def test_mcp_document_read_scope_includes_public_and_folder_filter_while_writes_
 
 def test_mcp_organization_admin_can_read_private_document_but_not_write() -> None:
     _grant_outsider_org_admin_for_demo_space()
-    space_id = _first_space_id()
+    space_id = _first_team_space_id()
     create_payload = create_document_tool(
         space_id=space_id,
         title="pytest-mcp-org-admin-readable-private",
@@ -574,3 +636,49 @@ def test_write_mcp_tools_create_update_comment_reply_and_favorite() -> None:
     finally:
         if created_document_id is not None:
             _cleanup_document(created_document_id)
+
+
+def test_mcp_append_markdown_and_integration_scope_tools() -> None:
+    space_id = _first_space_id()
+    integration_id, token_id, raw_token = _create_demo_integration_token(space_id)
+    created_document_id: str | None = None
+
+    try:
+        created = create_document_from_markdown_tool(
+            space_id=space_id,
+            title="pytest-mcp-append",
+            markdown="# Initial\n\nbody",
+            mcp_token=raw_token,
+        )
+        created_document_id = created["document"]["id"]
+
+        appended = append_document_markdown_tool(
+            document_id=created_document_id,
+            markdown="## Follow Up\n\nmore text",
+            mcp_token=raw_token,
+        )
+        assert appended["document"]["id"] == created_document_id
+
+        markdown_payload = get_document_tool(created_document_id, user_email=DEMO_EMAIL, format="markdown")
+        assert "## Follow Up" in markdown_payload["document"]["markdown"]
+
+        folders_payload = list_folders_tool(space_id=space_id, mcp_token=raw_token)
+        assert "folders" in folders_payload
+
+        tree_payload = get_folder_tree_tool(space_id=space_id, mcp_token=raw_token)
+        assert "tree" in tree_payload
+
+        context_payload = get_integration_context_tool(mcp_token=raw_token)
+        assert context_payload["token"]["id"] == token_id
+        assert context_payload["integration"]["id"] == integration_id
+
+        scopes_payload = list_authorized_scopes_tool(mcp_token=raw_token)
+        assert scopes_payload["count"] >= 1
+        assert any(item["resource_type"] == "space" for item in scopes_payload["scopes"])
+
+        token_search = search_documents_tool("Initial", mcp_token=raw_token)
+        assert any(item["id"] == created_document_id for item in token_search["documents"])
+    finally:
+        if created_document_id is not None:
+            _cleanup_document(created_document_id)
+        _cleanup_integration(integration_id)

@@ -861,6 +861,15 @@ CloudDoc 当前已经具备 AI 接入 MVP：
 - 新增 Integration Webhook endpoint 管理：支持列表、创建、一次性返回 secret、启用/禁用、删除；个人配置页已提供基础管理界面。
 - 新增 Webhook 首轮签名投递与投递日志：文档事件会匹配具备 scope 的 active webhook，按 `X-CloudDoc-*` 头和 `sha256=` 签名同步投递一次，并记录 `integration_webhook_deliveries` 供前端查看最近投递结果。
 - 新增 Webhook 手动重放能力：可针对单条 delivery 重新触发一次投递，便于对方服务恢复后人工补发。
+- 新增 Webhook 后台自动重试执行器：API 生命周期内启动 retry worker，按 `1 / 5 / 15` 分钟退避重试失败 delivery，并在达到尝试上限或 webhook / integration 被禁用时终止重试。
+- 个人配置页的开放平台审计日志已支持按来源、状态、目标类型和关键词筛选；Integration 授权范围选择器已支持资源搜索。
+- 新增 OAuth 第一阶段后端链路：Integration 可配置 redirect URI 与一次性 client secret，支持授权码、access token、refresh token 和 revoke。
+- 新增 OAuth 基础前端：个人配置页可直接管理 Integration 的 OAuth 开关、redirect URI 与 client secret 轮换；新增 `/oauth/authorize` 授权页，可展示应用名称、请求 scope，并执行允许/拒绝跳转。
+- 个人配置页的 Integration 授权历史改为自动恢复：页面进入后自动拉取 Token、Integration、scope、Webhook 和空间树数据，并记住上次选中的 Integration，刷新后仍可直接看到已授权范围。
+- 当授权历史条目很多时，授权范围列表改为固定高度滚动显示，并对长 `resourceId` 做换行处理，避免历史过多时撑坏页面布局。
+- 个人配置页的授权范围历史摘要进一步收敛为“最近 5 条”；需要查看全部历史时，跳转到独立详情页。详情页支持按资源名称 / 资源 ID 搜索，并按批次“加载更多”展示历史列表。
+- 个人配置页顶部的 Token 列表和 Integration 列表也改为仅展示最近 5 个，避免大量历史凭证把设置页主视图撑满；完整列表下沉到独立详情页，支持按名称搜索和分批加载。
+- MCP 新增 `clouddoc.append_document_markdown`、`clouddoc.list_folders`、`clouddoc.get_folder_tree`、`clouddoc.get_integration_context`、`clouddoc.list_authorized_scopes`，并让 `clouddoc.search_documents` 支持 `mcp_token`。
 
 ### 19.2 已验证
 
@@ -871,11 +880,13 @@ CloudDoc 当前已经具备 AI 接入 MVP：
 - Integration 只有 view scope 时不能写入。
 - Integration 授权指定文档 edit 后可以通过 Markdown 更新。
 - MCP 可以通过 Markdown 创建和更新文档。
+- Webhook 首轮失败后会进入后台自动重试，成功后 `delivered_at` 更新，达到最大尝试次数后不再继续。
+- OAuth `authorization_code -> access_token/refresh_token -> refresh_token -> revoke` 链路可用，基础授权页 UI 也已可用。
+- MCP 可查询当前 token 对应的 Integration 上下文和已授权 scope，并可直接追加 Markdown 到文档末尾。
 - 自动化测试：`apps/api .venv/bin/pytest -q` 通过，`apps/mcp ../api/.venv/bin/pytest -q` 通过，`apps/web npm run build` 通过。
 
 ### 19.3 剩余工作
 
-- Web 端还需要补开放平台审计日志展示和更细的授权范围搜索体验。
-- Webhook 还缺后台失败重试执行器、投递日志筛选能力，以及更完善的失败详情展示。
-- OAuth 第三方应用安装流程仍未实现。
+- OAuth 资源二次选择页仍未实现；当前授权页仅支持基础的允许/拒绝，不支持在授权时临时缩小资源范围。
+- Webhook 投递日志还缺更完善的失败详情展示和手动批量重试能力。
 - Embedding/RAG 与 LLM Wiki 联动仍未实现。

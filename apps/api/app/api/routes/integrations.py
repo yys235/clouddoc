@@ -6,6 +6,8 @@ from app.models.user import User
 from app.schemas.integration import (
     IntegrationAuditLogSummary,
     IntegrationCreateRequest,
+    IntegrationOAuthConfigRequest,
+    IntegrationOAuthConfigResponse,
     IntegrationScopeCreateRequest,
     IntegrationScopeSummary,
     IntegrationSummary,
@@ -23,6 +25,7 @@ from app.schemas.integration import (
 from app.services.auth_service import require_current_user_dependency
 from app.services.integration_service import (
     create_integration,
+    configure_integration_oauth,
     create_integration_scope,
     create_integration_webhook,
     create_token,
@@ -94,10 +97,23 @@ def revoke_token_route(
 def token_audit_logs_route(
     token_id: str,
     limit: int = 50,
+    source: str | None = None,
+    response_status: str | None = None,
+    target_type: str | None = None,
+    q: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_current_user_dependency),
 ) -> list[IntegrationAuditLogSummary]:
-    return list_token_audit_logs(db, token_id, current_user.id, limit)
+    return list_token_audit_logs(
+        db,
+        token_id,
+        current_user.id,
+        limit,
+        source=source,
+        response_status=response_status,
+        target_type=target_type,
+        q=q,
+    )
 
 
 @router.get("/integrations", response_model=list[IntegrationSummary])
@@ -138,6 +154,22 @@ def delete_integration_route(
 ) -> None:
     if not delete_integration(db, integration_id, current_user.id):
         raise HTTPException(status_code=404, detail="Integration not found")
+
+
+@router.patch("/integrations/{integration_id}/oauth-config", response_model=IntegrationOAuthConfigResponse)
+def configure_integration_oauth_route(
+    integration_id: str,
+    payload: IntegrationOAuthConfigRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> IntegrationOAuthConfigResponse:
+    try:
+        integration, client_secret = configure_integration_oauth(db, integration_id, payload, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return IntegrationOAuthConfigResponse(integration=IntegrationSummary.model_validate(integration), client_secret=client_secret)
 
 
 @router.get("/integrations/{integration_id}/scopes", response_model=list[IntegrationScopeSummary])
@@ -182,10 +214,23 @@ def delete_integration_scope_route(
 def integration_audit_logs_route(
     integration_id: str,
     limit: int = 50,
+    source: str | None = None,
+    response_status: str | None = None,
+    target_type: str | None = None,
+    q: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_current_user_dependency),
 ) -> list[IntegrationAuditLogSummary]:
-    return list_integration_audit_logs(db, integration_id, current_user.id, limit)
+    return list_integration_audit_logs(
+        db,
+        integration_id,
+        current_user.id,
+        limit,
+        source=source,
+        response_status=response_status,
+        target_type=target_type,
+        q=q,
+    )
 
 
 @router.get("/integrations/{integration_id}/webhooks", response_model=list[IntegrationWebhookSummary])

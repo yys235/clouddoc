@@ -108,6 +108,12 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 MCP 服务用于让支持 MCP 的 AI 工具接入 CloudDoc。当前使用 Streamable HTTP 传输，开放受控增删改查工具。
 
+如果你要给外部 AI/自动化系统做标准开放接入，而不是只接 MCP，也可以直接使用：
+- PAT / Integration Token
+- `/api/open/*` 开放文档与搜索接口
+- OAuth 第一阶段接口：授权码、换 access token、refresh token、revoke
+- Integration Webhook：签名投递、后台自动重试、手动重放
+
 安装：
 
 ```bash
@@ -136,6 +142,7 @@ CLOUDDOC_MCP_PORT=8010
 CLOUDDOC_MCP_PATH=/mcp
 CLOUDDOC_MCP_STATELESS_HTTP=true
 CLOUDDOC_MCP_JSON_RESPONSE=true
+CLOUDDOC_MCP_TOKEN=
 ```
 
 如果不设置 `CLOUDDOC_MCP_ACTOR_EMAIL`，服务会使用内置的 `guest@clouddoc.local` 访客身份。该用户不加入任何组织、不拥有任何文档权限，只能访问公开文档或无需登录的分享链接。生产环境建议显式配置为实际 CloudDoc 用户邮箱。
@@ -154,12 +161,19 @@ MCP 文档读取工具可以访问 actor 自己创建或拥有的文档，以及
 - `clouddoc.get_document`
 - `clouddoc.get_comments`
 - `clouddoc.list_spaces`
+- `clouddoc.list_folders`
+- `clouddoc.get_folder_tree`
+- `clouddoc.get_integration_context`
+- `clouddoc.list_authorized_scopes`
 - `clouddoc.get_shared_document`
 
 已开放受控写入/删除工具：
 - `clouddoc.create_document`
 - `clouddoc.create_folder`
 - `clouddoc.update_document_content`
+- `clouddoc.create_document_from_markdown`
+- `clouddoc.update_document_from_markdown`
+- `clouddoc.append_document_markdown`
 - `clouddoc.delete_document`
 - `clouddoc.restore_document`
 - `clouddoc.create_comment`
@@ -169,6 +183,24 @@ MCP 文档读取工具可以访问 actor 自己创建或拥有的文档，以及
 - `clouddoc.favorite_document`
 
 写入和删除工具会记录到数据库表 `mcp_audit_logs`。
+
+## 6.1 OAuth 第一阶段
+
+当前仓库已经提供 OAuth 第一阶段的后端和基础前端能力，适合给外部 AI 工具或自动化客户端做标准 Bearer Token 接入。
+
+已提供能力：
+- Integration 可配置 `redirect_uris`
+- 可旋转一次性 `client_secret`
+- 个人配置页可直接保存 OAuth 开关、Redirect URI、轮换 `client_secret`
+- 提供基础授权页：`/oauth/authorize?client_id=...&redirect_uri=...&scope=...&state=...`
+- `POST /api/oauth/authorize`
+- `POST /api/oauth/token`
+- `POST /api/oauth/revoke`
+
+当前边界：
+- 目前授权页只做基础“允许 / 拒绝”，还没有更细的资源二次选择
+- 资源授权范围仍然复用 Integration scope
+- Embedding / RAG 还未实现
 
 ## 7. Nginx 代理示例
 

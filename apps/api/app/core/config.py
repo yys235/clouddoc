@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     session_cookie_samesite: str = 'lax'
     app_secret_key: str = 'change-me-in-production'
     share_cookie_prefix: str = 'clouddoc_share'
+    webhook_retry_interval_seconds: int = 15
+    webhook_retry_attempt_limit: int = 4
 
     model_config = SettingsConfigDict(env_file=str(ENV_FILE), extra='ignore')
 

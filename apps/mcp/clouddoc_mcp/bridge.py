@@ -45,13 +45,16 @@ from app.services.document_service import (
     soft_delete_document,
     update_document_content,
 )
-from app.services.folder_service import create_folder
+from app.services.folder_service import create_folder, get_space_tree, list_folder_children, list_space_root_children
 from app.services.integration_service import (
     authenticate_open_actor_by_token,
     create_audit_log,
     create_open_document_from_markdown,
     get_open_document,
+    list_integration_scopes,
     list_open_documents,
+    list_open_folder_tree,
+    search_open_documents,
     update_open_document_from_markdown,
 )
 from app.services.markdown_service import markdown_to_content_json, markdown_to_plain_text
@@ -333,12 +336,16 @@ def _run_write_tool(
         raise mapped
 
 
-def _resolve_mcp_token(mcp_token: str | None = None) -> str:
-    return (mcp_token or os.getenv("CLOUDDOC_MCP_TOKEN") or "").strip()
+def _resolve_mcp_token(mcp_token: str | None = None, user_email: str | None = None) -> str:
+    if mcp_token:
+        return mcp_token.strip()
+    if user_email:
+        return ""
+    return (os.getenv("CLOUDDOC_MCP_TOKEN") or "").strip()
 
 
 def _get_actor_context(db: Session, user_email: str | None = None, mcp_token: str | None = None) -> ActorContext:
-    raw_token = _resolve_mcp_token(mcp_token)
+    raw_token = _resolve_mcp_token(mcp_token, user_email)
     if raw_token:
         return authenticate_open_actor_by_token(db, raw_token).actor
 
@@ -412,7 +419,7 @@ def list_documents_tool(
     normalized_state = state if state in {"active", "trash", "all"} else "active"
     safe_limit = max(1, min(limit, 200))
     with SessionLocal() as db:
-        raw_token = _resolve_mcp_token(mcp_token)
+        raw_token = _resolve_mcp_token(mcp_token, user_email)
         if raw_token:
             context = authenticate_open_actor_by_token(db, raw_token)
             items = list_open_documents(db, context, normalized_state)[:safe_limit]
@@ -433,20 +440,127 @@ def search_documents_tool(
     limit: int = 20,
     folder_id: str | None = None,
     user_email: str | None = None,
+    mcp_token: str | None = None,
 ) -> dict[str, Any]:
     if not query.strip():
         return {"documents": [], "query": query, "folder_id": folder_id, "count": 0}
     safe_limit = max(1, min(limit, 100))
     with SessionLocal() as db:
-        user_id = _get_actor_user_id(db, user_email)
-        items = search_documents_for_mcp(
-            db,
-            query,
-            user_id=user_id,
-            folder_id=folder_id,
-            limit=safe_limit,
-        )
+        raw_token = _resolve_mcp_token(mcp_token, user_email)
+        if raw_token:
+            context = authenticate_open_actor_by_token(db, raw_token)
+            items = search_open_documents(db, context, query)[:safe_limit]
+        else:
+            user_id = _get_actor_user_id(db, user_email)
+            items = search_documents_for_mcp(
+                db,
+                query,
+                user_id=user_id,
+                folder_id=folder_id,
+                limit=safe_limit,
+            )
         return {"documents": _dump(items), "query": query, "folder_id": folder_id, "count": len(items)}
+
+
+def list_folders_tool(
+    *,
+    space_id: str,
+    folder_id: str | None = None,
+    user_email: str | None = None,
+    mcp_token: str | None = None,
+) -> dict[str, Any]:
+    with SessionLocal() as db:
+        raw_token = _resolve_mcp_token(mcp_token, user_email)
+        if raw_token:
+            context = authenticate_open_actor_by_token(db, raw_token)
+            tree = list_open_folder_tree(db, context, space_id)
+            items = tree if not folder_id else next((node.children for node in tree if node.id == folder_id), [])
+        else:
+            user_id = _get_actor_user_id(db, user_email)
+            items = list_space_root_children(db, space_id, user_id) if not folder_id else list_folder_children(db, folder_id, user_id)
+        return {"folders": _dump(items), "space_id": space_id, "folder_id": folder_id, "count": len(items)}
+
+
+def get_folder_tree_tool(
+    *,
+    space_id: str,
+    user_email: str | None = None,
+    mcp_token: str | None = None,
+) -> dict[str, Any]:
+    with SessionLocal() as db:
+        raw_token = _resolve_mcp_token(mcp_token, user_email)
+        if raw_token:
+            context = authenticate_open_actor_by_token(db, raw_token)
+            tree = list_open_folder_tree(db, context, space_id)
+        else:
+            user_id = _get_actor_user_id(db, user_email)
+            tree = get_space_tree(db, space_id, user_id)
+        return {"tree": _dump(tree), "space_id": space_id, "count": len(tree)}
+
+
+def get_integration_context_tool(
+    *,
+    user_email: str | None = None,
+    mcp_token: str | None = None,
+) -> dict[str, Any]:
+    with SessionLocal() as db:
+        actor = _get_actor_context(db, user_email, mcp_token)
+        payload: dict[str, Any] = {
+            "actor": {
+                "user_id": actor.user_id,
+                "actor_type": actor.actor_type,
+            }
+        }
+        raw_token = _resolve_mcp_token(mcp_token, user_email)
+        if raw_token:
+            open_context = authenticate_open_actor_by_token(db, raw_token)
+            payload["token"] = {
+                "id": open_context.token.id,
+                "token_type": open_context.token.token_type,
+                "token_prefix": open_context.token.token_prefix,
+                "scopes": list(open_context.token.scopes or []),
+                "expires_at": open_context.token.expires_at.isoformat() if open_context.token.expires_at else None,
+            }
+            if open_context.integration is not None:
+                payload["integration"] = {
+                    "id": open_context.integration.id,
+                    "name": open_context.integration.name,
+                    "client_id": open_context.integration.client_id,
+                    "status": open_context.integration.status,
+                }
+        return payload
+
+
+def list_authorized_scopes_tool(
+    *,
+    user_email: str | None = None,
+    mcp_token: str | None = None,
+) -> dict[str, Any]:
+    with SessionLocal() as db:
+        raw_token = _resolve_mcp_token(mcp_token, user_email)
+        if not raw_token:
+            actor = _get_actor_context(db, user_email, mcp_token)
+            return {"actor": {"user_id": actor.user_id, "actor_type": actor.actor_type}, "scopes": [], "count": 0}
+        open_context = authenticate_open_actor_by_token(db, raw_token)
+        scopes = (
+            list_integration_scopes(db, open_context.integration.id, open_context.integration.created_by)
+            if open_context.integration is not None
+            else []
+        )
+        return {
+            "scopes": [
+                {
+                    "id": scope.id,
+                    "integration_id": scope.integration_id,
+                    "resource_type": scope.resource_type,
+                    "resource_id": scope.resource_id,
+                    "include_children": scope.include_children,
+                    "permission_level": scope.permission_level,
+                }
+                for scope in scopes
+            ],
+            "count": len(scopes),
+        }
 
 
 def get_document_tool(
@@ -456,7 +570,7 @@ def get_document_tool(
     mcp_token: str | None = None,
 ) -> dict[str, Any]:
     with SessionLocal() as db:
-        raw_token = _resolve_mcp_token(mcp_token)
+        raw_token = _resolve_mcp_token(mcp_token, user_email)
         if raw_token:
             context = authenticate_open_actor_by_token(db, raw_token)
             document = get_open_document(db, context, document_id)
@@ -623,7 +737,7 @@ def create_document_from_markdown_tool(
         "folder_id": folder_id,
         "visibility": visibility,
     }
-    raw_token = _resolve_mcp_token(mcp_token)
+    raw_token = _resolve_mcp_token(mcp_token, user_email)
     if raw_token:
         with SessionLocal() as db:
             context = authenticate_open_actor_by_token(db, raw_token)
@@ -682,7 +796,7 @@ def update_document_from_markdown_tool(
     mcp_token: str | None = None,
 ) -> dict[str, Any]:
     payload = {"document_id": document_id, "markdown": markdown, "title": title}
-    raw_token = _resolve_mcp_token(mcp_token)
+    raw_token = _resolve_mcp_token(mcp_token, user_email)
     if raw_token:
         with SessionLocal() as db:
             context = authenticate_open_actor_by_token(db, raw_token)
@@ -727,6 +841,51 @@ def update_document_from_markdown_tool(
         request_payload={**payload, "markdown": f"{len(markdown)} chars"},
         user_email=user_email,
         action=action,
+    )
+
+
+def append_document_markdown_tool(
+    *,
+    document_id: str,
+    markdown: str,
+    user_email: str | None = None,
+    mcp_token: str | None = None,
+) -> dict[str, Any]:
+    raw_token = _resolve_mcp_token(mcp_token, user_email)
+    if raw_token:
+        with SessionLocal() as db:
+            context = authenticate_open_actor_by_token(db, raw_token)
+            current = get_open_document(db, context, document_id)
+            if current is None:
+                raise MCPBridgeError("not_found", "Document not found")
+            existing_markdown = str(_format_document_payload(current, "markdown").get("markdown") or "").strip()
+            combined_markdown = f"{existing_markdown}\n\n{markdown.strip()}".strip()
+            updated = update_open_document_from_markdown(
+                db,
+                context,
+                document_id,
+                MarkdownDocumentUpdateRequest(markdown=combined_markdown),
+            )
+            if updated is None:
+                raise MCPBridgeError("not_found", "Document not found")
+            create_audit_log(
+                db,
+                context,
+                operation="mcp.append_document_markdown",
+                target_type="document",
+                target_id=document_id,
+                request_summary={"append_length": len(markdown)},
+                source="mcp",
+            )
+            return {"document": _dump(updated)}
+
+    detail = get_document_tool(document_id, user_email=user_email, format="markdown")
+    existing_markdown = str(detail["document"].get("markdown") or "").strip()
+    combined_markdown = f"{existing_markdown}\n\n{markdown.strip()}".strip()
+    return update_document_from_markdown_tool(
+        document_id=document_id,
+        markdown=combined_markdown,
+        user_email=user_email,
     )
 
 

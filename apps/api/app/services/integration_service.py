@@ -12,9 +12,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.document import Document
 from app.models.folder import Folder
 from app.models.integration import (
@@ -24,18 +25,26 @@ from app.models.integration import (
     IntegrationToken,
     IntegrationWebhookDelivery,
     IntegrationWebhook,
+    OAuthAuthorizationCode,
+    OAuthRefreshToken,
 )
 from app.models.space import Space
 from app.models.user import User
 from app.schemas.document import DocumentContentUpdateRequest, DocumentCreateRequest
 from app.schemas.integration import (
     IntegrationCreateRequest,
+    IntegrationOAuthConfigRequest,
     IntegrationScopeCreateRequest,
+    IntegrationScopeSummary,
     IntegrationWebhookCreateRequest,
     IntegrationWebhookUpdateRequest,
     IntegrationUpdateRequest,
     MarkdownDocumentCreateRequest,
     MarkdownDocumentUpdateRequest,
+    OAuthAuthorizeRequest,
+    OAuthRevokeRequest,
+    OAuthTokenRequest,
+    OAuthTokenResponse,
     TokenCreateRequest,
     TokenUpdateRequest,
 )
@@ -77,6 +86,10 @@ SUPPORTED_WEBHOOK_EVENTS = {
 
 
 _rate_buckets: dict[str, list[float]] = {}
+WEBHOOK_RETRY_BACKOFF_MINUTES = (1, 5, 15)
+OAUTH_AUTHORIZATION_CODE_TTL_MINUTES = 10
+OAUTH_ACCESS_TOKEN_TTL_SECONDS = 7200
+OAUTH_REFRESH_TOKEN_TTL_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -109,6 +122,13 @@ def _new_raw_token(prefix: str = "cdp") -> tuple[str, str, str]:
 def _normalize_scopes(scopes: list[str]) -> list[str]:
     normalized = sorted({scope.strip() for scope in scopes if scope.strip() in ALL_TOKEN_SCOPES})
     return normalized or ["documents:read"]
+
+
+def _normalize_redirect_uris(redirect_uris: list[str]) -> list[str]:
+    normalized = sorted({item.strip() for item in redirect_uris if item.strip()})
+    if not normalized:
+        raise ValueError("At least one redirect URI is required")
+    return normalized
 
 
 def create_token(db: Session, payload: TokenCreateRequest, current_user_id: str) -> tuple[IntegrationToken, str]:
@@ -190,6 +210,28 @@ def create_integration(db: Session, payload: IntegrationCreateRequest, current_u
     return integration
 
 
+def configure_integration_oauth(
+    db: Session,
+    integration_id: str,
+    payload: IntegrationOAuthConfigRequest,
+    current_user_id: str,
+) -> tuple[Integration, str | None]:
+    integration = get_owned_integration(db, integration_id, current_user_id)
+    if integration is None:
+        raise PermissionError("Integration not found")
+    integration.redirect_uris = _normalize_redirect_uris(payload.redirect_uris)
+    integration.oauth_enabled = bool(payload.oauth_enabled)
+    raw_secret: str | None = None
+    if payload.rotate_client_secret or not integration.client_secret_hash:
+        raw_secret, token_prefix, token_hash = _new_raw_token("cds")
+        integration.client_secret_prefix = token_prefix
+        integration.client_secret_hash = token_hash
+        raw_secret = raw_secret
+    db.commit()
+    db.refresh(integration)
+    return integration, raw_secret
+
+
 def list_integrations(db: Session, current_user_id: str) -> list[Integration]:
     return db.scalars(
         select(Integration)
@@ -203,6 +245,23 @@ def get_owned_integration(db: Session, integration_id: str, current_user_id: str
     integration = db.get(Integration, integration_id)
     if integration is None or integration.created_by != current_user_id or integration.status == "deleted":
         return None
+    return integration
+
+
+def get_integration_by_client_id(db: Session, client_id: str) -> Integration | None:
+    return db.scalar(select(Integration).where(Integration.client_id == client_id).limit(1))
+
+
+def _authenticate_integration_client(db: Session, client_id: str, client_secret: str) -> Integration:
+    integration = get_integration_by_client_id(db, client_id)
+    if (
+        integration is None
+        or integration.status != "active"
+        or not integration.oauth_enabled
+        or not integration.client_secret_hash
+        or integration.client_secret_hash != _hash_token(client_secret)
+    ):
+        raise PermissionError("Invalid OAuth client credentials")
     return integration
 
 
@@ -237,18 +296,217 @@ def delete_integration(db: Session, integration_id: str, current_user_id: str) -
     tokens = db.scalars(select(IntegrationToken).where(IntegrationToken.integration_id == integration.id)).all()
     for token in tokens:
         token.revoked_at = token.revoked_at or now
+    refresh_tokens = db.scalars(select(OAuthRefreshToken).where(OAuthRefreshToken.integration_id == integration.id)).all()
+    for refresh_token in refresh_tokens:
+        refresh_token.revoked_at = refresh_token.revoked_at or now
     db.commit()
     return True
 
 
-def list_integration_scopes(db: Session, integration_id: str, current_user_id: str) -> list[IntegrationResourceScope]:
+def create_oauth_authorization_code(
+    db: Session,
+    payload: OAuthAuthorizeRequest,
+    current_user_id: str,
+) -> tuple[OAuthAuthorizationCode, str, Integration]:
+    integration = get_integration_by_client_id(db, payload.client_id)
+    if integration is None or integration.status != "active" or not integration.oauth_enabled:
+        raise PermissionError("Integration is not available for OAuth")
+    redirect_uri = payload.redirect_uri.strip()
+    if redirect_uri not in (integration.redirect_uris or []):
+        raise ValueError("Redirect URI is not allowed")
+    raw_code, code_prefix, code_hash = _new_raw_token("cdc")
+    code = OAuthAuthorizationCode(
+        integration_id=integration.id,
+        user_id=current_user_id,
+        code_prefix=code_prefix,
+        code_hash=code_hash,
+        redirect_uri=redirect_uri,
+        scopes=_normalize_scopes(payload.scopes),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=OAUTH_AUTHORIZATION_CODE_TTL_MINUTES),
+    )
+    db.add(code)
+    db.commit()
+    db.refresh(code)
+    return code, raw_code, integration
+
+
+def _issue_oauth_access_token(
+    db: Session,
+    *,
+    integration: Integration,
+    user_id: str,
+    scopes: list[str],
+) -> tuple[IntegrationToken, str]:
+    raw_token, token_prefix, token_hash = _new_raw_token("cda")
+    token = IntegrationToken(
+        integration_id=integration.id,
+        user_id=user_id,
+        token_type="oauth_access",
+        token_prefix=token_prefix,
+        token_hash=token_hash,
+        name=f"{integration.name} OAuth Access Token",
+        scopes=_normalize_scopes(scopes),
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=OAUTH_ACCESS_TOKEN_TTL_SECONDS),
+    )
+    db.add(token)
+    db.flush()
+    return token, raw_token
+
+
+def _issue_oauth_refresh_token(
+    db: Session,
+    *,
+    integration: Integration,
+    user_id: str,
+    scopes: list[str],
+) -> tuple[OAuthRefreshToken, str]:
+    raw_token, token_prefix, token_hash = _new_raw_token("cdr")
+    refresh_token = OAuthRefreshToken(
+        integration_id=integration.id,
+        user_id=user_id,
+        token_prefix=token_prefix,
+        token_hash=token_hash,
+        scopes=_normalize_scopes(scopes),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=OAUTH_REFRESH_TOKEN_TTL_DAYS),
+    )
+    db.add(refresh_token)
+    db.flush()
+    return refresh_token, raw_token
+
+
+def exchange_oauth_token(db: Session, payload: OAuthTokenRequest) -> OAuthTokenResponse:
+    integration = _authenticate_integration_client(db, payload.client_id, payload.client_secret)
+    if payload.grant_type == "authorization_code":
+        if not payload.code or not payload.redirect_uri:
+            raise ValueError("Authorization code and redirect URI are required")
+        code = db.scalar(select(OAuthAuthorizationCode).where(OAuthAuthorizationCode.code_hash == _hash_token(payload.code)).limit(1))
+        now = datetime.now(timezone.utc)
+        if (
+            code is None
+            or code.integration_id != integration.id
+            or code.redirect_uri != payload.redirect_uri.strip()
+            or code.consumed_at is not None
+            or code.expires_at <= now
+        ):
+            raise PermissionError("Invalid or expired authorization code")
+        code.consumed_at = now
+        access_token, raw_access_token = _issue_oauth_access_token(
+            db,
+            integration=integration,
+            user_id=code.user_id,
+            scopes=list(code.scopes or []),
+        )
+        _, raw_refresh_token = _issue_oauth_refresh_token(
+            db,
+            integration=integration,
+            user_id=code.user_id,
+            scopes=list(code.scopes or []),
+        )
+        db.commit()
+        db.refresh(access_token)
+        return OAuthTokenResponse(
+            access_token=raw_access_token,
+            expires_in=OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+            refresh_token=raw_refresh_token,
+            scope=" ".join(access_token.scopes or []),
+        )
+    if payload.grant_type == "refresh_token":
+        if not payload.refresh_token:
+            raise ValueError("Refresh token is required")
+        refresh_token = db.scalar(
+            select(OAuthRefreshToken).where(OAuthRefreshToken.token_hash == _hash_token(payload.refresh_token)).limit(1)
+        )
+        now = datetime.now(timezone.utc)
+        if (
+            refresh_token is None
+            or refresh_token.integration_id != integration.id
+            or refresh_token.revoked_at is not None
+            or (refresh_token.expires_at and refresh_token.expires_at <= now)
+        ):
+            raise PermissionError("Invalid or expired refresh token")
+        refresh_token.last_used_at = now
+        access_token, raw_access_token = _issue_oauth_access_token(
+            db,
+            integration=integration,
+            user_id=refresh_token.user_id,
+            scopes=list(refresh_token.scopes or []),
+        )
+        db.commit()
+        db.refresh(access_token)
+        return OAuthTokenResponse(
+            access_token=raw_access_token,
+            expires_in=OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+            refresh_token=None,
+            scope=" ".join(access_token.scopes or []),
+        )
+    raise ValueError("Unsupported grant_type")
+
+
+def revoke_oauth_token(db: Session, payload: OAuthRevokeRequest) -> bool:
+    integration = _authenticate_integration_client(db, payload.client_id, payload.client_secret)
+    now = datetime.now(timezone.utc)
+    access_token = db.scalar(
+        select(IntegrationToken)
+        .where(IntegrationToken.integration_id == integration.id)
+        .where(IntegrationToken.token_hash == _hash_token(payload.token))
+        .limit(1)
+    )
+    if access_token is not None:
+        access_token.revoked_at = access_token.revoked_at or now
+        db.commit()
+        return True
+    refresh_token = db.scalar(
+        select(OAuthRefreshToken)
+        .where(OAuthRefreshToken.integration_id == integration.id)
+        .where(OAuthRefreshToken.token_hash == _hash_token(payload.token))
+        .limit(1)
+    )
+    if refresh_token is not None:
+        refresh_token.revoked_at = refresh_token.revoked_at or now
+        db.commit()
+        return True
+    return False
+
+
+def list_integration_scopes(db: Session, integration_id: str, current_user_id: str) -> list[IntegrationScopeSummary]:
     if get_owned_integration(db, integration_id, current_user_id) is None:
         raise PermissionError("Integration not found")
-    return db.scalars(
+    scopes = db.scalars(
         select(IntegrationResourceScope)
         .where(IntegrationResourceScope.integration_id == integration_id)
         .order_by(IntegrationResourceScope.created_at.desc())
     ).all()
+    return [_build_integration_scope_summary(db, scope) for scope in scopes]
+
+
+def _resolve_scope_resource_title(db: Session, scope: IntegrationResourceScope) -> str | None:
+    if scope.resource_type == "public_documents":
+        return "公开文档"
+    if scope.resource_type == "space" and scope.resource_id:
+        space = db.get(Space, scope.resource_id)
+        return space.name if space is not None else None
+    if scope.resource_type == "folder" and scope.resource_id:
+        folder = db.get(Folder, scope.resource_id)
+        return folder.title if folder is not None else None
+    if scope.resource_type == "document" and scope.resource_id:
+        document = db.get(Document, scope.resource_id)
+        return document.title if document is not None else None
+    return None
+
+
+def _build_integration_scope_summary(db: Session, scope: IntegrationResourceScope) -> IntegrationScopeSummary:
+    return IntegrationScopeSummary(
+        id=scope.id,
+        integration_id=scope.integration_id,
+        resource_type=scope.resource_type,
+        resource_id=scope.resource_id,
+        resource_title=_resolve_scope_resource_title(db, scope),
+        include_children=scope.include_children,
+        permission_level=scope.permission_level,
+        created_by=scope.created_by,
+        created_at=scope.created_at,
+        updated_at=scope.updated_at,
+    )
 
 
 def create_integration_scope(
@@ -256,7 +514,7 @@ def create_integration_scope(
     integration_id: str,
     payload: IntegrationScopeCreateRequest,
     current_user_id: str,
-) -> IntegrationResourceScope:
+) -> IntegrationScopeSummary:
     if get_owned_integration(db, integration_id, current_user_id) is None:
         raise PermissionError("Integration not found")
     if payload.resource_type not in {"space", "folder", "document", "public_documents"}:
@@ -273,7 +531,7 @@ def create_integration_scope(
     db.add(scope)
     db.commit()
     db.refresh(scope)
-    return scope
+    return _build_integration_scope_summary(db, scope)
 
 
 def delete_integration_scope(db: Session, integration_id: str, scope_id: str, current_user_id: str) -> bool:
@@ -485,25 +743,23 @@ def _sign_webhook_payload(secret: str, body: bytes) -> str:
     return f"sha256={digest}"
 
 
-def deliver_webhook_event(
+def _next_retry_at_for_attempt(attempt_count: int) -> datetime | None:
+    if attempt_count >= settings.webhook_retry_attempt_limit:
+        return None
+    index = min(max(attempt_count - 1, 0), len(WEBHOOK_RETRY_BACKOFF_MINUTES) - 1)
+    return datetime.now(timezone.utc) + timedelta(minutes=WEBHOOK_RETRY_BACKOFF_MINUTES[index])
+
+
+def _attempt_webhook_delivery(
     db: Session,
     webhook: IntegrationWebhook,
-    event: dict[str, Any],
+    delivery: IntegrationWebhookDelivery,
 ) -> IntegrationWebhookDelivery:
-    body = json.dumps(event, ensure_ascii=False).encode("utf-8")
-    event_type = str(event.get("event_type") or "")
-    event_id = str(event.get("event_id") or "")
-    occurred_at = str(event.get("occurred_at") or "")
-    delivery = IntegrationWebhookDelivery(
-        webhook_id=webhook.id,
-        event_type=event_type,
-        payload=event,
-        response_status="pending",
-        attempt_count=0,
-    )
-    db.add(delivery)
-    db.flush()
-
+    body = json.dumps(delivery.payload, ensure_ascii=False).encode("utf-8")
+    event_type = str(delivery.payload.get("event_type") or delivery.event_type or "")
+    event_id = str(delivery.payload.get("event_id") or "")
+    occurred_at = str(delivery.payload.get("occurred_at") or "")
+    next_attempt_count = (delivery.attempt_count or 0) + 1
     try:
         headers = {
             "Content-Type": "application/json",
@@ -517,23 +773,95 @@ def deliver_webhook_event(
         request = UrlRequest(webhook.url, data=body, headers=headers, method="POST")
         with urlopen(request, timeout=2.5) as response:
             status_code = getattr(response, "status", 200)
-        delivery.attempt_count = 1
+        delivery.attempt_count = next_attempt_count
         delivery.response_status = f"http_{status_code}"
-        delivery.delivered_at = datetime.now(timezone.utc) if 200 <= status_code < 300 else None
-        delivery.next_retry_at = None if 200 <= status_code < 300 else datetime.now(timezone.utc) + timedelta(minutes=5)
+        if 200 <= status_code < 300:
+            delivery.delivered_at = datetime.now(timezone.utc)
+            delivery.next_retry_at = None
+        else:
+            delivery.delivered_at = None
+            delivery.next_retry_at = _next_retry_at_for_attempt(next_attempt_count)
     except HTTPError as exc:
-        delivery.attempt_count = 1
+        delivery.attempt_count = next_attempt_count
         delivery.response_status = f"http_{exc.code}"
-        delivery.next_retry_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        delivery.delivered_at = None
+        delivery.next_retry_at = _next_retry_at_for_attempt(next_attempt_count)
     except URLError:
-        delivery.attempt_count = 1
+        delivery.attempt_count = next_attempt_count
         delivery.response_status = "network_error"
-        delivery.next_retry_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        delivery.delivered_at = None
+        delivery.next_retry_at = _next_retry_at_for_attempt(next_attempt_count)
     except Exception:
-        delivery.attempt_count = 1
+        delivery.attempt_count = next_attempt_count
         delivery.response_status = "delivery_error"
-        delivery.next_retry_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        delivery.delivered_at = None
+        delivery.next_retry_at = _next_retry_at_for_attempt(next_attempt_count)
+    if delivery.delivered_at is None and delivery.next_retry_at is None:
+        delivery.response_status = f"{delivery.response_status or 'delivery_error'}_final"
+    db.flush()
     return delivery
+
+
+def deliver_webhook_event(
+    db: Session,
+    webhook: IntegrationWebhook,
+    event: dict[str, Any],
+) -> IntegrationWebhookDelivery:
+    delivery = IntegrationWebhookDelivery(
+        webhook_id=webhook.id,
+        event_type=str(event.get("event_type") or ""),
+        payload=event,
+        response_status="pending",
+        attempt_count=0,
+    )
+    db.add(delivery)
+    db.flush()
+    return _attempt_webhook_delivery(db, webhook, delivery)
+
+
+def retry_due_webhook_deliveries(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    limit: int = 20,
+    webhook_id: str | None = None,
+) -> list[IntegrationWebhookDelivery]:
+    current_time = now or datetime.now(timezone.utc)
+    query = (
+        select(IntegrationWebhookDelivery)
+        .where(IntegrationWebhookDelivery.delivered_at.is_(None))
+        .where(IntegrationWebhookDelivery.next_retry_at.is_not(None))
+        .where(IntegrationWebhookDelivery.next_retry_at <= current_time)
+        .order_by(IntegrationWebhookDelivery.next_retry_at.asc(), IntegrationWebhookDelivery.created_at.asc())
+        .limit(max(1, min(limit, 200)))
+    )
+    if webhook_id:
+        query = query.where(IntegrationWebhookDelivery.webhook_id == webhook_id)
+    due_deliveries = db.scalars(query).all()
+    if not due_deliveries:
+        return []
+
+    retried: list[IntegrationWebhookDelivery] = []
+    for delivery in due_deliveries:
+        webhook = db.get(IntegrationWebhook, delivery.webhook_id)
+        if webhook is None or webhook.status != "active":
+            delivery.next_retry_at = None
+            if delivery.delivered_at is None:
+                delivery.response_status = "webhook_disabled_final"
+            retried.append(delivery)
+            continue
+        integration = db.get(Integration, webhook.integration_id)
+        if integration is None or integration.status != "active":
+            delivery.next_retry_at = None
+            if delivery.delivered_at is None:
+                delivery.response_status = "integration_disabled_final"
+            retried.append(delivery)
+            continue
+        retried.append(_attempt_webhook_delivery(db, webhook, delivery))
+    db.commit()
+    for delivery in retried:
+        db.refresh(delivery)
+    return retried
 
 
 def dispatch_webhooks_for_event(db: Session, event: dict[str, Any]) -> None:
@@ -705,16 +1033,29 @@ def create_audit_log(
     db.commit()
 
 
-def list_token_audit_logs(db: Session, token_id: str, current_user_id: str, limit: int = 50) -> list[IntegrationAuditLog]:
+def list_token_audit_logs(
+    db: Session,
+    token_id: str,
+    current_user_id: str,
+    limit: int = 50,
+    *,
+    source: str | None = None,
+    response_status: str | None = None,
+    target_type: str | None = None,
+    q: str | None = None,
+) -> list[IntegrationAuditLog]:
     token = db.get(IntegrationToken, token_id)
     if token is None or token.user_id != current_user_id:
         return []
-    return db.scalars(
-        select(IntegrationAuditLog)
-        .where(IntegrationAuditLog.token_id == token_id)
-        .order_by(IntegrationAuditLog.created_at.desc())
-        .limit(max(1, min(limit, 200)))
-    ).all()
+    return _list_audit_logs(
+        db,
+        select(IntegrationAuditLog).where(IntegrationAuditLog.token_id == token_id),
+        limit=limit,
+        source=source,
+        response_status=response_status,
+        target_type=target_type,
+        q=q,
+    )
 
 
 def list_integration_audit_logs(
@@ -722,14 +1063,52 @@ def list_integration_audit_logs(
     integration_id: str,
     current_user_id: str,
     limit: int = 50,
+    *,
+    source: str | None = None,
+    response_status: str | None = None,
+    target_type: str | None = None,
+    q: str | None = None,
 ) -> list[IntegrationAuditLog]:
     if get_owned_integration(db, integration_id, current_user_id) is None:
         return []
+    return _list_audit_logs(
+        db,
+        select(IntegrationAuditLog).where(IntegrationAuditLog.integration_id == integration_id),
+        limit=limit,
+        source=source,
+        response_status=response_status,
+        target_type=target_type,
+        q=q,
+    )
+
+
+def _list_audit_logs(
+    db: Session,
+    query,
+    *,
+    limit: int = 50,
+    source: str | None = None,
+    response_status: str | None = None,
+    target_type: str | None = None,
+    q: str | None = None,
+) -> list[IntegrationAuditLog]:
+    if source:
+        query = query.where(IntegrationAuditLog.source == source.strip())
+    if response_status:
+        query = query.where(IntegrationAuditLog.response_status == response_status.strip())
+    if target_type:
+        query = query.where(IntegrationAuditLog.target_type == target_type.strip())
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        query = query.where(
+            or_(
+                IntegrationAuditLog.operation.ilike(needle),
+                IntegrationAuditLog.target_id.ilike(needle),
+                IntegrationAuditLog.error_message.ilike(needle),
+            )
+        )
     return db.scalars(
-        select(IntegrationAuditLog)
-        .where(IntegrationAuditLog.integration_id == integration_id)
-        .order_by(IntegrationAuditLog.created_at.desc())
-        .limit(max(1, min(limit, 200)))
+        query.order_by(IntegrationAuditLog.created_at.desc()).limit(max(1, min(limit, 200)))
     ).all()
 
 

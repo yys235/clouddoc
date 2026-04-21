@@ -551,14 +551,23 @@ def ensure_runtime_schema(db: Session) -> None:
                 icon_url VARCHAR(512),
                 status VARCHAR(32) NOT NULL DEFAULT 'active',
                 client_id VARCHAR(128) NOT NULL UNIQUE,
+                oauth_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                redirect_uris JSONB NOT NULL DEFAULT '[]'::jsonb,
+                client_secret_prefix VARCHAR(32),
+                client_secret_hash VARCHAR(128),
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
             """
         )
     )
+    db.execute(text("ALTER TABLE integrations ADD COLUMN IF NOT EXISTS oauth_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+    db.execute(text("ALTER TABLE integrations ADD COLUMN IF NOT EXISTS redirect_uris JSONB NOT NULL DEFAULT '[]'::jsonb"))
+    db.execute(text("ALTER TABLE integrations ADD COLUMN IF NOT EXISTS client_secret_prefix VARCHAR(32)"))
+    db.execute(text("ALTER TABLE integrations ADD COLUMN IF NOT EXISTS client_secret_hash VARCHAR(128)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_integrations_created_by ON integrations(created_by)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_integrations_client_id ON integrations(client_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_integrations_client_secret_prefix ON integrations(client_secret_prefix)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_integrations_status ON integrations(status)"))
     db.execute(
         text(
@@ -672,5 +681,49 @@ def ensure_runtime_schema(db: Session) -> None:
         )
     )
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_integration_webhook_deliveries_webhook ON integration_webhook_deliveries(webhook_id)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+                id UUID PRIMARY KEY,
+                integration_id UUID NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                code_prefix VARCHAR(32) NOT NULL,
+                code_hash VARCHAR(128) NOT NULL UNIQUE,
+                redirect_uri VARCHAR(1024) NOT NULL,
+                scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+                expires_at TIMESTAMPTZ NOT NULL,
+                consumed_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_integration ON oauth_authorization_codes(integration_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_user ON oauth_authorization_codes(user_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_expires ON oauth_authorization_codes(expires_at)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+                id UUID PRIMARY KEY,
+                integration_id UUID NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token_prefix VARCHAR(32) NOT NULL,
+                token_hash VARCHAR(128) NOT NULL UNIQUE,
+                scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+                expires_at TIMESTAMPTZ,
+                revoked_at TIMESTAMPTZ,
+                last_used_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_integration ON oauth_refresh_tokens(integration_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_user ON oauth_refresh_tokens(user_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_expires ON oauth_refresh_tokens(expires_at)"))
     db.commit()
     ensure_mcp_guest_user(db)

@@ -15,6 +15,8 @@ from app.models.integration import (
     IntegrationToken,
     IntegrationWebhook,
     IntegrationWebhookDelivery,
+    OAuthAuthorizationCode,
+    OAuthRefreshToken,
 )
 from app.models.folder import Folder
 from app.models.notification import UserNotification
@@ -64,9 +66,13 @@ def cleanup_user(email: str) -> None:
                 db.execute(delete(IntegrationWebhook).where(IntegrationWebhook.id.in_(webhook_ids)))
             db.execute(delete(IntegrationAuditLog).where(IntegrationAuditLog.integration_id.in_(integration_ids)))
             db.execute(delete(IntegrationResourceScope).where(IntegrationResourceScope.integration_id.in_(integration_ids)))
+            db.execute(delete(OAuthAuthorizationCode).where(OAuthAuthorizationCode.integration_id.in_(integration_ids)))
+            db.execute(delete(OAuthRefreshToken).where(OAuthRefreshToken.integration_id.in_(integration_ids)))
             db.execute(delete(IntegrationToken).where(IntegrationToken.integration_id.in_(integration_ids)))
             db.execute(delete(Integration).where(Integration.id.in_(integration_ids)))
         db.execute(delete(IntegrationAuditLog).where(IntegrationAuditLog.actor_id == user.id))
+        db.execute(delete(OAuthAuthorizationCode).where(OAuthAuthorizationCode.user_id == user.id))
+        db.execute(delete(OAuthRefreshToken).where(OAuthRefreshToken.user_id == user.id))
         db.execute(delete(IntegrationToken).where(IntegrationToken.user_id == user.id))
         db.execute(delete(UserNotification).where(UserNotification.user_id == user.id))
         db.execute(delete(UserNotification).where(UserNotification.actor_id == user.id))
@@ -134,6 +140,15 @@ def test_personal_access_token_markdown_write_and_revoke() -> None:
         logs = client.get(f"/api/tokens/{token_id}/audit-logs")
         assert logs.status_code == 200
         assert any(item["operation"] == "open.documents.create_from_markdown" for item in logs.json())
+        filtered_logs = client.get(
+            f"/api/tokens/{token_id}/audit-logs",
+            params={"source": "rest_open_api", "response_status": "success", "target_type": "document", "q": "create_from_markdown"},
+        )
+        assert filtered_logs.status_code == 200
+        assert filtered_logs.json()
+        assert all(item["source"] == "rest_open_api" for item in filtered_logs.json())
+        assert all(item["target_type"] == "document" for item in filtered_logs.json())
+        assert all("create_from_markdown" in item["operation"] for item in filtered_logs.json())
 
         revoke = client.delete(f"/api/tokens/{token_id}")
         assert revoke.status_code == 204
@@ -184,6 +199,10 @@ def test_integration_scope_limits_document_access_and_write() -> None:
             json={"resource_type": "document", "resource_id": document_id, "permission_level": "view"},
         )
         assert scope.status_code == 200
+        assert scope.json()["resource_title"] == "Scoped Secret"
+        listed_scopes = client.get(f"/api/integrations/{integration_id}/scopes")
+        assert listed_scopes.status_code == 200
+        assert listed_scopes.json()[0]["resource_title"] == "Scoped Secret"
         allowed_read = client.get(f"/api/open/documents/{document_id}", headers=headers)
         assert allowed_read.status_code == 200
 
@@ -340,5 +359,195 @@ def test_integration_webhook_delivery_logged_on_document_event(monkeypatch) -> N
         )
         assert retried.status_code == 200
         assert retried.json()["response_status"] == "http_204"
+    finally:
+        cleanup_user(email)
+
+
+def test_integration_webhook_delivery_auto_retries_until_success(monkeypatch) -> None:
+    import app.services.integration_service as integration_service
+
+    email = f"pytest-webhook-auto-retry-{uuid4()}@example.com"
+    client = register_user_client("Webhook Retry User", email)
+    space_id = first_space_id(client)
+
+    attempts = {"count": 0}
+
+    class FakeResponse:
+        def __init__(self, status: int = 204) -> None:
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def flaky_urlopen(request, timeout=0):  # noqa: ARG001
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise integration_service.URLError("temporary failure")
+        return FakeResponse(204)
+
+    monkeypatch.setattr(integration_service, "urlopen", flaky_urlopen)
+
+    try:
+        integration = client.post("/api/integrations", json={"name": "pytest auto retry integration"})
+        assert integration.status_code == 200
+        integration_id = integration.json()["id"]
+
+        scope = client.post(
+            f"/api/integrations/{integration_id}/scopes",
+            json={"resource_type": "space", "resource_id": space_id, "permission_level": "view", "include_children": True},
+        )
+        assert scope.status_code == 200
+
+        webhook = client.post(
+            f"/api/integrations/{integration_id}/webhooks",
+            json={"url": "https://example.com/hooks/retry", "event_types": ["document.created"]},
+        )
+        assert webhook.status_code == 200
+        webhook_id = webhook.json()["webhook"]["id"]
+
+        created = client.post(
+            "/api/documents",
+            json={"title": "webhook retry doc", "space_id": space_id, "document_type": "doc", "visibility": "private"},
+        )
+        assert created.status_code == 200
+
+        with SessionLocal() as db:
+            delivery = db.scalar(
+                select(IntegrationWebhookDelivery)
+                .join(IntegrationWebhook, IntegrationWebhook.id == IntegrationWebhookDelivery.webhook_id)
+                .where(IntegrationWebhook.id == webhook_id)
+                .order_by(IntegrationWebhookDelivery.created_at.desc())
+                .limit(1)
+            )
+            assert delivery is not None
+            assert delivery.attempt_count == 1
+            assert delivery.response_status == "network_error"
+            assert delivery.next_retry_at is not None
+
+            first_retry = integration_service.retry_due_webhook_deliveries(
+                db,
+                now=delivery.next_retry_at + integration_service.timedelta(seconds=1),
+                webhook_id=webhook_id,
+            )
+            assert len(first_retry) == 1
+            db.refresh(delivery)
+            assert delivery.attempt_count == 2
+            assert delivery.response_status == "network_error"
+            assert delivery.next_retry_at is not None
+
+            second_retry = integration_service.retry_due_webhook_deliveries(
+                db,
+                now=delivery.next_retry_at + integration_service.timedelta(seconds=1),
+                webhook_id=webhook_id,
+            )
+            assert len(second_retry) == 1
+            db.refresh(delivery)
+            assert delivery.attempt_count == 3
+            assert delivery.response_status == "http_204"
+            assert delivery.delivered_at is not None
+            assert delivery.next_retry_at is None
+        assert attempts["count"] == 3
+    finally:
+        cleanup_user(email)
+
+
+def test_oauth_authorization_code_exchange_refresh_and_revoke() -> None:
+    email = f"pytest-oauth-{uuid4()}@example.com"
+    client = register_user_client("OAuth User", email)
+    space_id = first_space_id(client)
+
+    try:
+        integration = client.post("/api/integrations", json={"name": "pytest oauth integration"})
+        assert integration.status_code == 200
+        integration_id = integration.json()["id"]
+        client_id = integration.json()["client_id"]
+
+        oauth_config = client.patch(
+            f"/api/integrations/{integration_id}/oauth-config",
+            json={
+                "oauth_enabled": True,
+                "redirect_uris": ["https://example.com/callback"],
+                "rotate_client_secret": True,
+            },
+        )
+        assert oauth_config.status_code == 200
+        client_secret = oauth_config.json()["client_secret"]
+        assert client_secret.startswith("cds_")
+
+        client_meta = client.get(f"/api/oauth/clients/{client_id}")
+        assert client_meta.status_code == 200
+        assert client_meta.json()["id"] == integration_id
+        assert client_meta.json()["oauth_enabled"] is True
+
+        scope = client.post(
+            f"/api/integrations/{integration_id}/scopes",
+            json={"resource_type": "space", "resource_id": space_id, "permission_level": "view", "include_children": True},
+        )
+        assert scope.status_code == 200
+
+        authorize = client.post(
+            "/api/oauth/authorize",
+            json={
+                "client_id": client_id,
+                "redirect_uri": "https://example.com/callback",
+                "scopes": ["documents:read", "search:read"],
+                "state": "pytest-state",
+            },
+        )
+        assert authorize.status_code == 200
+        code = authorize.json()["code"]
+        assert authorize.json()["state"] == "pytest-state"
+
+        exchanged = client.post(
+            "/api/oauth/token",
+            json={
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": code,
+                "redirect_uri": "https://example.com/callback",
+            },
+        )
+        assert exchanged.status_code == 200
+        access_token = exchanged.json()["access_token"]
+        refresh_token = exchanged.json()["refresh_token"]
+        assert access_token.startswith("cda_")
+        assert refresh_token.startswith("cdr_")
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        open_list = client.get("/api/open/documents", headers=headers)
+        assert open_list.status_code == 200
+
+        refreshed = client.post(
+            "/api/oauth/token",
+            json={
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+            },
+        )
+        assert refreshed.status_code == 200
+        assert refreshed.json()["access_token"].startswith("cda_")
+
+        revoked = client.post(
+            "/api/oauth/revoke",
+            json={"client_id": client_id, "client_secret": client_secret, "token": refresh_token},
+        )
+        assert revoked.status_code == 204
+
+        denied_refresh = client.post(
+            "/api/oauth/token",
+            json={
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+            },
+        )
+        assert denied_refresh.status_code == 403
     finally:
         cleanup_user(email)

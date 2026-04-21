@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
+import asyncio
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -12,6 +13,7 @@ from app.core.db import SessionLocal, init_db
 from app.services.bootstrap_service import seed_demo_data
 from app.services.document_service import ensure_supported_document_types
 from app.services.folder_service import ensure_default_newdoc_folders
+from app.services.integration_service import retry_due_webhook_deliveries
 from app.services.submission_guard_service import submission_guard
 
 
@@ -26,7 +28,38 @@ async def lifespan(_: FastAPI):
         ensure_default_newdoc_folders(db)
     finally:
         db.close()
-    yield
+    stop_event = asyncio.Event()
+
+    async def webhook_retry_worker() -> None:
+        while not stop_event.is_set():
+            try:
+                await asyncio.to_thread(_run_webhook_retries_once)
+            except Exception:
+                # Retry worker failures must not crash the API process.
+                pass
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=max(1, settings.webhook_retry_interval_seconds))
+            except asyncio.TimeoutError:
+                continue
+
+    worker_task = asyncio.create_task(webhook_retry_worker())
+    try:
+        yield
+    finally:
+        stop_event.set()
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+
+
+def _run_webhook_retries_once() -> None:
+    db = SessionLocal()
+    try:
+        retry_due_webhook_deliveries(db)
+    finally:
+        db.close()
 
 
 def create_application() -> FastAPI:

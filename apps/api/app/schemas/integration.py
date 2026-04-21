@@ -68,8 +68,21 @@ class IntegrationSummary(BaseModel):
     icon_url: str | None = None
     status: str
     client_id: str
+    oauth_enabled: bool = False
+    redirect_uris: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+class IntegrationOAuthConfigRequest(BaseModel):
+    redirect_uris: list[str] = Field(default_factory=list)
+    oauth_enabled: bool = True
+    rotate_client_secret: bool = False
+
+
+class IntegrationOAuthConfigResponse(BaseModel):
+    integration: IntegrationSummary
+    client_secret: str | None = None
 
 
 class IntegrationScopeCreateRequest(BaseModel):
@@ -86,6 +99,7 @@ class IntegrationScopeSummary(BaseModel):
     integration_id: str
     resource_type: str
     resource_id: str | None = None
+    resource_title: str | None = None
     include_children: bool
     permission_level: str
     created_by: str
@@ -167,3 +181,40 @@ class MarkdownDocumentCreateRequest(BaseModel):
 class MarkdownDocumentUpdateRequest(BaseModel):
     markdown: str
     title: str | None = None
+
+
+class OAuthAuthorizeRequest(BaseModel):
+    client_id: str
+    redirect_uri: str
+    scopes: list[str] = Field(default_factory=lambda: DEFAULT_TOKEN_SCOPES.copy())
+    state: str | None = None
+
+
+class OAuthAuthorizeResponse(BaseModel):
+    code: str
+    state: str | None = None
+    expires_at: datetime
+    integration: IntegrationSummary
+
+
+class OAuthTokenRequest(BaseModel):
+    grant_type: str
+    client_id: str
+    client_secret: str
+    code: str | None = None
+    redirect_uri: str | None = None
+    refresh_token: str | None = None
+
+
+class OAuthTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    refresh_token: str | None = None
+    scope: str
+
+
+class OAuthRevokeRequest(BaseModel):
+    client_id: str
+    client_secret: str
+    token: str

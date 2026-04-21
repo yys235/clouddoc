@@ -15,11 +15,18 @@
   - `clouddoc.get_document`
   - `clouddoc.get_comments`
   - `clouddoc.list_spaces`
+  - `clouddoc.list_folders`
+  - `clouddoc.get_folder_tree`
+  - `clouddoc.get_integration_context`
+  - `clouddoc.list_authorized_scopes`
   - `clouddoc.get_shared_document`
 - 当前已开放受控写入工具：
   - `clouddoc.create_document`
   - `clouddoc.create_folder`
   - `clouddoc.update_document_content`
+  - `clouddoc.create_document_from_markdown`
+  - `clouddoc.update_document_from_markdown`
+  - `clouddoc.append_document_markdown`
   - `clouddoc.delete_document`
   - `clouddoc.restore_document`
   - `clouddoc.create_comment`
