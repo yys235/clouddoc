@@ -1,6 +1,8 @@
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from uuid import uuid4
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, event, select
@@ -937,6 +939,98 @@ def test_upload_pdf_document() -> None:
         detail_response = client.get(f"/api/documents/{document_id}")
         assert detail_response.status_code == 200
         assert detail_response.json()["document_type"] == "pdf"
+    finally:
+        cleanup_document(document_id)
+
+
+def test_import_docx_document() -> None:
+    db = SessionLocal()
+    try:
+        space = db.scalar(select(Space).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Imported Heading</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Imported paragraph</w:t></w:r></w:p>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>First numbered item</w:t></w:r></w:p>
+    <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Second numbered item</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Table Header A</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Table Header B</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Table Value A</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Table Value B</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>
+"""
+    styles_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+</w:styles>
+"""
+    numbering_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="1">
+    <w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>
+</w:numbering>
+"""
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "")
+        archive.writestr("word/document.xml", document_xml)
+        archive.writestr("word/styles.xml", styles_xml)
+        archive.writestr("word/numbering.xml", numbering_xml)
+
+    import_response = client.post(
+        "/api/documents/import-docx",
+        data={
+            "space_id": space_id,
+            "title": "",
+        },
+        files={
+            "file": (
+                "sample.docx",
+                buffer.getvalue(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert import_response.status_code == 200
+    payload = import_response.json()
+    document_id = payload["id"]
+
+    try:
+        assert payload["document_type"] == "doc"
+        assert payload["status"] == "imported"
+        assert payload["title"] == "Imported Heading"
+        assert payload["can_edit"] is True
+        content = payload["content"]["content_json"]["content"]
+        assert content[0]["type"] == "heading"
+        assert content[0]["attrs"]["level"] == 1
+        assert content[1]["type"] == "paragraph"
+        assert content[1]["attrs"]["raw_text"] == "Imported paragraph"
+        assert content[2]["type"] == "ordered_list"
+        assert [item["attrs"]["raw_text"] for item in content[2]["content"]] == [
+            "First numbered item",
+            "Second numbered item",
+        ]
+        assert content[3]["type"] == "code_block"
+        assert content[3]["attrs"]["language"] == "table"
+        assert "Table Header A | Table Header B" in content[3]["attrs"]["raw_text"]
+        assert "Table Value A  | Table Value B" in content[3]["attrs"]["raw_text"]
+        assert "Imported paragraph" in payload["content"]["plain_text"]
+        assert "Table Value B" in payload["content"]["plain_text"]
     finally:
         cleanup_document(document_id)
 

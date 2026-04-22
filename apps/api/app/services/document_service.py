@@ -24,6 +24,7 @@ from app.models.space import Space
 from app.models.user import User
 from app.schemas.folder import AncestorItem
 from app.services.comment_service import sync_comment_threads_with_content
+from app.services.docx_import_service import import_docx_content
 from app.services.folder_service import (
     ensure_parent_folder_valid,
     get_document_ancestors as get_document_folder_ancestors,
@@ -945,6 +946,77 @@ def create_pdf_document(
         content_id=content.id,
         version_no=1,
         message="PDF uploaded",
+        created_by=owner_id,
+    )
+    db.add(version)
+    db.flush()
+
+    document.current_version_id = version.id
+    db.commit()
+    db.refresh(document)
+    publish_document_event(db, "document.created", document, owner_id)
+    db.commit()
+    return get_document_detail(db, document.id, owner_id)  # type: ignore[return-value]
+
+
+def create_docx_import_document(
+    db: Session,
+    *,
+    current_user_id: str,
+    title: str,
+    space_id: str,
+    folder_id: str | None,
+    file_name: str,
+    file_bytes: bytes,
+) -> DocumentDetail:
+    space = db.get(Space, space_id)
+    if space is None:
+        raise ValueError("Space not found")
+    if not can_create_document_in_space(db, space, current_user_id):
+        raise PermissionError("Not allowed to import DOCX to this space")
+
+    ensure_parent_folder_valid(db, space_id, folder_id, current_user_id)
+
+    owner_id = current_user_id
+    safe_name = Path(file_name).name
+    if not safe_name.lower().endswith(".docx"):
+        raise ValueError("Only DOCX files are supported")
+
+    imported = import_docx_content(file_bytes, fallback_title=title or Path(safe_name).stem or "Imported DOCX")
+    parent_folder = db.get(Folder, folder_id) if folder_id else None
+    document = Document(
+        space_id=space_id,
+        parent_id=None,
+        folder_id=folder_id,
+        creator_id=owner_id,
+        owner_id=owner_id,
+        title=title.strip() or imported.title,
+        document_type="doc",
+        status="imported",
+        visibility=parent_folder.visibility if parent_folder else "private",
+        icon="doc",
+        summary=f"Imported from {safe_name}",
+        sort_order=get_next_document_sort_order(db, space_id, folder_id),
+    )
+    db.add(document)
+    db.flush()
+
+    content = DocumentContent(
+        document_id=document.id,
+        version_no=1,
+        schema_version=1,
+        content_json=imported.content_json,
+        plain_text=imported.plain_text,
+        created_by=owner_id,
+    )
+    db.add(content)
+    db.flush()
+
+    version = DocumentVersion(
+        document_id=document.id,
+        content_id=content.id,
+        version_no=1,
+        message="DOCX imported",
         created_by=owner_id,
     )
     db.add(version)

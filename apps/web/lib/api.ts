@@ -2267,6 +2267,35 @@ export async function uploadPdfDocument(input: {
   });
 }
 
+export async function importDocxDocument(input: {
+  title?: string;
+  spaceId: string;
+  folderId?: string | null;
+  file: File;
+}) {
+  const formData = new FormData();
+  formData.append("space_id", input.spaceId);
+  formData.append("folder_id", input.folderId ?? "");
+  formData.append("title", input.title ?? "");
+  formData.append("file", input.file);
+
+  const response = await apiFetch(`${API_BASE_URL}/documents/import-docx`, {
+    method: "POST",
+    credentials: "same-origin",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to import DOCX");
+  }
+
+  const data = await response.json();
+  return buildDocumentViewModel({
+    ...data,
+    file_url: resolveApiAssetUrl(data.file_url),
+  });
+}
+
 export async function createFolder(input: {
   title: string;
   spaceId: string;

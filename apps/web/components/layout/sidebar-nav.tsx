@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
 import { GuestAuthLinks, UserMenu } from "@/components/auth/auth-actions";
-import { createDocument, createFolder, fetchSpaces, fetchSpaceTree, uploadPdfDocument, type SpaceSummary, type TreeNode } from "@/lib/api";
+import { createDocument, createFolder, fetchSpaces, fetchSpaceTree, importDocxDocument, uploadPdfDocument, type SpaceSummary, type TreeNode } from "@/lib/api";
 
 const navItems = [
   { label: "工作台", href: "/" },
@@ -60,6 +60,8 @@ export function SidebarNav({
   const [newDocumentFolderParentId, setNewDocumentFolderParentId] = useState("__root__");
   const [pdfTitle, setPdfTitle] = useState("");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [docxTitle, setDocxTitle] = useState("");
+  const [docxFile, setDocxFile] = useState<File | null>(null);
   const [liveUnreadCount, setLiveUnreadCount] = useState(notificationUnreadCount);
   const canCreate = Boolean(currentUser);
 
@@ -109,6 +111,8 @@ export function SidebarNav({
     setNewDocumentFolderParentId("__root__");
     setPdfTitle("");
     setPdfFile(null);
+    setDocxTitle("");
+    setDocxFile(null);
   };
 
   const openCreateModal = () => {
@@ -226,6 +230,43 @@ export function SidebarNav({
     });
   };
 
+  const handleImportDocx = () => {
+    startTransition(async () => {
+      try {
+        setError("");
+        if (!docxFile) {
+          throw new Error("No file selected");
+        }
+
+        const spaceId = selectedSpaceId || availableSpaces[0]?.id;
+        if (!spaceId) {
+          throw new Error("No available space");
+        }
+        let targetFolderId = documentFolderId === "__root__" ? null : documentFolderId;
+        if (documentLocationMode === "new-folder") {
+          const folder = await createFolder({
+            title: newDocumentFolderTitle.trim() || "未命名文件夹",
+            spaceId,
+            parentFolderId: newDocumentFolderParentId === "__root__" ? null : newDocumentFolderParentId,
+          });
+          targetFolderId = folder.id;
+        }
+
+        const document = await importDocxDocument({
+          title: docxTitle.trim() || docxFile.name.replace(/\.docx$/i, ""),
+          spaceId,
+          folderId: targetFolderId,
+          file: docxFile,
+        });
+        closeCreateModal();
+        router.push(`/docs/${document.id}`);
+        router.refresh();
+      } catch {
+        setError("DOCX 导入失败，请确认后端服务和空间数据可用");
+      }
+    });
+  };
+
   return (
     <>
       <aside className="fixed inset-y-0 left-0 z-40 flex w-52 flex-col border-r border-slate-300 bg-white px-2.5 py-3">
@@ -288,96 +329,68 @@ export function SidebarNav({
             onClick={closeCreateModal}
             aria-hidden="true"
           />
-          <div className="relative z-10 w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-[0_24px_64px_rgba(15,23,42,0.18)]">
-            <div className="flex items-start justify-between gap-3">
+          <div className="relative z-10 max-h-[88vh] w-full max-w-4xl overflow-y-auto border border-slate-300 bg-white p-5 shadow-[0_24px_64px_rgba(15,23,42,0.2)]">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-3">
               <div>
                 <div className="text-lg font-semibold text-slate-900">新建文档</div>
-                <div className="mt-1 text-sm text-slate-500">选择类型并确认创建位置</div>
+                <div className="mt-1 text-xs text-slate-500">选择类型并确认创建位置</div>
               </div>
               <button
                 type="button"
                 onClick={closeCreateModal}
-                className="rounded-lg px-2 py-1 text-sm text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                className="border border-slate-200 px-2.5 py-1 text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-700"
               >
                 关闭
               </button>
             </div>
 
-            <div className="mt-4 grid gap-3">
-              <label className="block text-sm font-medium text-slate-700">
-                空间
-                <select
-                  value={selectedSpaceId}
-                  onChange={(event) => setSelectedSpaceId(event.target.value)}
-                  disabled={isPending || availableSpaces.length === 0}
-                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
-                >
-                  {availableSpaces.map((space) => (
-                    <option key={space.id} value={space.id}>
-                      {space.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-sm font-medium text-slate-700">
-                文档标题
-                <input
-                  type="text"
-                  value={documentTitle}
-                  onChange={(event) => setDocumentTitle(event.target.value)}
-                  placeholder="未命名文档"
-                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-0 placeholder:text-slate-400"
-                />
-              </label>
-              <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <label className="flex items-center gap-2 text-sm text-slate-700">
-                  <input
-                    type="radio"
-                    name="global-document-location-mode"
-                    checked={documentLocationMode === "existing"}
-                    onChange={() => setDocumentLocationMode("existing")}
-                    className="h-4 w-4 border-slate-300 text-accent"
-                  />
-                  选择已有位置
-                </label>
-                {documentLocationMode === "existing" ? (
+            <div className="mt-4 grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
+              <section className="border border-slate-200 bg-slate-50 p-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">位置</div>
+                <label className="mt-3 block text-xs font-medium text-slate-600">
+                  空间
                   <select
-                    value={documentFolderId}
-                    onChange={(event) => setDocumentFolderId(event.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
-                    aria-label="选择文档创建位置"
+                    value={selectedSpaceId}
+                    onChange={(event) => setSelectedSpaceId(event.target.value)}
+                    disabled={isPending || availableSpaces.length === 0}
+                    className="mt-1.5 w-full border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-400 disabled:opacity-60"
                   >
-                    <option value="__root__">根目录</option>
-                    {folderOptions.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
+                    {availableSpaces.map((space) => (
+                      <option key={space.id} value={space.id}>
+                        {space.name}
                       </option>
                     ))}
                   </select>
-                ) : null}
-                <label className="flex items-center gap-2 text-sm text-slate-700">
-                  <input
-                    type="radio"
-                    name="global-document-location-mode"
-                    checked={documentLocationMode === "new-folder"}
-                    onChange={() => setDocumentLocationMode("new-folder")}
-                    className="h-4 w-4 border-slate-300 text-accent"
-                  />
-                  新建文件夹后创建
                 </label>
-                {documentLocationMode === "new-folder" ? (
-                  <div className="grid gap-3">
+
+                <label className="mt-3 block text-xs font-medium text-slate-600">
+                  默认标题
+                  <input
+                    type="text"
+                    value={documentTitle}
+                    onChange={(event) => setDocumentTitle(event.target.value)}
+                    placeholder="未命名文档"
+                    className="mt-1.5 w-full border border-slate-300 bg-white px-3 py-2 text-sm outline-none placeholder:text-slate-400 focus:border-blue-400"
+                  />
+                </label>
+
+                <div className="mt-3 space-y-2 border border-slate-200 bg-white p-2.5">
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
                     <input
-                      value={newDocumentFolderTitle}
-                      onChange={(event) => setNewDocumentFolderTitle(event.target.value)}
-                      placeholder="新文件夹名称"
-                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                      type="radio"
+                      name="global-document-location-mode"
+                      checked={documentLocationMode === "existing"}
+                      onChange={() => setDocumentLocationMode("existing")}
+                      className="h-4 w-4 border-slate-300 text-accent"
                     />
+                    选择已有位置
+                  </label>
+                  {documentLocationMode === "existing" ? (
                     <select
-                      value={newDocumentFolderParentId}
-                      onChange={(event) => setNewDocumentFolderParentId(event.target.value)}
-                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
-                      aria-label="选择新文件夹父级位置"
+                      value={documentFolderId}
+                      onChange={(event) => setDocumentFolderId(event.target.value)}
+                      className="w-full border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-400"
+                      aria-label="选择文档创建位置"
                     >
                       <option value="__root__">根目录</option>
                       {folderOptions.map((option) => (
@@ -386,44 +399,112 @@ export function SidebarNav({
                         </option>
                       ))}
                     </select>
-                  </div>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                onClick={handleCreateDocument}
-                disabled={isPending || !selectedSpaceId}
-                className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-left text-sm text-slate-700 hover:border-slate-300"
-              >
-                <div className="font-medium text-slate-900">普通文档</div>
-                <div className="mt-1 text-xs text-slate-500">{isPending ? "创建中..." : "可直接进入编辑页面"}</div>
-              </button>
+                  ) : null}
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="radio"
+                      name="global-document-location-mode"
+                      checked={documentLocationMode === "new-folder"}
+                      onChange={() => setDocumentLocationMode("new-folder")}
+                      className="h-4 w-4 border-slate-300 text-accent"
+                    />
+                    新建文件夹后创建
+                  </label>
+                  {documentLocationMode === "new-folder" ? (
+                    <div className="grid gap-2">
+                      <input
+                        value={newDocumentFolderTitle}
+                        onChange={(event) => setNewDocumentFolderTitle(event.target.value)}
+                        placeholder="新文件夹名称"
+                        className="w-full border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400"
+                      />
+                      <select
+                        value={newDocumentFolderParentId}
+                        onChange={(event) => setNewDocumentFolderParentId(event.target.value)}
+                        className="w-full border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-400"
+                        aria-label="选择新文件夹父级位置"
+                      >
+                        <option value="__root__">根目录</option>
+                        {folderOptions.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : null}
+                </div>
+              </section>
 
-              <div className="rounded-lg border border-slate-200 bg-white p-4">
-                <div className="font-medium text-slate-900">PDF 文档</div>
-                <div className="mt-1 text-xs text-slate-500">上传后仅支持预览，暂不支持编辑</div>
-                <input
-                  type="text"
-                  value={pdfTitle}
-                  onChange={(event) => setPdfTitle(event.target.value)}
-                  placeholder="PDF 标题，可留空"
-                  className="mt-3 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-0 placeholder:text-slate-400"
-                />
-                <input
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  onChange={(event) => setPdfFile(event.target.files?.[0] ?? null)}
-                  className="mt-3 block w-full text-sm text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:text-slate-700"
-                />
+              <section className="grid gap-3 md:grid-cols-3">
                 <button
                   type="button"
-                  onClick={handleUploadPdf}
-                  disabled={isPending || !pdfFile}
-                  className="mt-3 w-full rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={handleCreateDocument}
+                  disabled={isPending || !selectedSpaceId}
+                  className="flex min-h-[190px] flex-col border border-slate-300 bg-white p-4 text-left text-sm text-slate-700 hover:border-blue-400 hover:bg-blue-50/40 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  上传 PDF
+                  <div className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">DOC</div>
+                  <div className="mt-2 text-base font-semibold text-slate-950">普通文档</div>
+                  <p className="mt-2 text-xs leading-5 text-slate-500">直接创建块文档，进入后可编辑正文、标题、列表、图片和评论。</p>
+                  <span className="mt-auto inline-flex border border-slate-300 bg-slate-900 px-3 py-2 text-center text-sm font-medium text-white">
+                    {isPending ? "创建中..." : "创建文档"}
+                  </span>
                 </button>
-              </div>
+
+                <div className="flex min-h-[190px] flex-col border border-slate-300 bg-white p-4">
+                  <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">PDF</div>
+                  <div className="mt-2 text-base font-semibold text-slate-950">PDF 文档</div>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">上传后只读预览，不支持编辑。</p>
+                  <input
+                    type="text"
+                    value={pdfTitle}
+                    onChange={(event) => setPdfTitle(event.target.value)}
+                    placeholder="PDF 标题，可留空"
+                    className="mt-3 w-full border border-slate-300 bg-white px-2.5 py-2 text-sm outline-none placeholder:text-slate-400 focus:border-blue-400"
+                  />
+                  <input
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={(event) => setPdfFile(event.target.files?.[0] ?? null)}
+                    className="mt-2 block w-full text-xs text-slate-500 file:mr-2 file:border-0 file:bg-slate-100 file:px-2.5 file:py-1.5 file:text-xs file:text-slate-700"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleUploadPdf}
+                    disabled={isPending || !pdfFile}
+                    className="mt-auto w-full border border-slate-300 bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    上传 PDF
+                  </button>
+                </div>
+
+                <div className="flex min-h-[190px] flex-col border border-slate-300 bg-white p-4">
+                  <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">DOCX</div>
+                  <div className="mt-2 text-base font-semibold text-slate-950">Word / DOCX</div>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">转换为普通文档，导入后可继续编辑。</p>
+                  <input
+                    type="text"
+                    value={docxTitle}
+                    onChange={(event) => setDocxTitle(event.target.value)}
+                    placeholder="DOCX 标题，可留空"
+                    className="mt-3 w-full border border-slate-300 bg-white px-2.5 py-2 text-sm outline-none placeholder:text-slate-400 focus:border-blue-400"
+                  />
+                  <input
+                    type="file"
+                    accept="application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx"
+                    onChange={(event) => setDocxFile(event.target.files?.[0] ?? null)}
+                    className="mt-2 block w-full text-xs text-slate-500 file:mr-2 file:border-0 file:bg-slate-100 file:px-2.5 file:py-1.5 file:text-xs file:text-slate-700"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleImportDocx}
+                    disabled={isPending || !docxFile}
+                    className="mt-auto w-full border border-slate-900 bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-300"
+                  >
+                    导入 DOCX
+                  </button>
+                </div>
+              </section>
             </div>
           </div>
         </div>

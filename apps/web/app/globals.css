@@ -40,3 +40,18 @@ button,
 a {
   -webkit-tap-highlight-color: transparent;
 }
+
+@keyframes clouddoc-tree-space-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.clouddoc-tree-space-enter {
+  animation: clouddoc-tree-space-enter 180ms ease-out both;
+}

@@ -23,6 +23,7 @@ from app.services.auth_service import (
 )
 from app.services.document_service import (
     create_document,
+    create_docx_import_document,
     create_pdf_document,
     duplicate_document,
     favorite_document,
@@ -99,6 +100,42 @@ async def upload_pdf_document_route(
             space_id=space_id,
             folder_id=folder_id,
             file_name=file.filename or "upload.pdf",
+            file_bytes=file_bytes,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/import-docx", response_model=DocumentDetail)
+async def import_docx_document_route(
+    space_id: str = Form(...),
+    folder_id: str | None = Form(default=None),
+    title: str | None = Form(default=None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_dependency),
+) -> DocumentDetail:
+    if file.content_type and file.content_type not in {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/octet-stream",
+        "application/zip",
+    }:
+        raise HTTPException(status_code=400, detail="Only DOCX files are supported")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file is not allowed")
+
+    try:
+        return create_docx_import_document(
+            db,
+            current_user_id=current_user.id,
+            title=title or "",
+            space_id=space_id,
+            folder_id=folder_id or None,
+            file_name=file.filename or "upload.docx",
             file_bytes=file_bytes,
         )
     except PermissionError as exc:

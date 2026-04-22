@@ -35,6 +35,7 @@ import {
   unpinTreeNode,
   unfavoriteDocument,
   unfavoriteFolder,
+  importDocxDocument,
   updateUserPreference,
   uploadPdfDocument,
 } from "@/lib/api";
@@ -46,6 +47,44 @@ type TreeShareDialogTarget = {
   node: TreeNode;
   tab: "visibility" | "members" | "share" | "security" | "integrations" | "audit";
 };
+
+const TREE_EXPANSION_STORAGE_KEY = "clouddoc:folder-tree:expanded:v1";
+
+function readTreeExpansionState(): Record<string, string[]> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(TREE_EXPANSION_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed).flatMap(([spaceId, folderIds]) =>
+        Array.isArray(folderIds)
+          ? [[spaceId, folderIds.filter((folderId): folderId is string => typeof folderId === "string")]]
+          : [],
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeTreeExpansionState(spaceId: string, folderIds: string[]) {
+  if (typeof window === "undefined" || !spaceId) {
+    return;
+  }
+  try {
+    const current = readTreeExpansionState();
+    current[spaceId] = folderIds;
+    window.localStorage.setItem(TREE_EXPANSION_STORAGE_KEY, JSON.stringify(current));
+  } catch {
+    // Local UI preference only. Ignore storage failures such as private browsing quota errors.
+  }
+}
+
 type LibraryEvent = {
   event_id?: string;
   event_type?: string;
@@ -364,13 +403,16 @@ function FolderTree({
 }) {
   return (
     <div className="space-y-0.5" role="tree">
-      {nodes.map((node) => (
+      {nodes.map((node) => {
+        const isFolderExpanded = node.nodeType === "folder" && expandedFolderIds.has(node.id);
+        const shouldShowChildren = node.nodeType !== "folder" || isFolderExpanded;
+        return (
         <div key={`${node.nodeType}-${node.id}`} className="space-y-0.5">
           <div
             onContextMenu={(event) => onOpenMenu(node, event)}
             tabIndex={0}
             role="treeitem"
-            aria-expanded={node.nodeType === "folder" ? expandedFolderIds.has(node.id) : undefined}
+            aria-expanded={node.nodeType === "folder" ? isFolderExpanded : undefined}
             aria-label={`${node.title}${node.nodeType === "folder" ? " 文件夹" : " 文档"}`}
             className={`group relative rounded-lg ${
               dropIndicator?.key === `${node.nodeType}:${node.id}` && dropIndicator.position === "inside"
@@ -465,10 +507,12 @@ function FolderTree({
                     event.stopPropagation();
                     onToggleFolder(node.id);
                   }}
-                  className="inline-flex h-4 w-4 items-center justify-center text-[10px] leading-none text-slate-400 hover:bg-slate-200 hover:text-slate-700"
-                  aria-label={expandedFolderIds.has(node.id) ? "折叠文件夹" : "展开文件夹"}
+                  className="inline-flex h-4 w-4 items-center justify-center text-[10px] leading-none text-slate-400 transition-colors duration-150 hover:bg-slate-200 hover:text-slate-700"
+                  aria-label={isFolderExpanded ? "折叠文件夹" : "展开文件夹"}
                 >
-                  {expandedFolderIds.has(node.id) ? "▾" : "▸"}
+                  <span className={`inline-block transition-transform duration-200 ease-out ${isFolderExpanded ? "rotate-90" : "rotate-0"}`}>
+                    ▸
+                  </span>
                 </button>
               ) : (
                 <span className="block h-4 w-4" />
@@ -506,8 +550,15 @@ function FolderTree({
               );
             })()}
           </div>
-          {node.children.length > 0 && (node.nodeType !== "folder" || expandedFolderIds.has(node.id)) ? (
-            <div className="ml-[18px] border-l border-slate-200 pl-[7px]">
+          {node.children.length > 0 ? (
+            <div
+              className={`grid transition-[grid-template-rows,opacity,transform] duration-200 ease-out ${
+                shouldShowChildren ? "grid-rows-[1fr] opacity-100 translate-y-0" : "grid-rows-[0fr] opacity-0 -translate-y-1"
+              }`}
+              aria-hidden={!shouldShowChildren}
+            >
+              <div className="min-h-0 overflow-hidden">
+                <div className="ml-[18px] border-l border-slate-200 pl-[7px]">
               <FolderTree
                 nodes={node.children}
                 currentFolderId={currentFolderId}
@@ -521,10 +572,13 @@ function FolderTree({
                 activeMenuKey={activeMenuKey}
                 onOpenMenu={onOpenMenu}
               />
+                </div>
+              </div>
             </div>
           ) : null}
         </div>
-      ))}
+      );
+      })}
     </div>
   );
 }
@@ -612,16 +666,24 @@ export function FolderWorkspaceView({
   );
   const [pdfTitle, setPdfTitle] = useState("");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [docxTitle, setDocxTitle] = useState("");
+  const [docxFile, setDocxFile] = useState<File | null>(null);
   const [selectedNodeKeys, setSelectedNodeKeys] = useState<string[]>([]);
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
   const [treeDropIndicator, setTreeDropIndicator] = useState<{ key: string; position: TreeDropPosition } | null>(null);
   const [documentTreeOpenMode, setDocumentTreeOpenMode] = useState<DocumentTreeOpenMode>(initialDocumentTreeOpenMode);
   const [liveTree, setLiveTree] = useState<TreeNode[]>(tree);
+  const [liveTreeSpaceId, setLiveTreeSpaceId] = useState(selectedSpace?.id ?? "");
   const [liveCurrentChildren, setLiveCurrentChildren] = useState<FolderChildrenResult | null>(currentChildren);
   const handledEventIdsRef = useRef<Set<string>>(new Set());
   const treeMenuRef = useRef<HTMLDivElement | null>(null);
-  const folderOptions = useMemo(() => flattenFolders(liveTree), [liveTree]);
-  const allFolderIds = useMemo(() => collectFolderIds(liveTree), [liveTree]);
+  const expansionSpaceRef = useRef<string>("");
+  const knownFolderIdsBySpaceRef = useRef<Record<string, Set<string>>>({});
+  const selectedSpaceId = selectedSpace?.id ?? "";
+  const displayTree = liveTreeSpaceId === selectedSpaceId ? liveTree : tree;
+  const folderOptions = useMemo(() => flattenFolders(displayTree), [displayTree]);
+  const allFolderIds = useMemo(() => collectFolderIds(displayTree), [displayTree]);
+  const allFolderIdsSignature = useMemo(() => allFolderIds.join("\u0000"), [allFolderIds]);
 
   const currentFolderId = currentFolder?.id ?? null;
   const effectiveFolderTitle = currentFolder?.title ?? "根目录";
@@ -645,9 +707,18 @@ export function FolderWorkspaceView({
     setNewDocumentFolderParentId(currentFolderId ?? "__root__");
   };
 
+  const closeUploadImportDialog = () => {
+    setShowUploadPdf(false);
+    setPdfTitle("");
+    setPdfFile(null);
+    setDocxTitle("");
+    setDocxFile(null);
+  };
+
   useEffect(() => {
     setLiveTree(tree);
-  }, [tree]);
+    setLiveTreeSpaceId(selectedSpaceId);
+  }, [selectedSpaceId, tree]);
 
   useEffect(() => {
     setLiveCurrentChildren(currentChildren);
@@ -768,16 +839,36 @@ export function FolderWorkspaceView({
   }, [apiUnavailable, currentFolderId, selectedSpace]);
 
   useEffect(() => {
+    if (!selectedSpaceId) {
+      expansionSpaceRef.current = "";
+      setExpandedFolderIds(new Set());
+      return;
+    }
+
+    const validFolderIds = new Set(allFolderIds);
+    const previousKnownIds = knownFolderIdsBySpaceRef.current[selectedSpaceId] ?? new Set<string>();
+    const isSpaceSwitch = expansionSpaceRef.current !== selectedSpaceId;
+    expansionSpaceRef.current = selectedSpaceId;
+
     setExpandedFolderIds((current) => {
-      const next = new Set(current);
-      for (const id of allFolderIds) {
-        if (!next.has(id)) {
-          next.add(id);
+      let next: Set<string>;
+      if (isSpaceSwitch) {
+        const storedFolderIds = readTreeExpansionState()[selectedSpaceId];
+        const initialFolderIds = storedFolderIds ?? allFolderIds;
+        next = new Set(initialFolderIds.filter((folderId) => validFolderIds.has(folderId)));
+      } else {
+        next = new Set(Array.from(current).filter((folderId) => validFolderIds.has(folderId)));
+        for (const folderId of allFolderIds) {
+          if (!previousKnownIds.has(folderId)) {
+            next.add(folderId);
+          }
         }
       }
+      writeTreeExpansionState(selectedSpaceId, Array.from(next));
       return next;
     });
-  }, [allFolderIds]);
+    knownFolderIdsBySpaceRef.current[selectedSpaceId] = validFolderIds;
+  }, [allFolderIds, allFolderIdsSignature, selectedSpaceId]);
 
   const handleDocumentTreeOpenModeChange = (mode: DocumentTreeOpenMode) => {
     setDocumentTreeOpenMode(mode);
@@ -1047,6 +1138,13 @@ export function FolderWorkspaceView({
       } else {
         next.add(folderId);
       }
+      if (selectedSpaceId) {
+        const validFolderIds = new Set(allFolderIds);
+        writeTreeExpansionState(
+          selectedSpaceId,
+          Array.from(next).filter((currentFolderId) => validFolderIds.has(currentFolderId)),
+        );
+      }
       return next;
     });
   };
@@ -1171,13 +1269,31 @@ export function FolderWorkspaceView({
           folderId: currentFolderId,
           file: pdfFile,
         });
-        setShowUploadPdf(false);
-        setPdfTitle("");
-        setPdfFile(null);
+        closeUploadImportDialog();
         router.push(`/docs/${document.id}`);
         router.refresh();
       } catch {
         setNotice("上传 PDF 失败");
+      }
+    });
+  };
+
+  const handleImportDocx = () => {
+    if (!selectedSpace || !docxFile) return;
+    startTransition(async () => {
+      try {
+        setNotice("");
+        const document = await importDocxDocument({
+          title: docxTitle.trim() || docxFile.name.replace(/\.docx$/i, ""),
+          spaceId: selectedSpace.id,
+          folderId: currentFolderId,
+          file: docxFile,
+        });
+        closeUploadImportDialog();
+        router.push(`/docs/${document.id}`);
+        router.refresh();
+      } catch {
+        setNotice("导入 DOCX 失败");
       }
     });
   };
@@ -1334,9 +1450,9 @@ export function FolderWorkspaceView({
                 </Link>
               </div>
               {selectedSpace?.id === space.id ? (
-                <div className="ml-1.5 border-l border-slate-200 pl-1.5">
+                <div key={space.id} className="clouddoc-tree-space-enter ml-1.5 border-l border-slate-200 pl-1.5">
                   <FolderTree
-                    nodes={liveTree}
+                    nodes={displayTree}
                     currentFolderId={currentFolderId}
                     documentOpenMode={documentTreeOpenMode}
                     onDropNode={handleDropNodeIntoFolder}
@@ -1403,7 +1519,7 @@ export function FolderWorkspaceView({
                 disabled={isPending || !selectedSpace}
                 className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                上传 PDF
+                上传/导入
               </button>
               <button
                 type="button"
@@ -1889,28 +2005,58 @@ export function FolderWorkspaceView({
 
       {showUploadPdf ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/30 px-4">
-          <div className="absolute inset-0" onClick={() => setShowUploadPdf(false)} aria-hidden="true" />
-          <div className="relative z-10 w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-[0_24px_64px_rgba(15,23,42,0.18)]">
-            <div className="text-lg font-semibold">上传 PDF</div>
-            <input
-              value={pdfTitle}
-              onChange={(event) => setPdfTitle(event.target.value)}
-              placeholder="PDF 标题，可留空"
-              className="mt-4 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-            />
-            <input
-              type="file"
-              accept="application/pdf,.pdf"
-              onChange={(event) => setPdfFile(event.target.files?.[0] ?? null)}
-              className="mt-3 block w-full text-sm text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2"
-            />
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setShowUploadPdf(false)} disabled={isPending} className="rounded-lg border border-slate-200 px-3 py-2 text-sm disabled:opacity-60">
+          <div className="absolute inset-0" onClick={closeUploadImportDialog} aria-hidden="true" />
+          <div className="relative z-10 w-full max-w-3xl border border-slate-300 bg-white p-5 shadow-[0_24px_64px_rgba(15,23,42,0.2)]">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-3">
+              <div>
+                <div className="text-lg font-semibold text-slate-950">上传/导入文档</div>
+                <div className="mt-1 text-xs text-slate-500">文件会创建到当前目录：{effectiveFolderTitle}</div>
+              </div>
+              <button type="button" onClick={closeUploadImportDialog} disabled={isPending} className="border border-slate-200 px-2.5 py-1 text-sm text-slate-500 hover:bg-slate-100 disabled:opacity-60">
                 取消
               </button>
-              <button type="button" onClick={handleUploadPdf} className="rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:opacity-60" disabled={isPending || !pdfFile}>
-                {isPending ? "上传中..." : "上传"}
-              </button>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div className="flex min-h-[210px] flex-col border border-slate-300 bg-white p-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">PDF</div>
+                <div className="mt-2 text-base font-semibold text-slate-950">PDF 文档</div>
+                <p className="mt-1 text-xs leading-5 text-slate-500">上传后仅支持预览，暂不支持编辑。</p>
+                <input
+                  value={pdfTitle}
+                  onChange={(event) => setPdfTitle(event.target.value)}
+                  placeholder="PDF 标题，可留空"
+                  className="mt-3 w-full border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-400"
+                />
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  onChange={(event) => setPdfFile(event.target.files?.[0] ?? null)}
+                  className="mt-2 block w-full text-xs text-slate-500 file:mr-2 file:border-0 file:bg-slate-100 file:px-2.5 file:py-1.5"
+                />
+                <button type="button" onClick={handleUploadPdf} className="mt-auto w-full border border-blue-700 bg-accent px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-300" disabled={isPending || !pdfFile}>
+                  {isPending ? "上传中..." : "上传 PDF"}
+                </button>
+              </div>
+              <div className="flex min-h-[210px] flex-col border border-slate-300 bg-white p-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">DOCX</div>
+                <div className="mt-2 text-base font-semibold text-slate-950">Word / DOCX 文档</div>
+                <p className="mt-1 text-xs leading-5 text-slate-500">导入后转换为普通 CloudDoc 文档，可继续编辑。</p>
+                <input
+                  value={docxTitle}
+                  onChange={(event) => setDocxTitle(event.target.value)}
+                  placeholder="DOCX 标题，可留空"
+                  className="mt-3 w-full border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-400"
+                />
+                <input
+                  type="file"
+                  accept="application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx"
+                  onChange={(event) => setDocxFile(event.target.files?.[0] ?? null)}
+                  className="mt-2 block w-full text-xs text-slate-500 file:mr-2 file:border-0 file:bg-slate-100 file:px-2.5 file:py-1.5"
+                />
+                <button type="button" onClick={handleImportDocx} className="mt-auto w-full border border-slate-900 bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-300" disabled={isPending || !docxFile}>
+                  {isPending ? "导入中..." : "导入 DOCX"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
