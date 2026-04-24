@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { BoardDocumentPage } from "@/components/board/board-document-page";
 import { DocumentViewModel } from "@/lib/mock-document";
 import { BlockEditor, EditableBlock } from "@/components/editor/block-editor";
 import { CommentSidebar } from "@/components/editor/comment-sidebar";
@@ -723,21 +724,30 @@ function draftHistorySignature(snapshot: DraftHistorySnapshot) {
   });
 }
 
-export function DocumentPage({
-  document,
-  mentionCandidates,
-  initialActiveThreadId,
-  shareSettings,
-  breadcrumbs,
-  spaceName,
-}: {
+type DocumentPageProps = {
   document: DocumentViewModel;
   mentionCandidates: OrganizationMember[];
   initialActiveThreadId?: string | null;
   shareSettings?: ShareLinkSettings | null;
   breadcrumbs?: AncestorItem[];
   spaceName?: string;
-}) {
+};
+
+export function DocumentPage(props: DocumentPageProps) {
+  if (props.document.documentType === "board") {
+    return <BoardDocumentPage document={props.document} breadcrumbs={props.breadcrumbs} spaceName={props.spaceName} />;
+  }
+  return <DocumentTextPage {...props} />;
+}
+
+function DocumentTextPage({
+  document,
+  mentionCandidates,
+  initialActiveThreadId,
+  shareSettings,
+  breadcrumbs,
+  spaceName,
+}: DocumentPageProps) {
   const router = useRouter();
   const [currentDocument, setCurrentDocument] = useState(document);
   const [commentThreads, setCommentThreads] = useState<CommentThread[]>([]);

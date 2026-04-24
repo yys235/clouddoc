@@ -340,6 +340,21 @@ function eventFolderToNode(folder: NonNullable<LibraryEvent["folder"]>): TreeNod
   };
 }
 
+function treeNodeIcon(node: TreeNode) {
+  if (node.nodeType === "folder") return "📁";
+  if (node.nodeType === "shortcut") return "↗";
+  if (node.documentType === "board") return "▧";
+  if (node.documentType === "pdf") return "PDF";
+  return "📄";
+}
+
+function treeNodeTypeLabel(node: TreeNode) {
+  if (node.nodeType === "folder") return "文件夹";
+  if (node.documentType === "board") return "画板";
+  if (node.documentType === "pdf") return "PDF";
+  return node.documentType || "文档";
+}
+
 function getTreeNodeHref(node: TreeNode) {
   if (node.nodeType === "shortcut") {
     return node.targetType === "folder" ? `/folders/${node.targetId}` : `/docs/${node.targetId}`;
@@ -526,7 +541,7 @@ function FolderTree({
                 className="grid min-w-0 grid-cols-[17px_minmax(0,1fr)] items-center gap-1 py-0"
               >
                 <span className="flex h-4 w-4 items-center justify-center text-[13px] text-slate-400">
-                  {node.nodeType === "folder" ? "📁" : node.nodeType === "shortcut" ? "↗" : "📄"}
+                  {treeNodeIcon(node)}
                 </span>
                 <span className="truncate pl-0.5">{node.title}</span>
               </Link>
@@ -1258,6 +1273,35 @@ export function FolderWorkspaceView({
     });
   };
 
+  const handleCreateBoard = () => {
+    if (!selectedSpace) return;
+    startTransition(async () => {
+      try {
+        setNotice("");
+        let targetFolderId = documentFolderId === "__root__" ? null : documentFolderId;
+        if (documentLocationMode === "new-folder") {
+          const folder = await createFolder({
+            title: newDocumentFolderTitle.trim() || "未命名文件夹",
+            spaceId: selectedSpace.id,
+            parentFolderId: newDocumentFolderParentId === "__root__" ? null : newDocumentFolderParentId,
+          });
+          targetFolderId = folder.id;
+        }
+        const document = await createDocument({
+          title: documentTitle.trim() || "未命名画板",
+          spaceId: selectedSpace.id,
+          folderId: targetFolderId,
+          documentType: "board",
+        });
+        closeCreateDocumentDialog();
+        router.push(`/docs/${document.id}`);
+        router.refresh();
+      } catch {
+        setNotice("创建画板失败");
+      }
+    });
+  };
+
   const handleUploadPdf = () => {
     if (!selectedSpace || !pdfFile) return;
     startTransition(async () => {
@@ -1612,11 +1656,11 @@ export function FolderWorkspaceView({
                         onClick={(event) => event.stopPropagation()}
                         className="block truncate text-sm font-medium text-slate-900 hover:text-accent"
                       >
-                        {node.nodeType === "folder" ? "📁 " : "📄 "}
+                        {treeNodeIcon(node)}{" "}
                         {node.title}
                       </Link>
                       <div className="mt-1 text-xs text-slate-500">
-                        {node.nodeType === "folder" ? "文件夹" : node.documentType || "文档"} · {node.updatedAt}
+                        {treeNodeTypeLabel(node)} · {node.updatedAt}
                       </div>
                     </div>
                   </div>
@@ -1874,8 +1918,8 @@ export function FolderWorkspaceView({
           <div className="relative z-10 w-full max-w-lg rounded-lg border border-slate-200 bg-white p-5 shadow-[0_24px_64px_rgba(15,23,42,0.18)]">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="text-lg font-semibold text-slate-900">新建文档</div>
-                <div className="mt-1 text-sm text-slate-500">确认文档创建位置，默认使用当前目录。</div>
+                <div className="text-lg font-semibold text-slate-900">新建文档 / 画板</div>
+                <div className="mt-1 text-sm text-slate-500">确认创建位置，默认使用当前目录。</div>
               </div>
               <button
                 type="button"
@@ -1887,7 +1931,7 @@ export function FolderWorkspaceView({
               </button>
             </div>
             <label className="mt-4 block text-sm font-medium text-slate-700">
-              文档标题
+              标题
               <input
                 value={documentTitle}
                 onChange={(event) => setDocumentTitle(event.target.value)}
@@ -1953,7 +1997,7 @@ export function FolderWorkspaceView({
                     ))}
                   </select>
                   <div className="text-xs text-slate-500">
-                    文档会创建在这个新文件夹中。
+                    文件会创建在这个新文件夹中。
                   </div>
                 </div>
               ) : null}
@@ -1974,6 +2018,14 @@ export function FolderWorkspaceView({
                 className="rounded-lg bg-accent px-3 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isPending ? "创建中..." : "确认创建"}
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateBoard}
+                disabled={isPending}
+                className="rounded-lg border border-slate-900 bg-white px-3 py-2 text-sm text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isPending ? "创建中..." : "创建画板"}
               </button>
             </div>
           </div>

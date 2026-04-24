@@ -193,6 +193,39 @@ export function SidebarNav({
     });
   };
 
+  const handleCreateBoard = () => {
+    startTransition(async () => {
+      try {
+        setError("");
+        const spaceId = selectedSpaceId || availableSpaces[0]?.id;
+        if (!spaceId) {
+          throw new Error("No available space");
+        }
+        let targetFolderId = documentFolderId === "__root__" ? null : documentFolderId;
+        if (documentLocationMode === "new-folder") {
+          const folder = await createFolder({
+            title: newDocumentFolderTitle.trim() || "未命名文件夹",
+            spaceId,
+            parentFolderId: newDocumentFolderParentId === "__root__" ? null : newDocumentFolderParentId,
+          });
+          targetFolderId = folder.id;
+        }
+
+        const document = await createDocument({
+          title: documentTitle.trim() || "未命名画板",
+          spaceId,
+          folderId: targetFolderId,
+          documentType: "board",
+        });
+        closeCreateModal();
+        router.push(`/docs/${document.id}`);
+        router.refresh();
+      } catch {
+        setError("新建画板失败，请确认后端服务和空间数据可用");
+      }
+    });
+  };
+
   const handleUploadPdf = () => {
     startTransition(async () => {
       try {
@@ -436,7 +469,7 @@ export function SidebarNav({
                 </div>
               </section>
 
-              <section className="grid gap-3 md:grid-cols-3">
+              <section className="grid gap-3 md:grid-cols-4">
                 <button
                   type="button"
                   onClick={handleCreateDocument}
@@ -448,6 +481,20 @@ export function SidebarNav({
                   <p className="mt-2 text-xs leading-5 text-slate-500">直接创建块文档，进入后可编辑正文、标题、列表、图片和评论。</p>
                   <span className="mt-auto inline-flex border border-slate-300 bg-slate-900 px-3 py-2 text-center text-sm font-medium text-white">
                     {isPending ? "创建中..." : "创建文档"}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCreateBoard}
+                  disabled={isPending || !selectedSpaceId}
+                  className="flex min-h-[190px] flex-col border border-slate-300 bg-white p-4 text-left text-sm text-slate-700 hover:border-blue-400 hover:bg-blue-50/40 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <div className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">BOARD</div>
+                  <div className="mt-2 text-base font-semibold text-slate-950">基础画板</div>
+                  <p className="mt-2 text-xs leading-5 text-slate-500">创建独立画板文件，支持基础图形、文本、连接线和自动保存。</p>
+                  <span className="mt-auto inline-flex border border-slate-300 bg-slate-900 px-3 py-2 text-center text-sm font-medium text-white">
+                    {isPending ? "创建中..." : "创建画板"}
                   </span>
                 </button>
 

@@ -198,6 +198,8 @@ def update_document_content_route(
         document = update_document_content(db, doc_id, payload, current_user.id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return document

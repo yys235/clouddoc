@@ -60,7 +60,7 @@ from app.schemas.document import (
     SearchResult,
 )
 
-SUPPORTED_DOCUMENT_TYPES = {"doc", "pdf"}
+SUPPORTED_DOCUMENT_TYPES = {"doc", "pdf", "board"}
 
 
 class MetadataHTMLParser(HTMLParser):
@@ -240,6 +240,157 @@ def build_pdf_content(title: str, file_name: str, file_url: str, file_size: int)
     }
 
 
+def build_default_board_content() -> dict:
+    return {
+        "type": "board",
+        "version": 2,
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+        "nodes": [],
+        "connectors": [],
+    }
+
+
+def _valid_board_endpoint(value: object, node_ids: set[str]) -> bool:
+    if isinstance(value, str):
+        return value in node_ids
+    if not isinstance(value, dict):
+        return False
+    node_id = value.get("nodeId") or value.get("node_id")
+    anchor = value.get("anchor")
+    return isinstance(node_id, str) and node_id in node_ids and anchor in {"top", "right", "bottom", "left"}
+
+
+def _valid_board_waypoints(value: object) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, list):
+        return False
+    for point in value:
+        if not isinstance(point, dict):
+            return False
+        if not isinstance(point.get("x"), (int, float)) or not isinstance(point.get("y"), (int, float)):
+            return False
+    return True
+
+
+def _valid_board_connector_style(value: object) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        return False
+    if "strokeWidth" in value and not isinstance(value.get("strokeWidth"), (int, float)):
+        return False
+    if "cornerRadius" in value and not isinstance(value.get("cornerRadius"), (int, float)):
+        return False
+    if value.get("startArrow", "none") not in {"none", "arrow"}:
+        return False
+    if value.get("endArrow", "arrow") not in {"none", "arrow"}:
+        return False
+    if "strokeDasharray" in value and not isinstance(value.get("strokeDasharray"), str):
+        return False
+    return True
+
+
+def _board_anchor_point(node: dict, anchor: str) -> tuple[float, float]:
+    x = float(node["x"])
+    y = float(node["y"])
+    width = float(node["width"])
+    height = float(node["height"])
+    if anchor == "top":
+        return (x + width / 2, y)
+    if anchor == "right":
+        return (x + width, y + height / 2)
+    if anchor == "bottom":
+        return (x + width / 2, y + height)
+    return (x, y + height / 2)
+
+
+def _valid_board_connector_path(connector: dict, nodes_by_id: dict[str, dict]) -> bool:
+    routing_mode = connector.get("routingMode", connector.get("routing", "orthogonal"))
+    if routing_mode == "straight":
+        return True
+    from_endpoint = connector.get("from")
+    to_endpoint = connector.get("to")
+    if not isinstance(from_endpoint, dict) or not isinstance(to_endpoint, dict):
+        return False
+    from_node = nodes_by_id.get(str(from_endpoint.get("nodeId")))
+    to_node = nodes_by_id.get(str(to_endpoint.get("nodeId")))
+    if from_node is None or to_node is None:
+        return False
+    points = [
+        _board_anchor_point(from_node, str(from_endpoint.get("anchor"))),
+        *[(float(point["x"]), float(point["y"])) for point in connector.get("waypoints", []) or []],
+        _board_anchor_point(to_node, str(to_endpoint.get("anchor"))),
+    ]
+    for previous, current in zip(points, points[1:]):
+        if previous[0] != current[0] and previous[1] != current[1]:
+            return False
+    return True
+
+
+def is_valid_board_content(content_json: dict) -> bool:
+    if content_json.get("type") != "board":
+        return False
+    viewport = content_json.get("viewport")
+    if not isinstance(viewport, dict):
+        return False
+    if not all(isinstance(viewport.get(key, 0), (int, float)) for key in ("x", "y", "zoom")):
+        return False
+    nodes = content_json.get("nodes")
+    connectors = content_json.get("connectors")
+    if not isinstance(nodes, list) or not isinstance(connectors, list):
+        return False
+    allowed_node_types = {
+        "text",
+        "rectangle",
+        "round_rectangle",
+        "ellipse",
+        "diamond",
+        "cylinder",
+        "predefined_process",
+        "trapezoid",
+        "document",
+        "comment_bubble",
+        "cloud",
+        "left_arrow",
+        "triangle",
+        "star",
+        "arrow",
+        "parallelogram",
+        "hexagon",
+        "plus",
+    }
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") not in allowed_node_types:
+            return False
+        if not isinstance(node.get("id"), str) or not node["id"].strip():
+            return False
+        for key in ("x", "y", "width", "height"):
+            if not isinstance(node.get(key), (int, float)):
+                return False
+    node_ids = {node["id"] for node in nodes}
+    nodes_by_id = {node["id"]: node for node in nodes}
+    for connector in connectors:
+        if not isinstance(connector, dict):
+            return False
+        if not isinstance(connector.get("id"), str) or not connector["id"].strip():
+            return False
+        routing_mode = connector.get("routingMode", connector.get("routing", "orthogonal"))
+        if routing_mode not in {"straight", "orthogonal", "polyline", "rounded-orthogonal"}:
+            return False
+        if not _valid_board_endpoint(connector.get("from"), node_ids):
+            return False
+        if not _valid_board_endpoint(connector.get("to"), node_ids):
+            return False
+        if not _valid_board_waypoints(connector.get("waypoints")):
+            return False
+        if not _valid_board_connector_style(connector.get("style")):
+            return False
+        if not _valid_board_connector_path(connector, nodes_by_id):
+            return False
+    return True
+
+
 def extract_plain_text(node: dict) -> str:
     parts: list[str] = []
 
@@ -362,7 +513,7 @@ def get_or_create_latest_content(db: Session, document: Document) -> DocumentCon
         document_id=document.id,
         version_no=1,
         schema_version=1,
-        content_json=build_default_content(document.title),
+        content_json=build_default_board_content() if document.document_type == "board" else build_default_content(document.title),
         plain_text=document.title,
         created_by=document.creator_id,
     )
@@ -829,7 +980,7 @@ def create_document(db: Session, payload: DocumentCreateRequest, current_user_id
 
     if payload.document_type not in SUPPORTED_DOCUMENT_TYPES:
         raise ValueError("Unsupported document type")
-    if payload.document_type != "doc":
+    if payload.document_type == "pdf":
         raise ValueError("Use the PDF upload endpoint for PDF documents")
     ensure_parent_folder_valid(db, payload.space_id, payload.folder_id, current_user_id)
 
@@ -851,13 +1002,13 @@ def create_document(db: Session, payload: DocumentCreateRequest, current_user_id
     db.add(document)
     db.flush()
 
-    content_json = build_default_content(document.title)
+    content_json = build_default_board_content() if document.document_type == "board" else build_default_content(document.title)
     content = DocumentContent(
         document_id=document.id,
         version_no=1,
         schema_version=1,
         content_json=content_json,
-        plain_text=extract_plain_text(content_json),
+        plain_text=document.title if document.document_type == "board" else extract_plain_text(content_json),
         created_by=owner_id,
     )
     db.add(content)
@@ -1111,6 +1262,10 @@ def update_document_content(
         raise PermissionError("Not allowed to edit document")
     if document.document_type == "pdf":
         return get_document_detail(db, doc_id, current_user_id)
+    if document.document_type == "board" and not is_valid_board_content(payload.content_json):
+        raise ValueError("Invalid board content")
+    if document.document_type == "doc" and payload.content_json.get("type") == "board":
+        raise ValueError("Invalid document content")
 
     next_version_no = (
         db.scalar(select(func.max(DocumentContent.version_no)).where(DocumentContent.document_id == doc_id)) or 0

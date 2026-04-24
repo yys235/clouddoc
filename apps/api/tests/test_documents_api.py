@@ -943,6 +943,203 @@ def test_upload_pdf_document() -> None:
         cleanup_document(document_id)
 
 
+def test_create_and_update_board_document() -> None:
+    db = SessionLocal()
+    try:
+        space = db.scalar(select(Space).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    create_response = client.post(
+        "/api/documents",
+        json={
+            "title": "pytest-board",
+            "space_id": space_id,
+            "document_type": "board",
+            "visibility": "private",
+        },
+    )
+    assert create_response.status_code == 200
+    payload = create_response.json()
+    document_id = payload["id"]
+
+    try:
+        assert payload["document_type"] == "board"
+        assert payload["content"]["content_json"]["type"] == "board"
+        assert payload["content"]["content_json"]["nodes"] == []
+        assert payload["can_edit"] is True
+
+        content_json = {
+            "type": "board",
+            "version": 1,
+            "viewport": {"x": 0, "y": 0, "zoom": 1},
+            "nodes": [
+                {
+                    "id": "node-1",
+                    "type": "rectangle",
+                    "x": 120,
+                    "y": 100,
+                    "width": 160,
+                    "height": 56,
+                    "text": "开始",
+                    "style": {
+                        "fill": "#eff6ff",
+                        "stroke": "#2563eb",
+                        "strokeWidth": 1,
+                        "fontSize": 14,
+                        "color": "#0f172a",
+                    },
+                    "zIndex": 1,
+                },
+                {
+                    "id": "node-2",
+                    "type": "predefined_process",
+                    "x": 340,
+                    "y": 100,
+                    "width": 174,
+                    "height": 76,
+                    "text": "输入文本",
+                    "style": {
+                        "fill": "#e8f0ff",
+                        "stroke": "#5b7fd8",
+                        "strokeWidth": 1,
+                        "fontSize": 14,
+                        "fontWeight": 600,
+                        "color": "#1f2937",
+                        "textAlign": "center",
+                    },
+                    "zIndex": 2,
+                },
+                {
+                    "id": "node-3",
+                    "type": "cloud",
+                    "x": 560,
+                    "y": 220,
+                    "width": 110,
+                    "height": 92,
+                    "text": "输入文本",
+                    "style": {
+                        "fill": "#e8f0ff",
+                        "stroke": "#5b7fd8",
+                        "strokeWidth": 1,
+                        "fontSize": 14,
+                        "color": "#1f2937",
+                    },
+                    "zIndex": 3,
+                },
+            ],
+            "connectors": [
+                {
+                    "id": "connector-1",
+                    "from": {"nodeId": "node-1", "anchor": "bottom"},
+                    "to": {"nodeId": "node-2", "anchor": "left"},
+                    "routingMode": "rounded-orthogonal",
+                    "waypoints": [
+                        {"x": 200, "y": 180},
+                        {"x": 280, "y": 180},
+                        {"x": 280, "y": 138},
+                    ],
+                    "style": {
+                        "stroke": "#5b7fd8",
+                        "strokeWidth": 1.5,
+                        "strokeDasharray": "",
+                        "startArrow": "none",
+                        "endArrow": "arrow",
+                        "cornerRadius": 12,
+                    },
+                    "zIndex": 0,
+                }
+            ],
+        }
+        update_response = client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "content_json": content_json,
+                "plain_text": "pytest-board",
+            },
+        )
+        assert update_response.status_code == 200
+        assert update_response.json()["content"]["content_json"]["nodes"][0]["text"] == "开始"
+        assert update_response.json()["content"]["content_json"]["nodes"][1]["type"] == "predefined_process"
+        assert update_response.json()["content"]["content_json"]["nodes"][2]["type"] == "cloud"
+        assert update_response.json()["content"]["content_json"]["connectors"][0]["routingMode"] == "rounded-orthogonal"
+        assert update_response.json()["content"]["content_json"]["connectors"][0]["waypoints"][1]["x"] == 280
+
+        invalid_response = client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "content_json": {"type": "doc", "version": 1, "content": []},
+                "plain_text": "",
+            },
+        )
+        assert invalid_response.status_code == 400
+
+        invalid_routing = {**content_json, "connectors": [{**content_json["connectors"][0], "routingMode": "bezier"}]}
+        invalid_routing_response = client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "content_json": invalid_routing,
+                "plain_text": "pytest-board",
+            },
+        )
+        assert invalid_routing_response.status_code == 400
+
+        invalid_waypoints = {**content_json, "connectors": [{**content_json["connectors"][0], "waypoints": [{"x": "bad", "y": 1}]}]}
+        invalid_waypoints_response = client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "content_json": invalid_waypoints,
+                "plain_text": "pytest-board",
+            },
+        )
+        assert invalid_waypoints_response.status_code == 400
+
+        diagonal_waypoints = {
+            **content_json,
+            "connectors": [
+                {
+                    **content_json["connectors"][0],
+                    "waypoints": [
+                        {"x": 210, "y": 190},
+                        {"x": 260, "y": 220},
+                    ],
+                }
+            ],
+        }
+        diagonal_waypoints_response = client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "content_json": diagonal_waypoints,
+                "plain_text": "pytest-board",
+            },
+        )
+        assert diagonal_waypoints_response.status_code == 400
+
+        missing_anchor = {**content_json, "connectors": [{**content_json["connectors"][0], "from": {"nodeId": "node-1"}}]}
+        missing_anchor_response = client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "content_json": missing_anchor,
+                "plain_text": "pytest-board",
+            },
+        )
+        assert missing_anchor_response.status_code == 400
+
+        missing_target_node = {**content_json, "connectors": [{**content_json["connectors"][0], "to": {"nodeId": "missing-node", "anchor": "left"}}]}
+        missing_target_response = client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "content_json": missing_target_node,
+                "plain_text": "pytest-board",
+            },
+        )
+        assert missing_target_response.status_code == 400
+    finally:
+        cleanup_document(document_id)
+
+
 def test_import_docx_document() -> None:
     db = SessionLocal()
     try:

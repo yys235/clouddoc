@@ -30,6 +30,7 @@ export type DocumentViewModel = {
   isSharedView: boolean;
   outline: Array<{ id: string; title: string; level: number }>;
   content: RichTextNode[];
+  contentJson: Record<string, unknown>;
   summary?: string;
   fileUrl?: string;
   fileName?: string;
@@ -76,14 +77,15 @@ export function buildDocumentViewModel(data: {
   can_transfer_owner?: boolean;
   effective_role?: string;
   is_shared_view?: boolean;
-  content?: { content_json?: { content?: RichTextNode[] } };
+  content?: { content_json?: { content?: RichTextNode[] } & Record<string, unknown> };
   summary?: string | null;
   file_url?: string | null;
   file_name?: string | null;
   mime_type?: string | null;
   file_size?: number | null;
 }): DocumentViewModel {
-  const content = data.content?.content_json?.content ?? [];
+  const contentJson = data.content?.content_json ?? {};
+  const content = contentJson.content ?? [];
   return {
     id: data.id,
     title: data.title || "未命名文档",
@@ -115,6 +117,7 @@ export function buildDocumentViewModel(data: {
     isSharedView: Boolean(data.is_shared_view),
     outline: buildOutline(content),
     content,
+    contentJson,
     summary: data.summary ?? undefined,
     fileUrl: data.file_url ?? undefined,
     fileName: data.file_name ?? undefined,
