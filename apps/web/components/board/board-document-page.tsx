@@ -1028,15 +1028,16 @@ function roundedConnectorPath(points: BoardPoint[], radius: number) {
 
 function connectorPath(points: BoardPoint[], connector: BoardConnector) {
   if (points.length < 2) return "";
-  if (connector.routingMode === "rounded-orthogonal") {
+  const cornerRadius = connector.style.cornerRadius ?? 0;
+  if (connector.routingMode === "rounded-orthogonal" || cornerRadius > 0) {
     return roundedConnectorPath(points, connector.style.cornerRadius ?? DEFAULT_CONNECTOR_STYLE.cornerRadius);
   }
   return `M ${points.map((point) => `${point.x} ${point.y}`).join(" L ")}`;
 }
 
-function connectorRoutingLabel(routingMode: ConnectorRoutingMode) {
+function connectorRoutingLabel(routingMode: ConnectorRoutingMode, cornerRadius = 0) {
   if (routingMode === "straight") return "直线";
-  if (routingMode === "polyline") return "多段";
+  if (routingMode === "polyline") return cornerRadius > 0 ? "圆角" : "多段";
   if (routingMode === "rounded-orthogonal") return "圆角";
   return "折线";
 }
@@ -2524,10 +2525,11 @@ export function BoardDocumentPage({
             connectorHandleDrag.orientation,
             point,
           );
+          const shouldKeepRounded = connector.routingMode === "rounded-orthogonal" || (connector.style.cornerRadius ?? 0) > 0;
           return {
             ...connector,
             routingMode: "polyline",
-            style: { ...connector.style, cornerRadius: 0 },
+            style: { ...connector.style, cornerRadius: shouldKeepRounded ? Math.max(8, connector.style.cornerRadius ?? DEFAULT_CONNECTOR_STYLE.cornerRadius) : 0 },
             waypoints: nextPoints.slice(1, -1),
           };
         }),
@@ -2545,10 +2547,11 @@ export function BoardDocumentPage({
           if (connector.id !== connectorPointDrag.connectorId) return connector;
           const nextPoints = connectorPointDrag.points.map((item) => ({ ...item }));
           nextPoints[connectorPointDrag.pointIndex] = point;
+          const shouldKeepRounded = connector.routingMode === "rounded-orthogonal" || (connector.style.cornerRadius ?? 0) > 0;
           return {
             ...connector,
             routingMode: "polyline",
-            style: { ...connector.style, cornerRadius: 0 },
+            style: { ...connector.style, cornerRadius: shouldKeepRounded ? Math.max(8, connector.style.cornerRadius ?? DEFAULT_CONNECTOR_STYLE.cornerRadius) : 0 },
             waypoints: nextPoints.slice(1, -1),
           };
         }),
@@ -3809,7 +3812,7 @@ export function BoardDocumentPage({
               ) : null}
               {selectedConnector ? (
                 <>
-                  <button type="button" className="h-9 border-r border-[#eef1f6] px-3 hover:bg-[#f5f7fb]" onMouseEnter={() => openToolbarPanel("line")} onClick={() => setActivePanel(activePanel === "line" ? null : "line")}>{connectorRoutingLabel(selectedConnector.routingMode)}</button>
+                  <button type="button" className="h-9 border-r border-[#eef1f6] px-3 hover:bg-[#f5f7fb]" onMouseEnter={() => openToolbarPanel("line")} onClick={() => setActivePanel(activePanel === "line" ? null : "line")}>{connectorRoutingLabel(selectedConnector.routingMode, selectedConnector.style.cornerRadius ?? 0)}</button>
                   <button type="button" className="h-9 border-r border-[#eef1f6] px-3 hover:bg-[#f5f7fb]" onMouseEnter={() => openToolbarPanel("line")} onClick={() => setActivePanel(activePanel === "line" ? null : "line")}>路径</button>
                   <button type="button" className="grid h-9 w-10 place-items-center border-r border-[#eef1f6] hover:bg-[#f5f7fb]" onMouseEnter={() => openToolbarPanel("stroke")} onClick={() => setActivePanel(activePanel === "stroke" ? null : "stroke")} title="线条颜色"><span className="h-4 w-4 rounded-full" style={{ background: selectedConnector.style.stroke }} /></button>
                   <button type="button" className="grid h-9 w-10 place-items-center border-r border-[#eef1f6] hover:bg-[#f5f7fb]" title="文本" onClick={() => setNotice("连接线文本能力本轮仅保留占位，暂未接入")}><span className="text-[13px] font-medium text-[#1f2329]">+T</span></button>
@@ -3902,7 +3905,7 @@ export function BoardDocumentPage({
                         <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => updateSelectedConnector({ style: { strokeDasharray: selectedConnector.style.strokeDasharray ? "" : "6 4" } })}>实线 / 虚线</button>
                         <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => updateSelectedConnector({ style: { endArrow: selectedConnector.style.endArrow === "arrow" ? "none" : "arrow" } })}>终点箭头 →</button>
                         <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => updateSelectedConnector({ style: { startArrow: selectedConnector.style.startArrow === "arrow" ? "none" : "arrow" } })}>起点箭头 ←</button>
-                        {selectedConnector.routingMode === "rounded-orthogonal" ? (
+                        {selectedConnector.routingMode === "rounded-orthogonal" || (selectedConnector.style.cornerRadius ?? 0) > 0 ? (
                           <>
                             <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => updateSelectedConnector({ style: { cornerRadius: 8 } })}>圆角半径 8</button>
                             <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => updateSelectedConnector({ style: { cornerRadius: 12 } })}>圆角半径 12</button>

@@ -972,3 +972,28 @@ CloudDoc 后续如果继续对齐这类体验，重心不应再停留在侧栏�
 - Playwright 在 `520x420` 小视口打开临时画板，选中连接线并打开路径菜单，确认面板位于视口内：`top=7`、`bottom=280`、`viewportHeight=420`，且 `overflowY=auto`。
 - 验证截图：`output/playwright/toolbar-overflow-fixed.png`。
 - 本轮临时测试画板已清理。
+
+### 2026-04-30 第二十六轮圆角连接线拖动保持圆角
+
+用户反馈连接线调整为圆角之后，移动连接线会变回直角。
+
+问题根因：
+
+- 连接线分段拖动和拐点拖动会把连接线从自动路由转换为手动 `polyline`，这是为了保留用户手动调整后的路径。
+- 旧逻辑在转换为 `polyline` 时同时把 `cornerRadius` 强制设为 `0`。
+- `connectorPath` 只在 `routingMode === "rounded-orthogonal"` 时走圆角渲染，因此手动拖动后会丢失圆角视觉。
+
+本轮修订规则：
+
+- 圆角连接线被拖动后仍转换为手动 `polyline`，避免自动路由覆盖用户调整。
+- 如果拖动前是圆角连接线，或连接线已有 `cornerRadius > 0`，拖动后继续保留圆角半径。
+- `polyline` 在 `cornerRadius > 0` 时也使用圆角路径渲染。
+- 用户显式选择“多段折线”时仍可将圆角半径清零，得到直角/折线效果。
+
+验证结果：
+
+- `apps/web npm run build` 通过。
+- `apps/api .venv/bin/pytest tests/test_documents_api.py -k board -q` 通过。
+- Playwright 打开临时画板 `codex rounded connector drag test`，拖动圆角连接线的垂直分段后，后端确认连接线保存为 `routingMode=polyline`、`cornerRadius=12`、`waypoints=[{x:430,y:191},{x:430,y:291}]`。
+- 页面渲染路径仍包含 `Q` 曲线：`M 340 191 L 418 191 Q 430 191 430 203 L 430 279 Q 430 291 442 291 L 520 291`。
+- 本轮临时测试画板已清理。
