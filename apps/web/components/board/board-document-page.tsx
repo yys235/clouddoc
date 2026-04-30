@@ -37,6 +37,17 @@ type BoardWaypoint = BoardPoint;
 type BoardRect = { x: number; y: number; width: number; height: number };
 type MultiSelectionFilter = "all" | "connector" | `node:${BoardNodeType}`;
 type SelectionRectState = { start: BoardPoint; current: BoardPoint };
+type QuickAddPreviewState = { sourceNodeId: string; anchor: BoardAnchor };
+type QuickAddPressState = {
+  sourceNodeId: string;
+  anchor: BoardAnchor;
+  startClientX: number;
+  startClientY: number;
+  latestClientX: number;
+  latestClientY: number;
+  startedConnection: boolean;
+};
+type ShapePlacementPreviewState = { type: BoardNodeType; x: number; y: number; width: number; height: number };
 type MultiSelectionOption = { key: MultiSelectionFilter; label: string; count: number };
 type BoardIconName =
   | "orb"
@@ -69,6 +80,7 @@ type BoardNode = {
   width: number;
   height: number;
   text: string;
+  manualSize: boolean;
   style: {
     fill: string;
     stroke: string;
@@ -89,6 +101,9 @@ type BoardConnector = {
   routingMode: ConnectorRoutingMode;
   waypoints: BoardWaypoint[];
   label?: string;
+  labelPosition?: BoardPoint;
+  labelSegmentIndex?: number;
+  labelSegmentT?: number;
   style: {
     stroke: string;
     strokeWidth: number;
@@ -113,24 +128,30 @@ type BoardSnapshot = {
 };
 
 const DEFAULT_NODE_STYLE = {
-  fill: "#e8f0ff",
-  stroke: "#5b7fd8",
-  strokeWidth: 1,
+  fill: "#dfeaff",
+  stroke: "#5b8cff",
+  strokeWidth: 2,
   strokeDasharray: "",
   fontSize: 14,
   fontWeight: 400,
   color: "#1f2937",
   textAlign: "center" as const,
 };
-const DEFAULT_NODE_FILL_OPACITY = 0.72;
+const DEFAULT_NODE_FILL_OPACITY = 0.74;
+const LEGACY_DEFAULT_NODE_FILL = "#e8f0ff";
+const LEGACY_DEFAULT_NODE_STROKE = "#5b7fd8";
+const LEGACY_DEFAULT_NODE_STROKE_WIDTH = 1;
 const DEFAULT_CONNECTOR_STYLE = {
-  stroke: "#8b95a5",
-  strokeWidth: 1.5,
+  stroke: "#c2c8cc",
+  strokeWidth: 2,
   strokeDasharray: "",
   startArrow: "none" as const,
   endArrow: "arrow" as const,
   cornerRadius: 12,
 };
+const CONNECTOR_ENDPOINT_STUB = 24;
+const LEGACY_DEFAULT_CONNECTOR_STROKE = "#8b95a5";
+const LEGACY_DEFAULT_CONNECTOR_STROKE_WIDTH = 1.5;
 const SHAPE_ITEMS: Array<{ type: BoardNodeType; label: string; icon: string }> = [
   { type: "rectangle", label: "矩形", icon: "▭" },
   { type: "ellipse", label: "圆形", icon: "○" },
@@ -345,7 +366,55 @@ function normalizeEndpoint(raw: unknown, fallbackAnchor: BoardAnchor): Connector
 function normalizeConnectorRouting(value: unknown): ConnectorRoutingMode {
   return value === "straight" || value === "orthogonal" || value === "polyline" || value === "rounded-orthogonal"
     ? value
-    : "orthogonal";
+    : "rounded-orthogonal";
+}
+
+function normalizeDefaultNodeFill(type: BoardNodeType, value: unknown) {
+  const fill = String(value ?? (type === "text" ? "transparent" : DEFAULT_NODE_STYLE.fill));
+  if (type === "text") return fill;
+  return fill === LEGACY_DEFAULT_NODE_FILL ? DEFAULT_NODE_STYLE.fill : fill;
+}
+
+function normalizeDefaultNodeStroke(value: unknown) {
+  const stroke = String(value || DEFAULT_NODE_STYLE.stroke);
+  return stroke === LEGACY_DEFAULT_NODE_STROKE ? DEFAULT_NODE_STYLE.stroke : stroke;
+}
+
+function normalizeDefaultNodeStrokeWidth(value: unknown) {
+  const strokeWidth = Number(value ?? DEFAULT_NODE_STYLE.strokeWidth) || DEFAULT_NODE_STYLE.strokeWidth;
+  return strokeWidth === LEGACY_DEFAULT_NODE_STROKE_WIDTH ? DEFAULT_NODE_STYLE.strokeWidth : strokeWidth;
+}
+
+function normalizeDefaultConnectorStroke(value: unknown) {
+  const stroke = String(value || DEFAULT_CONNECTOR_STYLE.stroke);
+  return stroke === LEGACY_DEFAULT_CONNECTOR_STROKE ? DEFAULT_CONNECTOR_STYLE.stroke : stroke;
+}
+
+function normalizeDefaultConnectorStrokeWidth(value: unknown) {
+  const strokeWidth = Number(value ?? DEFAULT_CONNECTOR_STYLE.strokeWidth) || DEFAULT_CONNECTOR_STYLE.strokeWidth;
+  return strokeWidth === LEGACY_DEFAULT_CONNECTOR_STROKE_WIDTH ? DEFAULT_CONNECTOR_STYLE.strokeWidth : strokeWidth;
+}
+
+function boardNodeTextLines(node: Pick<BoardNode, "text" | "width" | "style">, text = node.text) {
+  const fontSize = Number(node.style.fontSize || DEFAULT_NODE_STYLE.fontSize) || DEFAULT_NODE_STYLE.fontSize;
+  const maxUnits = Math.max(4, Math.max(20, node.width - 24) / Math.max(8, fontSize));
+  return wrapText(text, maxUnits);
+}
+
+function requiredNodeHeightForText(node: Pick<BoardNode, "type" | "text" | "width" | "height" | "style">, text = node.text) {
+  if (!text.trim()) return node.height;
+  const fontSize = Number(node.style.fontSize || DEFAULT_NODE_STYLE.fontSize) || DEFAULT_NODE_STYLE.fontSize;
+  const lineHeight = fontSize * 1.25;
+  const verticalPadding = node.type === "text" ? 14 : 18;
+  const lines = boardNodeTextLines(node, text);
+  return Math.ceil(lines.length * lineHeight + verticalPadding * 2);
+}
+
+function fitNodeHeightToText(node: BoardNode, text = node.text) {
+  const minHeight = defaultNodeSize(node.type).height;
+  const requiredHeight = requiredNodeHeightForText(node, text);
+  const nextHeight = Math.max(minHeight, node.height, requiredHeight);
+  return nextHeight === node.height && text === node.text ? node : { ...node, text, height: nextHeight };
 }
 
 function normalizeWaypoints(raw: unknown): BoardWaypoint[] {
@@ -379,7 +448,7 @@ function normalizeBoardState(raw: Record<string, unknown>): BoardState {
       const type = String(node.type || "rectangle") as BoardNodeType;
       if (!SHAPE_ITEMS.some((shape) => shape.type === type) && type !== "text") return [];
       const style = node.style && typeof node.style === "object" ? node.style as Record<string, unknown> : {};
-      return [{
+      const normalizedNode: BoardNode = {
         id: String(node.id || crypto.randomUUID()),
         type,
         x: Number(node.x ?? 120) || 120,
@@ -387,10 +456,11 @@ function normalizeBoardState(raw: Record<string, unknown>): BoardState {
         width: Math.max(48, Number(node.width ?? 160) || 160),
         height: Math.max(32, Number(node.height ?? 64) || 64),
         text: String(node.text ?? ""),
+        manualSize: Boolean(node.manualSize ?? node.manual_size ?? false),
         style: {
-          fill: String(style.fill ?? (type === "text" ? "transparent" : DEFAULT_NODE_STYLE.fill)),
-          stroke: String(style.stroke || DEFAULT_NODE_STYLE.stroke),
-          strokeWidth: Number(style.strokeWidth ?? DEFAULT_NODE_STYLE.strokeWidth) || DEFAULT_NODE_STYLE.strokeWidth,
+          fill: normalizeDefaultNodeFill(type, style.fill),
+          stroke: normalizeDefaultNodeStroke(style.stroke),
+          strokeWidth: normalizeDefaultNodeStrokeWidth(style.strokeWidth),
           strokeDasharray: String(style.strokeDasharray || ""),
           fontSize: Number(style.fontSize ?? DEFAULT_NODE_STYLE.fontSize) || DEFAULT_NODE_STYLE.fontSize,
           fontWeight: Number(style.fontWeight ?? DEFAULT_NODE_STYLE.fontWeight) || DEFAULT_NODE_STYLE.fontWeight,
@@ -398,7 +468,8 @@ function normalizeBoardState(raw: Record<string, unknown>): BoardState {
           textAlign: ["left", "center", "right"].includes(String(style.textAlign)) ? style.textAlign as BoardNode["style"]["textAlign"] : "center",
         },
         zIndex: Number(node.zIndex ?? 1) || 1,
-      }];
+      };
+      return [normalizedNode.manualSize ? normalizedNode : fitNodeHeightToText(normalizedNode)];
     }),
     connectors: connectors.flatMap((item): BoardConnector[] => {
       if (!item || typeof item !== "object") return [];
@@ -414,9 +485,17 @@ function normalizeBoardState(raw: Record<string, unknown>): BoardState {
         routingMode: normalizeConnectorRouting(connector.routingMode ?? connector.routing),
         waypoints: normalizeWaypoints(connector.waypoints),
         label: String(connector.label || ""),
+        labelPosition: (() => {
+          const rawPosition = connector.labelPosition || connector.label_position;
+          if (!rawPosition || typeof rawPosition !== "object") return undefined;
+          const point = rawPosition as Record<string, unknown>;
+          return typeof point.x === "number" && typeof point.y === "number" ? { x: point.x, y: point.y } : undefined;
+        })(),
+        labelSegmentIndex: typeof connector.labelSegmentIndex === "number" ? connector.labelSegmentIndex : typeof connector.label_segment_index === "number" ? connector.label_segment_index : undefined,
+        labelSegmentT: typeof connector.labelSegmentT === "number" ? connector.labelSegmentT : typeof connector.label_segment_t === "number" ? connector.label_segment_t : undefined,
         style: {
-          stroke: String(style.stroke || DEFAULT_CONNECTOR_STYLE.stroke),
-          strokeWidth: Number(style.strokeWidth ?? DEFAULT_CONNECTOR_STYLE.strokeWidth) || DEFAULT_CONNECTOR_STYLE.strokeWidth,
+          stroke: normalizeDefaultConnectorStroke(style.stroke),
+          strokeWidth: normalizeDefaultConnectorStrokeWidth(style.strokeWidth),
           strokeDasharray: String(style.strokeDasharray || ""),
           startArrow: style.startArrow === "arrow" ? "arrow" : "none",
           endArrow: style.endArrow === "none" ? "none" : "arrow",
@@ -488,12 +567,12 @@ function polygonPoints(node: BoardNode) {
 
 function arrowPath(node: BoardNode) {
   const { x, y, width, height } = node;
-  return `${x},${y + height * 0.28} L${x + width * 0.62},${y + height * 0.28} L${x + width * 0.62},${y} L${x + width},${y + height / 2} L${x + width * 0.62},${y + height} L${x + width * 0.62},${y + height * 0.72} L${x},${y + height * 0.72} Z`;
+  return `M ${x} ${y + height * 0.28} L ${x + width * 0.62} ${y + height * 0.28} L ${x + width * 0.62} ${y} L ${x + width} ${y + height / 2} L ${x + width * 0.62} ${y + height} L ${x + width * 0.62} ${y + height * 0.72} L ${x} ${y + height * 0.72} Z`;
 }
 
 function leftArrowPath(node: BoardNode) {
   const { x, y, width, height } = node;
-  return `${x + width},${y + height * 0.28} L${x + width * 0.38},${y + height * 0.28} L${x + width * 0.38},${y} L${x},${y + height / 2} L${x + width * 0.38},${y + height} L${x + width * 0.38},${y + height * 0.72} L${x + width},${y + height * 0.72} Z`;
+  return `M ${x + width} ${y + height * 0.28} L ${x + width * 0.38} ${y + height * 0.28} L ${x + width * 0.38} ${y} L ${x} ${y + height / 2} L ${x + width * 0.38} ${y + height} L ${x + width * 0.38} ${y + height * 0.72} L ${x + width} ${y + height * 0.72} Z`;
 }
 
 function trapezoidPoints(node: BoardNode) {
@@ -618,6 +697,99 @@ function outwardPoint(point: BoardPoint, anchor: BoardAnchor, distance: number) 
   return { x: point.x + distance, y: point.y };
 }
 
+function hasEndpointStub(points: BoardPoint[], endpoint: "start" | "end", anchor: BoardAnchor, minLength = CONNECTOR_ENDPOINT_STUB) {
+  if (points.length < 2) return false;
+  const point = endpoint === "start" ? points[0] : points[points.length - 1];
+  const next = endpoint === "start" ? points[1] : points[points.length - 2];
+  if (anchor === "left") return next.y === point.y && next.x <= point.x - minLength;
+  if (anchor === "right") return next.y === point.y && next.x >= point.x + minLength;
+  if (anchor === "top") return next.x === point.x && next.y <= point.y - minLength;
+  return next.x === point.x && next.y >= point.y + minLength;
+}
+
+function protectConnectorEndpointStubs(points: BoardPoint[], fromAnchor: BoardAnchor, toAnchor: BoardAnchor) {
+  if (points.length < 2) return points;
+  let protectedPoints = simplifyOrthogonalPath(orthogonalizePath(points.map((point) => ({ ...point }))));
+  if (!hasEndpointStub(protectedPoints, "start", fromAnchor)) {
+    const start = protectedPoints[0];
+    const startOut = outwardPoint(start, fromAnchor, CONNECTOR_ENDPOINT_STUB);
+    const next = protectedPoints[1];
+    const bendTarget = protectedPoints[2];
+    if ((startOut.x === next.x || startOut.y === next.y) && bendTarget) {
+      const bridge = anchorAxis(fromAnchor) === "horizontal"
+        ? { x: startOut.x, y: bendTarget.y }
+        : { x: bendTarget.x, y: startOut.y };
+      protectedPoints = [start, startOut, bridge, ...protectedPoints.slice(2)];
+    } else {
+      const bridge = startOut.x === next.x || startOut.y === next.y
+        ? []
+        : anchorAxis(fromAnchor) === "horizontal"
+          ? [{ x: startOut.x, y: next.y }]
+          : [{ x: next.x, y: startOut.y }];
+      protectedPoints = [start, startOut, ...bridge, ...protectedPoints.slice(1)];
+    }
+  }
+  if (!hasEndpointStub(protectedPoints, "end", toAnchor)) {
+    const end = protectedPoints[protectedPoints.length - 1];
+    const endOut = outwardPoint(end, toAnchor, CONNECTOR_ENDPOINT_STUB);
+    const previous = protectedPoints[protectedPoints.length - 2];
+    const bridge = previous.x === endOut.x || previous.y === endOut.y
+      ? []
+      : anchorAxis(toAnchor) === "horizontal"
+        ? [{ x: endOut.x, y: previous.y }]
+        : [{ x: previous.x, y: endOut.y }];
+    protectedPoints = [...protectedPoints.slice(0, -1), ...bridge, endOut, end];
+  }
+  return simplifyWaypoints(orthogonalizePath(protectedPoints));
+}
+
+function orthogonalizePath(points: BoardPoint[]) {
+  if (points.length < 2) return points;
+  const nextPoints: BoardPoint[] = [points[0]];
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = nextPoints[nextPoints.length - 1];
+    const current = points[index];
+    if (previous.x !== current.x && previous.y !== current.y) {
+      const beforePrevious = nextPoints.at(-2);
+      if (beforePrevious && beforePrevious.x === previous.x) {
+        nextPoints.push({ x: current.x, y: previous.y });
+      } else {
+        nextPoints.push({ x: previous.x, y: current.y });
+      }
+    }
+    nextPoints.push(current);
+  }
+  return compactWaypoints(nextPoints);
+}
+
+function oppositeAnchor(anchor: BoardAnchor): BoardAnchor {
+  if (anchor === "top") return "bottom";
+  if (anchor === "bottom") return "top";
+  if (anchor === "left") return "right";
+  return "left";
+}
+
+function quickAddNodePosition(source: BoardNode, anchor: BoardAnchor, width: number, height: number) {
+  const gap = 82;
+  if (anchor === "top") {
+    return { x: source.x + source.width / 2 - width / 2, y: source.y - gap - height };
+  }
+  if (anchor === "bottom") {
+    return { x: source.x + source.width / 2 - width / 2, y: source.y + source.height + gap };
+  }
+  if (anchor === "left") {
+    return { x: source.x - gap - width, y: source.y + source.height / 2 - height / 2 };
+  }
+  return { x: source.x + source.width + gap, y: source.y + source.height / 2 - height / 2 };
+}
+
+function quickAddSymbol(anchor: BoardAnchor) {
+  if (anchor === "top") return "↑";
+  if (anchor === "bottom") return "↓";
+  if (anchor === "left") return "←";
+  return "→";
+}
+
 function compactWaypoints(points: BoardPoint[]) {
   const compacted: BoardPoint[] = [];
   for (const point of points) {
@@ -646,11 +818,67 @@ function simplifyWaypoints(points: BoardPoint[]) {
       simplified.push(point);
     }
   }
-  return simplified;
+  const finalPoints = compactWaypoints(simplified);
+  if (points.length >= 2 && finalPoints.length < 2) {
+    return [points[0], points[points.length - 1]];
+  }
+  return finalPoints;
 }
 
 function simplifyOrthogonalPath(points: BoardPoint[]) {
-  return simplifyWaypoints(points);
+  return mergeOverlappingOrthogonalSegments(simplifyWaypoints(points));
+}
+
+function mergeOverlappingOrthogonalSegments(points: BoardPoint[]) {
+  let nextPoints = compactWaypoints(points);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let index = 0; index < nextPoints.length - 3; index += 1) {
+      const first = nextPoints[index];
+      const second = nextPoints[index + 1];
+      const third = nextPoints[index + 2];
+      const fourth = nextPoints[index + 3];
+      if (first.x === second.x && third.x === fourth.x && first.x === fourth.x) {
+        const firstMin = Math.min(first.y, second.y);
+        const firstMax = Math.max(first.y, second.y);
+        const secondMin = Math.min(third.y, fourth.y);
+        const secondMax = Math.max(third.y, fourth.y);
+        if (Math.max(firstMin, secondMin) <= Math.min(firstMax, secondMax)) {
+          nextPoints = [
+            ...nextPoints.slice(0, index + 1),
+            fourth,
+            ...nextPoints.slice(index + 4),
+          ];
+          changed = true;
+          break;
+        }
+      }
+      if (first.y === second.y && third.y === fourth.y && first.y === fourth.y) {
+        const firstMin = Math.min(first.x, second.x);
+        const firstMax = Math.max(first.x, second.x);
+        const secondMin = Math.min(third.x, fourth.x);
+        const secondMax = Math.max(third.x, fourth.x);
+        if (Math.max(firstMin, secondMin) <= Math.min(firstMax, secondMax)) {
+          nextPoints = [
+            ...nextPoints.slice(0, index + 1),
+            fourth,
+            ...nextPoints.slice(index + 4),
+          ];
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (changed) {
+      nextPoints = simplifyWaypoints(nextPoints);
+    }
+  }
+  const finalPoints = simplifyWaypoints(nextPoints);
+  if (points.length >= 2 && finalPoints.length < 2) {
+    return [points[0], points[points.length - 1]];
+  }
+  return finalPoints;
 }
 
 function expandedNodeBounds(node: BoardNode, padding: number) {
@@ -730,11 +958,11 @@ function defaultConnectorWaypointsForNodes(connector: BoardConnector, fromNode: 
   const gap = 36;
   const startOut = outwardPoint(start, connector.from.anchor, gap);
   const endOut = outwardPoint(end, connector.to.anchor, gap);
-  const fullPath = simplifyOrthogonalPath([
+  const fullPath = protectConnectorEndpointStubs(simplifyOrthogonalPath([
     start,
     ...routeBetweenConnectorStubs(startOut, endOut, fromNode, toNode, gap),
     end,
-  ]);
+  ]), connector.from.anchor, connector.to.anchor);
   return fullPath.slice(1, -1);
 }
 
@@ -814,18 +1042,118 @@ function connectorRoutingLabel(routingMode: ConnectorRoutingMode) {
 }
 
 function connectorSegmentHandles(points: BoardPoint[]) {
-  if (points.length < 4) return [];
-  return Array.from({ length: points.length - 3 }, (_, index) => {
-    const start = points[index + 1];
-    const end = points[index + 2];
+  if (points.length < 3) return [];
+  const handles: Array<{
+    segmentIndex: number;
+    orientation: "horizontal" | "vertical";
+    x: number;
+    y: number;
+    start: BoardPoint;
+    end: BoardPoint;
+  }> = [];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    if (start.x === end.x && start.y === end.y) continue;
     const orientation: "horizontal" | "vertical" = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y) ? "horizontal" : "vertical";
-    return {
-      segmentIndex: index + 1,
+    handles.push({
+      segmentIndex: index,
       orientation,
       x: (start.x + end.x) / 2,
       y: (start.y + end.y) / 2,
-    };
-  });
+      start,
+      end,
+    });
+  }
+  return handles;
+}
+
+function snapConnectorSegmentCoordinate(
+  points: BoardPoint[],
+  segmentIndex: number,
+  orientation: "horizontal" | "vertical",
+  coordinate: number,
+) {
+  const snapDistance = 8;
+  let snapped = coordinate;
+  let bestDistance = snapDistance + 1;
+  for (const point of points) {
+    const target = orientation === "horizontal" ? point.y : point.x;
+    const distance = Math.abs(target - coordinate);
+    if (distance <= snapDistance && distance < bestDistance) {
+      snapped = target;
+      bestDistance = distance;
+    }
+  }
+  for (let index = 0; index < points.length - 1; index += 1) {
+    if (index === segmentIndex || Math.abs(index - segmentIndex) === 1) continue;
+    const start = points[index];
+    const end = points[index + 1];
+    if (orientation === "horizontal" && start.y === end.y) {
+      const distance = Math.abs(start.y - coordinate);
+      if (distance <= snapDistance && distance < bestDistance) {
+        snapped = start.y;
+        bestDistance = distance;
+      }
+    }
+    if (orientation === "vertical" && start.x === end.x) {
+      const distance = Math.abs(start.x - coordinate);
+      if (distance <= snapDistance && distance < bestDistance) {
+        snapped = start.x;
+        bestDistance = distance;
+      }
+    }
+  }
+  return snapped;
+}
+
+function moveConnectorSegment(points: BoardPoint[], segmentIndex: number, orientation: "horizontal" | "vertical", point: BoardPoint) {
+  const nextPoints = points.map((item) => ({ ...item }));
+  const lastIndex = nextPoints.length - 1;
+  if (lastIndex < 1 || segmentIndex < 0 || segmentIndex >= lastIndex) return nextPoints;
+
+  const startIndex = segmentIndex;
+  const endIndex = segmentIndex + 1;
+  if (orientation === "horizontal") {
+    const y = snapConnectorSegmentCoordinate(points, segmentIndex, orientation, point.y);
+    if (startIndex === 0) {
+      nextPoints[endIndex].y = y;
+      nextPoints.splice(1, 0, { x: nextPoints[0].x, y });
+    } else if (endIndex === lastIndex) {
+      nextPoints[startIndex].y = y;
+      nextPoints.splice(endIndex, 0, { x: nextPoints[lastIndex].x, y });
+    } else {
+      nextPoints[startIndex].y = y;
+      nextPoints[endIndex].y = y;
+    }
+  } else if (startIndex === 0) {
+    const x = snapConnectorSegmentCoordinate(points, segmentIndex, orientation, point.x);
+    nextPoints[endIndex].x = x;
+    nextPoints.splice(1, 0, { x, y: nextPoints[0].y });
+  } else if (endIndex === lastIndex) {
+    const x = snapConnectorSegmentCoordinate(points, segmentIndex, orientation, point.x);
+    nextPoints[startIndex].x = x;
+    nextPoints.splice(endIndex, 0, { x, y: nextPoints[lastIndex].y });
+  } else {
+    const x = snapConnectorSegmentCoordinate(points, segmentIndex, orientation, point.x);
+    nextPoints[startIndex].x = x;
+    nextPoints[endIndex].x = x;
+  }
+  return simplifyOrthogonalPath(nextPoints);
+}
+
+function moveConnectorSegmentForConnector(
+  connector: BoardConnector,
+  points: BoardPoint[],
+  segmentIndex: number,
+  orientation: "horizontal" | "vertical",
+  point: BoardPoint,
+) {
+  return protectConnectorEndpointStubs(
+    moveConnectorSegment(points, segmentIndex, orientation, point),
+    connector.from.anchor,
+    connector.to.anchor,
+  );
 }
 
 function connectorGeometry(connector: BoardConnector, nodes: BoardNode[]) {
@@ -844,7 +1172,7 @@ function connectorGeometry(connector: BoardConnector, nodes: BoardNode[]) {
   const points = connector.routingMode === "straight" ? [start, end] : [start, ...resolvedWaypoints, end];
   const normalizedPoints = simplifyOrthogonalPath(points);
   const safePoints = isAxisAlignedPath(normalizedPoints)
-    ? normalizedPoints
+    ? connector.routingMode === "straight" ? normalizedPoints : protectConnectorEndpointStubs(normalizedPoints, connector.from.anchor, connector.to.anchor)
     : simplifyOrthogonalPath([start, ...defaultConnectorWaypointsForNodes(connector, fromNode, toNode), end]);
   return {
     start,
@@ -852,6 +1180,65 @@ function connectorGeometry(connector: BoardConnector, nodes: BoardNode[]) {
     points: safePoints,
     path: connectorPath(safePoints, connector),
   };
+}
+
+function segmentPointAt(start: BoardPoint, end: BoardPoint, t: number) {
+  return {
+    x: start.x + (end.x - start.x) * t,
+    y: start.y + (end.y - start.y) * t,
+  };
+}
+
+function nearestPointOnConnector(points: BoardPoint[], target: BoardPoint) {
+  let closest: { point: BoardPoint; segmentIndex: number; t: number; distance: number } | null = null;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared === 0) continue;
+    const t = Math.max(0, Math.min(1, ((target.x - start.x) * dx + (target.y - start.y) * dy) / lengthSquared));
+    const point = segmentPointAt(start, end, t);
+    const distance = Math.hypot(point.x - target.x, point.y - target.y);
+    if (!closest || distance < closest.distance) {
+      closest = { point, segmentIndex: index, t, distance };
+    }
+  }
+  return closest ?? { point: target, segmentIndex: 0, t: 0.5, distance: 0 };
+}
+
+function connectorMidpoint(points: BoardPoint[]) {
+  if (points.length === 0) return { x: 0, y: 0 };
+  if (points.length === 1) return points[0];
+  const totalLength = pathLength(points);
+  if (totalLength <= 0) return points[Math.floor(points.length / 2)];
+  let walked = 0;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    const segmentLength = Math.abs(end.x - start.x) + Math.abs(end.y - start.y);
+    if (walked + segmentLength >= totalLength / 2) {
+      const t = segmentLength === 0 ? 0 : (totalLength / 2 - walked) / segmentLength;
+      return segmentPointAt(start, end, t);
+    }
+    walked += segmentLength;
+  }
+  return points[points.length - 1];
+}
+
+function connectorLabelPoint(connector: BoardConnector, points: BoardPoint[]) {
+  const segmentIndex = connector.labelSegmentIndex;
+  const segmentT = typeof connector.labelSegmentT === "number" ? Math.max(0, Math.min(1, connector.labelSegmentT)) : undefined;
+  if (
+    typeof segmentIndex === "number"
+    && typeof segmentT === "number"
+    && segmentIndex >= 0
+    && segmentIndex < points.length - 1
+  ) {
+    return segmentPointAt(points[segmentIndex], points[segmentIndex + 1], segmentT);
+  }
+  return connector.labelPosition ?? connectorMidpoint(points);
 }
 
 function rerouteConnectorForNodes(connector: BoardConnector, nodes: BoardNode[]) {
@@ -925,17 +1312,78 @@ function nearestAnchor(
   return closest?.endpoint ?? null;
 }
 
-function wrapText(text: string, maxChars: number) {
+function nearestAnchorOnNode(point: BoardPoint, node: BoardNode): BoardAnchor {
+  let closest: { anchor: BoardAnchor; distance: number } | null = null;
+  for (const anchor of ANCHORS) {
+    const anchorPosition = anchorPoint(node, anchor);
+    const distance = Math.hypot(anchorPosition.x - point.x, anchorPosition.y - point.y);
+    if (!closest || distance < closest.distance) {
+      closest = { anchor, distance };
+    }
+  }
+  return closest?.anchor ?? "left";
+}
+
+function pointInExpandedNode(point: BoardPoint, node: BoardNode, padding = 10) {
+  return point.x >= node.x - padding
+    && point.x <= node.x + node.width + padding
+    && point.y >= node.y - padding
+    && point.y <= node.y + node.height + padding;
+}
+
+function nearestConnectableAnchor(
+  point: BoardPoint,
+  nodes: BoardNode[],
+  source: ConnectorEndpoint,
+  maxDistance = 38,
+): ConnectorEndpoint | null {
+  const directAnchor = nearestAnchor(
+    point,
+    nodes,
+    (endpoint) => endpoint.nodeId !== source.nodeId,
+    maxDistance,
+  );
+  if (directAnchor) return directAnchor;
+
+  let closestNode: { node: BoardNode; distance: number } | null = null;
+  for (const node of nodes) {
+    if (node.id === source.nodeId || !pointInExpandedNode(point, node)) continue;
+    const center = { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+    const distance = Math.hypot(center.x - point.x, center.y - point.y);
+    if (!closestNode || distance < closestNode.distance) {
+      closestNode = { node, distance };
+    }
+  }
+  if (!closestNode) return null;
+  return { nodeId: closestNode.node.id, anchor: nearestAnchorOnNode(point, closestNode.node) };
+}
+
+function boardTextCharWeight(char: string) {
+  if (/\s/.test(char)) return 0.35;
+  if (/[\u0000-\u007f]/.test(char)) return 0.56;
+  if (/[\u3000-\u303f\uff00-\uffef]/.test(char)) return 0.75;
+  return 1;
+}
+
+function wrapText(text: string, maxUnits: number) {
   const lines: string[] = [];
   for (const rawLine of (text || "").split("\n")) {
     if (!rawLine) {
       lines.push("");
       continue;
     }
-    let line = rawLine;
-    while (line.length > maxChars) {
-      lines.push(line.slice(0, maxChars));
-      line = line.slice(maxChars);
+    let line = "";
+    let lineUnits = 0;
+    for (const char of rawLine) {
+      const charUnits = boardTextCharWeight(char);
+      if (line && lineUnits + charUnits > maxUnits) {
+        lines.push(line);
+        line = char;
+        lineUnits = charUnits;
+        continue;
+      }
+      line += char;
+      lineUnits += charUnits;
     }
     lines.push(line);
   }
@@ -1006,10 +1454,19 @@ export function BoardDocumentPage({
   const [selectedConnectorIds, setSelectedConnectorIds] = useState<string[]>([]);
   const [multiSelectionFilter, setMultiSelectionFilter] = useState<MultiSelectionFilter>("all");
   const [selectionRect, setSelectionRect] = useState<SelectionRectState | null>(null);
+  const [quickAddPreview, setQuickAddPreview] = useState<QuickAddPreviewState | null>(null);
+  const [shapePlacementPreview, setShapePlacementPreview] = useState<ShapePlacementPreviewState | null>(null);
   const [activePanel, setActivePanel] = useState<ToolbarPanel>(null);
   const [shapePaletteOpen, setShapePaletteOpen] = useState(false);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  const [editingConnectorLabel, setEditingConnectorLabel] = useState<{
+    connectorId: string;
+    position: BoardPoint;
+    segmentIndex: number;
+    segmentT: number;
+  } | null>(null);
+  const [editingConnectorLabelText, setEditingConnectorLabelText] = useState("");
   const [dragState, setDragState] = useState<{
     nodeIds: string[];
     connectorIds: string[];
@@ -1035,6 +1492,7 @@ export function BoardDocumentPage({
     endpoint: "from" | "to";
     pointer: BoardPoint;
   } | null>(null);
+  const [connectorLabelDrag, setConnectorLabelDrag] = useState<{ connectorId: string } | null>(null);
   const [panState, setPanState] = useState<{ startX: number; startY: number; viewportX: number; viewportY: number } | null>(null);
   const [connectionDrag, setConnectionDrag] = useState<{ from: ConnectorEndpoint; pointer: { x: number; y: number } } | null>(null);
   const [hoveredAnchor, setHoveredAnchor] = useState<ConnectorEndpoint | null>(null);
@@ -1048,10 +1506,15 @@ export function BoardDocumentPage({
   const [isMutating, startTransition] = useTransition();
   const svgRef = useRef<SVGSVGElement | null>(null);
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const connectorLabelInputRef = useRef<HTMLInputElement | null>(null);
+  const connectorClickRef = useRef<{ connectorId: string; at: number } | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const shapeHoverTimerRef = useRef<number | null>(null);
   const panelHoverTimerRef = useRef<number | null>(null);
   const dragToolbarTimerRef = useRef<number | null>(null);
+  const quickAddPressTimerRef = useRef<number | null>(null);
+  const quickAddPressRef = useRef<QuickAddPressState | null>(null);
+  const quickAddSuppressClickRef = useRef(false);
   const connectorSourceRef = useRef<ConnectorEndpoint | null>(null);
   const interactionStartSnapshotRef = useRef<BoardSnapshot | null>(null);
   const suppressCanvasClickRef = useRef(false);
@@ -1116,10 +1579,15 @@ export function BoardDocumentPage({
     setSelectedConnectorIds([]);
     setMultiSelectionFilter("all");
     setSelectionRect(null);
+    setQuickAddPreview(null);
+    setShapePlacementPreview(null);
     setActivePanel(null);
     setConnectionDrag(null);
     setConnectorEndpointDrag(null);
+    setConnectorLabelDrag(null);
     setHoveredAnchor(null);
+    setEditingConnectorLabel(null);
+    setEditingConnectorLabelText("");
     setFloatingToolbarDomHidden(false);
     setIsTransientToolbarHidden(false);
     setIsDirty(false);
@@ -1133,11 +1601,20 @@ export function BoardDocumentPage({
     window.setTimeout(() => textAreaRef.current?.focus(), 0);
   }, [editingNodeId]);
 
+  useEffect(() => {
+    if (!editingConnectorLabel) return;
+    window.setTimeout(() => {
+      connectorLabelInputRef.current?.focus();
+      connectorLabelInputRef.current?.select();
+    }, 0);
+  }, [editingConnectorLabel]);
+
   useEffect(() => () => {
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
     if (shapeHoverTimerRef.current) window.clearTimeout(shapeHoverTimerRef.current);
     if (panelHoverTimerRef.current) window.clearTimeout(panelHoverTimerRef.current);
     if (dragToolbarTimerRef.current) window.clearTimeout(dragToolbarTimerRef.current);
+    if (quickAddPressTimerRef.current) window.clearTimeout(quickAddPressTimerRef.current);
   }, []);
 
   const commitBoard = (updater: (current: BoardState) => BoardState) => {
@@ -1224,6 +1701,7 @@ export function BoardDocumentPage({
             width,
             height,
             text: defaultNodeText(type),
+            manualSize: false,
             style: { ...DEFAULT_NODE_STYLE, fill: type === "text" ? "transparent" : DEFAULT_NODE_STYLE.fill },
             zIndex: Math.max(0, ...current.nodes.map((node) => node.zIndex)) + 1,
           },
@@ -1231,8 +1709,28 @@ export function BoardDocumentPage({
       };
     });
     selectSingleNode(newId);
+    setShapePlacementPreview(null);
     toolRef.current = "select";
     setTool("select");
+  };
+
+  const updateShapePlacementPreview = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const activeTool = toolRef.current;
+    if (!canEdit || (activeTool !== "shape" && activeTool !== "text")) {
+      setShapePlacementPreview((current) => current ? null : current);
+      return;
+    }
+    const type = activeTool === "text" ? "text" : pendingShape;
+    const { width, height } = defaultNodeSize(type);
+    const point = screenToBoard(event);
+    setQuickAddPreview(null);
+    setShapePlacementPreview({
+      type,
+      width,
+      height,
+      x: point.x - width / 2,
+      y: point.y - height / 2,
+    });
   };
 
   const openShapePalette = () => {
@@ -1282,7 +1780,11 @@ export function BoardDocumentPage({
     setSelectedNodeIds([]);
     setSelectedConnectorIds([]);
     setMultiSelectionFilter("all");
+    setQuickAddPreview(null);
+    setShapePlacementPreview(null);
     setActivePanel(null);
+    setEditingConnectorLabel(null);
+    setEditingConnectorLabelText("");
   };
 
   const selectSingleNode = (nodeId: string) => {
@@ -1291,7 +1793,11 @@ export function BoardDocumentPage({
     setSelectedNodeIds([]);
     setSelectedConnectorIds([]);
     setMultiSelectionFilter("all");
+    setQuickAddPreview(null);
+    setShapePlacementPreview(null);
     setActivePanel(null);
+    setEditingConnectorLabel(null);
+    setEditingConnectorLabelText("");
   };
 
   const selectSingleConnector = (connectorId: string) => {
@@ -1300,7 +1806,13 @@ export function BoardDocumentPage({
     setSelectedNodeIds([]);
     setSelectedConnectorIds([]);
     setMultiSelectionFilter("all");
+    setQuickAddPreview(null);
+    setShapePlacementPreview(null);
     setActivePanel(null);
+    if (editingConnectorLabel?.connectorId !== connectorId) {
+      setEditingConnectorLabel(null);
+      setEditingConnectorLabelText("");
+    }
   };
 
   const applySelectionResult = (nodeIds: string[], connectorIds: string[]) => {
@@ -1349,7 +1861,75 @@ export function BoardDocumentPage({
     }));
   };
 
-  const buildConnector = (nodes: BoardNode[], from: ConnectorEndpoint, to: ConnectorEndpoint, routingMode: ConnectorRoutingMode = "orthogonal"): BoardConnector => {
+  const startConnectorLabelEditing = (connector: BoardConnector, point: BoardPoint) => {
+    if (!canEdit) return;
+    const geometry = connectorGeometry(connector, board.nodes);
+    if (!geometry) return;
+    const anchor = nearestPointOnConnector(geometry.points, point);
+    setSelectedConnectorId(connector.id);
+    setSelectedNodeId(null);
+    setSelectedNodeIds([]);
+    setSelectedConnectorIds([]);
+    setActivePanel(null);
+    setEditingConnectorLabel({
+      connectorId: connector.id,
+      position: anchor.point,
+      segmentIndex: anchor.segmentIndex,
+      segmentT: anchor.t,
+    });
+    setEditingConnectorLabelText(connector.label || "");
+  };
+
+  const startConnectorLabelDrag = (event: ReactPointerEvent<HTMLElement>, connector: BoardConnector) => {
+    if (!canEdit) return;
+    if (event.button === 1) {
+      event.preventDefault();
+      event.stopPropagation();
+      startCanvasPan(event);
+      return;
+    }
+    if (event.button !== 0 || event.detail >= 2) return;
+    event.preventDefault();
+    event.stopPropagation();
+    beginContinuousInteraction();
+    hideToolbarDuringDrag();
+    setSelectedConnectorId(connector.id);
+    setSelectedNodeId(null);
+    setSelectedNodeIds([]);
+    setSelectedConnectorIds([]);
+    setMultiSelectionFilter("all");
+    setActivePanel(null);
+    setEditingConnectorLabel(null);
+    setEditingConnectorLabelText("");
+    setConnectorLabelDrag({ connectorId: connector.id });
+  };
+
+  const finishConnectorLabelEditing = () => {
+    if (!editingConnectorLabel) return;
+    const target = editingConnectorLabel;
+    const label = editingConnectorLabelText.trim();
+    commitBoard((current) => ({
+      ...current,
+      connectors: current.connectors.map((connector) => {
+        if (connector.id !== target.connectorId) return connector;
+        if (!label) {
+          const { labelPosition: _labelPosition, labelSegmentIndex: _labelSegmentIndex, labelSegmentT: _labelSegmentT, ...rest } = connector;
+          return { ...rest, label: "" };
+        }
+        return {
+          ...connector,
+          label,
+          labelPosition: target.position,
+          labelSegmentIndex: target.segmentIndex,
+          labelSegmentT: target.segmentT,
+        };
+      }),
+    }));
+    setEditingConnectorLabel(null);
+    setEditingConnectorLabelText("");
+  };
+
+  const buildConnector = (nodes: BoardNode[], from: ConnectorEndpoint, to: ConnectorEndpoint, routingMode: ConnectorRoutingMode = "rounded-orthogonal"): BoardConnector => {
     const fromNode = nodes.find((node) => node.id === from.nodeId);
     const toNode = nodes.find((node) => node.id === to.nodeId);
     const nextConnector: BoardConnector = {
@@ -1366,6 +1946,212 @@ export function BoardDocumentPage({
       ...nextConnector,
       waypoints: fromNode && toNode ? defaultConnectorWaypointsForNodes(nextConnector, fromNode, toNode) : [],
     };
+  };
+
+  const buildQuickAddPreviewNode = (source: BoardNode, anchor: BoardAnchor): BoardNode => {
+    const width = source.width;
+    const height = source.height;
+    const position = quickAddNodePosition(source, anchor, width, height);
+    return {
+      ...structuredClone(source),
+      id: "quick-add-preview",
+      x: position.x,
+      y: position.y,
+      width,
+      height,
+      text: defaultNodeText(source.type),
+      manualSize: false,
+      style: { ...source.style },
+      zIndex: source.zIndex + 1,
+    };
+  };
+
+  const createQuickAddNode = (source: BoardNode, anchor: BoardAnchor) => {
+    if (!canEdit) return;
+    const newNodeId = crypto.randomUUID();
+    commitBoard((current) => {
+      const currentSource = current.nodes.find((node) => node.id === source.id);
+      if (!currentSource) return current;
+      const width = currentSource.width;
+      const height = currentSource.height;
+      const position = quickAddNodePosition(currentSource, anchor, width, height);
+      const nextNode: BoardNode = {
+        ...structuredClone(currentSource),
+        id: newNodeId,
+        x: position.x,
+        y: position.y,
+        width,
+        height,
+        text: defaultNodeText(currentSource.type),
+        manualSize: false,
+        style: { ...currentSource.style },
+        zIndex: Math.max(0, ...current.nodes.map((node) => node.zIndex)) + 1,
+      };
+      const nodes = [...current.nodes, nextNode];
+      const connector = buildConnector(
+        nodes,
+        { nodeId: currentSource.id, anchor },
+        { nodeId: nextNode.id, anchor: oppositeAnchor(anchor) },
+        "rounded-orthogonal",
+      );
+      return {
+        ...current,
+        nodes,
+        connectors: [...current.connectors, connector],
+      };
+    });
+    setQuickAddPreview(null);
+    selectSingleNode(newNodeId);
+    toolRef.current = "select";
+    setTool("select");
+  };
+
+  const clearQuickAddPressTimer = () => {
+    if (!quickAddPressTimerRef.current) return;
+    window.clearTimeout(quickAddPressTimerRef.current);
+    quickAddPressTimerRef.current = null;
+  };
+
+  const beginQuickAddConnectionFromPress = () => {
+    const press = quickAddPressRef.current;
+    if (!canEdit || !press || press.startedConnection) return;
+    press.startedConnection = true;
+    quickAddPressRef.current = press;
+    quickAddSuppressClickRef.current = true;
+    setQuickAddPreview(null);
+    setShapePlacementPreview(null);
+    hideToolbarDuringDrag();
+    connectorSourceRef.current = null;
+    const from = { nodeId: press.sourceNodeId, anchor: press.anchor };
+    setConnectionDrag({
+      from,
+      pointer: screenToBoard({ clientX: press.latestClientX, clientY: press.latestClientY }),
+    });
+    selectSingleNode(press.sourceNodeId);
+    toolRef.current = "connector";
+    setTool("connector");
+  };
+
+  const finishConnectionDragAtPoint = (activeConnectionDrag: { from: ConnectorEndpoint; pointer: BoardPoint }, releasePoint: BoardPoint) => {
+    const target = nearestConnectableAnchor(releasePoint, board.nodes, activeConnectionDrag.from, 42) ?? hoveredAnchor;
+    if (target && target.nodeId !== activeConnectionDrag.from.nodeId) {
+      let connectorId = "";
+      commitBoard((current) => ({
+        ...current,
+        connectors: [
+          ...current.connectors,
+          (() => {
+            const connector = buildConnector(current.nodes, activeConnectionDrag.from, target, "rounded-orthogonal");
+            connectorId = connector.id;
+            return connector;
+          })(),
+        ],
+      }));
+      if (connectorId) {
+        selectSingleConnector(connectorId);
+      }
+    }
+    connectorSourceRef.current = null;
+    setConnectionDrag(null);
+    setHoveredAnchor(null);
+    toolRef.current = "select";
+    setTool("select");
+    if (dragToolbarTimerRef.current) window.clearTimeout(dragToolbarTimerRef.current);
+    setFloatingToolbarDomHidden(false);
+    setIsTransientToolbarHidden(false);
+  };
+
+  const handleQuickAddPointerDown = (event: ReactPointerEvent<SVGGElement>, node: BoardNode, anchor: BoardAnchor) => {
+    if (!canEdit) return;
+    if (event.button === 1) {
+      event.stopPropagation();
+      event.preventDefault();
+      startCanvasPan(event);
+      return;
+    }
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    quickAddSuppressClickRef.current = false;
+    quickAddPressRef.current = {
+      sourceNodeId: node.id,
+      anchor,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      latestClientX: event.clientX,
+      latestClientY: event.clientY,
+      startedConnection: false,
+    };
+    clearQuickAddPressTimer();
+    quickAddPressTimerRef.current = window.setTimeout(() => {
+      quickAddPressTimerRef.current = null;
+      beginQuickAddConnectionFromPress();
+    }, 220);
+  };
+
+  const handleQuickAddPointerMove = (event: ReactPointerEvent<SVGGElement>, node: BoardNode, anchor: BoardAnchor) => {
+    const press = quickAddPressRef.current;
+    if (!press || press.sourceNodeId !== node.id || press.anchor !== anchor) return;
+    press.latestClientX = event.clientX;
+    press.latestClientY = event.clientY;
+    quickAddPressRef.current = press;
+    const moved = Math.hypot(event.clientX - press.startClientX, event.clientY - press.startClientY);
+    if (!press.startedConnection && moved > 6) {
+      clearQuickAddPressTimer();
+      beginQuickAddConnectionFromPress();
+    }
+    if (press.startedConnection) {
+      const point = screenToBoard(event);
+      const from = { nodeId: node.id, anchor };
+      const target = nearestConnectableAnchor(point, board.nodes, from, 42);
+      const targetNode = target ? board.nodes.find((item) => item.id === target.nodeId) : null;
+      setHoveredAnchor(target);
+      setConnectionDrag({
+        from,
+        pointer: target && targetNode ? anchorPoint(targetNode, target.anchor) : point,
+      });
+    }
+  };
+
+  const handleQuickAddPointerLeave = (event: ReactPointerEvent<SVGGElement>, node: BoardNode, anchor: BoardAnchor) => {
+    const press = quickAddPressRef.current;
+    if (press?.sourceNodeId === node.id && press.anchor === anchor && event.buttons === 1 && !press.startedConnection) {
+      clearQuickAddPressTimer();
+      beginQuickAddConnectionFromPress();
+      return;
+    }
+    setQuickAddPreview((current) => current?.sourceNodeId === node.id && current.anchor === anchor ? null : current);
+  };
+
+  const handleQuickAddPointerUp = (event: ReactPointerEvent<SVGGElement>, node: BoardNode, anchor: BoardAnchor) => {
+    const press = quickAddPressRef.current;
+    if (!press || press.sourceNodeId !== node.id || press.anchor !== anchor) return;
+    clearQuickAddPressTimer();
+    if (press.startedConnection) {
+      event.stopPropagation();
+      event.preventDefault();
+      quickAddSuppressClickRef.current = true;
+      finishConnectionDragAtPoint(
+        { from: { nodeId: node.id, anchor }, pointer: screenToBoard(event) },
+        screenToBoard(event),
+      );
+    } else {
+      event.stopPropagation();
+      event.preventDefault();
+      quickAddSuppressClickRef.current = true;
+      createQuickAddNode(node, anchor);
+    }
+    quickAddPressRef.current = null;
+  };
+
+  const handleQuickAddClick = (event: ReactMouseEvent<SVGGElement>, node: BoardNode, anchor: BoardAnchor) => {
+    event.stopPropagation();
+    if (quickAddSuppressClickRef.current) {
+      quickAddSuppressClickRef.current = false;
+      return;
+    }
+    createQuickAddNode(node, anchor);
   };
 
   const applyConnectorRouting = (connector: BoardConnector, routingMode: ConnectorRoutingMode, nodes: BoardNode[]) => {
@@ -1523,10 +2309,18 @@ export function BoardDocumentPage({
     if (!editingNodeId) return;
     const targetId = editingNodeId;
     const text = editingText;
-    commitBoard((current) => ({
-      ...current,
-      nodes: current.nodes.map((node) => (node.id === targetId ? { ...node, text } : node)),
-    }));
+    commitBoard((current) => {
+      const nodes = current.nodes.map((node) => {
+        if (node.id !== targetId) return node;
+        const nextNode = { ...node, text };
+        return node.manualSize ? nextNode : fitNodeHeightToText(nextNode, text);
+      });
+      return {
+        ...current,
+        nodes,
+        connectors: adaptConnectorsForMovedNodes(current.connectors, nodes, [targetId]),
+      };
+    });
     setEditingNodeId(null);
     setEditingText("");
   };
@@ -1562,7 +2356,7 @@ export function BoardDocumentPage({
           connectors: [
             ...current.connectors,
             (() => {
-              const connector = buildConnector(current.nodes, from, to, "orthogonal");
+              const connector = buildConnector(current.nodes, from, to, "rounded-orthogonal");
               connectorId = connector.id;
               return connector;
             })(),
@@ -1582,6 +2376,13 @@ export function BoardDocumentPage({
 
   const handleNodePointerDown = (event: ReactPointerEvent<SVGElement>, node: BoardNode) => {
     if (!canEdit || tool !== "select" || editingNodeId) return;
+    if (event.button === 1) {
+      event.preventDefault();
+      event.stopPropagation();
+      startCanvasPan(event);
+      return;
+    }
+    if (event.button !== 0) return;
     event.stopPropagation();
     const point = screenToBoard(event);
     beginContinuousInteraction();
@@ -1602,8 +2403,15 @@ export function BoardDocumentPage({
     }
   };
 
-  const handleResizePointerDown = (event: ReactPointerEvent<SVGCircleElement>, node: BoardNode, handle: ResizeHandle) => {
+  const handleResizePointerDown = (event: ReactPointerEvent<SVGElement>, node: BoardNode, handle: ResizeHandle) => {
     if (!canEdit) return;
+    if (event.button === 1) {
+      event.preventDefault();
+      event.stopPropagation();
+      startCanvasPan(event);
+      return;
+    }
+    if (event.button !== 0) return;
     event.stopPropagation();
     const point = screenToBoard(event);
     beginContinuousInteraction();
@@ -1614,11 +2422,20 @@ export function BoardDocumentPage({
 
   const handleAnchorPointerDown = (event: ReactPointerEvent<SVGCircleElement>, node: BoardNode, anchor: BoardAnchor) => {
     if (!canEdit) return;
+    if (event.button === 1) {
+      event.preventDefault();
+      event.stopPropagation();
+      startCanvasPan(event);
+      return;
+    }
+    if (event.button !== 0) return;
     event.stopPropagation();
     const point = screenToBoard(event);
+    setQuickAddPreview(null);
     hideToolbarDuringDrag();
     setConnectionDrag({ from: { nodeId: node.id, anchor }, pointer: point });
     selectSingleNode(node.id);
+    toolRef.current = "connector";
     setTool("connector");
   };
 
@@ -1661,7 +2478,7 @@ export function BoardDocumentPage({
         connectors: [
           ...current.connectors,
           (() => {
-            const connector = buildConnector(current.nodes, from, to, "orthogonal");
+            const connector = buildConnector(current.nodes, from, to, "rounded-orthogonal");
             connectorId = connector.id;
             return connector;
           })(),
@@ -1675,6 +2492,7 @@ export function BoardDocumentPage({
 
   const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (panState) {
+      setShapePlacementPreview(null);
       setBoard((current) => ({
         ...current,
         viewport: {
@@ -1687,26 +2505,25 @@ export function BoardDocumentPage({
       return;
     }
     if (selectionRect) {
+      setShapePlacementPreview(null);
       setSelectionRect({ ...selectionRect, current: screenToBoard(event) });
       return;
     }
     if (connectorHandleDrag) {
+      setShapePlacementPreview(null);
       hideToolbarDuringDrag();
       const point = screenToBoard(event);
       setBoard((current) => ({
         ...current,
         connectors: current.connectors.map((connector) => {
           if (connector.id !== connectorHandleDrag.connectorId) return connector;
-          const nextPoints = connectorHandleDrag.points.map((item) => ({ ...item }));
-          const startIndex = connectorHandleDrag.segmentIndex;
-          const endIndex = connectorHandleDrag.segmentIndex + 1;
-          if (connectorHandleDrag.orientation === "horizontal") {
-            nextPoints[startIndex].y = point.y;
-            nextPoints[endIndex].y = point.y;
-          } else {
-            nextPoints[startIndex].x = point.x;
-            nextPoints[endIndex].x = point.x;
-          }
+          const nextPoints = moveConnectorSegmentForConnector(
+            connector,
+            connectorHandleDrag.points,
+            connectorHandleDrag.segmentIndex,
+            connectorHandleDrag.orientation,
+            point,
+          );
           return {
             ...connector,
             routingMode: "polyline",
@@ -1719,6 +2536,7 @@ export function BoardDocumentPage({
       return;
     }
     if (connectorPointDrag) {
+      setShapePlacementPreview(null);
       hideToolbarDuringDrag();
       const point = screenToBoard(event);
       setBoard((current) => ({
@@ -1738,8 +2556,32 @@ export function BoardDocumentPage({
       setIsDirty(true);
       return;
     }
+    if (connectorLabelDrag) {
+      setShapePlacementPreview(null);
+      hideToolbarDuringDrag();
+      const point = screenToBoard(event);
+      setBoard((current) => ({
+        ...current,
+        connectors: current.connectors.map((connector) => {
+          if (connector.id !== connectorLabelDrag.connectorId) return connector;
+          const geometry = connectorGeometry(connector, current.nodes);
+          if (!geometry) return connector;
+          const anchor = nearestPointOnConnector(geometry.points, point);
+          return {
+            ...connector,
+            labelPosition: anchor.point,
+            labelSegmentIndex: anchor.segmentIndex,
+            labelSegmentT: anchor.t,
+          };
+        }),
+      }));
+      setIsDirty(true);
+      return;
+    }
     if (connectorEndpointDrag) {
       hideToolbarDuringDrag();
+      setQuickAddPreview(null);
+      setShapePlacementPreview(null);
       const point = screenToBoard(event);
       const activeConnector = board.connectors.find((connector) => connector.id === connectorEndpointDrag.connectorId);
       const opposite = activeConnector ? connectorEndpointDrag.endpoint === "from" ? activeConnector.to : activeConnector.from : null;
@@ -1747,16 +2589,27 @@ export function BoardDocumentPage({
         point,
         board.nodes,
         (endpoint) => !opposite || endpoint.nodeId !== opposite.nodeId || endpoint.anchor !== opposite.anchor,
+        32,
       );
       setConnectorEndpointDrag({ ...connectorEndpointDrag, pointer: point });
       setHoveredAnchor(targetAnchor);
       return;
     }
     if (connectionDrag) {
-      setConnectionDrag({ ...connectionDrag, pointer: screenToBoard(event) });
+      setQuickAddPreview(null);
+      setShapePlacementPreview(null);
+      const point = screenToBoard(event);
+      const target = nearestConnectableAnchor(point, board.nodes, connectionDrag.from, 42);
+      const targetNode = target ? board.nodes.find((node) => node.id === target.nodeId) : null;
+      setHoveredAnchor(target);
+      setConnectionDrag({
+        ...connectionDrag,
+        pointer: target && targetNode ? anchorPoint(targetNode, target.anchor) : point,
+      });
       return;
     }
     if (resizeState) {
+      setShapePlacementPreview(null);
       hideToolbarDuringDrag();
       const point = screenToBoard(event);
       const dx = point.x - resizeState.startX;
@@ -1767,6 +2620,7 @@ export function BoardDocumentPage({
           const nextNodes = current.nodes.map((node) => {
           if (node.id !== resizeState.nodeId) return node;
           const next = { ...resizeState.node };
+          next.manualSize = true;
           if (resizeState.handle.includes("e")) next.width = Math.max(48, resizeState.node.width + dx);
           if (resizeState.handle.includes("s")) next.height = Math.max(32, resizeState.node.height + dy);
           if (resizeState.handle.includes("w")) {
@@ -1786,6 +2640,7 @@ export function BoardDocumentPage({
           current.nodes.map((node) => {
             if (node.id !== resizeState.nodeId) return node;
             const next = { ...resizeState.node };
+            next.manualSize = true;
             if (resizeState.handle.includes("e")) next.width = Math.max(48, resizeState.node.width + dx);
             if (resizeState.handle.includes("s")) next.height = Math.max(32, resizeState.node.height + dy);
             if (resizeState.handle.includes("w")) {
@@ -1804,7 +2659,12 @@ export function BoardDocumentPage({
       setIsDirty(true);
       return;
     }
-    if (!dragState) return;
+    if (!dragState) {
+      updateShapePlacementPreview(event);
+      return;
+    }
+    setQuickAddPreview(null);
+    setShapePlacementPreview(null);
     hideToolbarDuringDrag();
     const point = screenToBoard(event);
     const dx = point.x - dragState.startX;
@@ -1856,6 +2716,7 @@ export function BoardDocumentPage({
         releasePoint,
         board.nodes,
         (endpoint) => !opposite || endpoint.nodeId !== opposite.nodeId || endpoint.anchor !== opposite.anchor,
+        32,
       ) ?? hoveredAnchor;
       if (target) {
         commitBoard((current) => ({
@@ -1880,7 +2741,7 @@ export function BoardDocumentPage({
       setIsTransientToolbarHidden(false);
       return;
     }
-    if (panState || dragState || resizeState || connectorHandleDrag || connectorPointDrag) {
+    if (panState || dragState || resizeState || connectorHandleDrag || connectorPointDrag || connectorLabelDrag) {
       const startSnapshot = interactionStartSnapshotRef.current;
       if (startSnapshot && !snapshotEquals(startSnapshot, board)) {
         setHistory((current) => ({ past: [...current.past, startSnapshot].slice(-80), future: [] }));
@@ -1893,34 +2754,127 @@ export function BoardDocumentPage({
     setConnectorHandleDrag(null);
     setConnectorPointDrag(null);
     setConnectorEndpointDrag(null);
+    setConnectorLabelDrag(null);
     setHoveredAnchor(null);
     if (dragToolbarTimerRef.current) window.clearTimeout(dragToolbarTimerRef.current);
     setFloatingToolbarDomHidden(false);
     setIsTransientToolbarHidden(false);
     if (connectionDrag && !connectorSourceRef.current) {
-      connectorSourceRef.current = null;
-      setConnectionDrag(null);
-      toolRef.current = "select";
-      setTool("select");
+      const releasePoint = event ? screenToBoard(event) : connectionDrag.pointer;
+      finishConnectionDragAtPoint(connectionDrag, releasePoint);
     }
   };
 
+  const startCanvasPan = (event: Pick<ReactPointerEvent<SVGElement>, "clientX" | "clientY" | "preventDefault">) => {
+    if (!canEdit) return;
+    event.preventDefault();
+    setShapePlacementPreview(null);
+    beginContinuousInteraction();
+    setPanState({
+      startX: event.clientX,
+      startY: event.clientY,
+      viewportX: board.viewport.x,
+      viewportY: board.viewport.y,
+    });
+  };
+
+  const cancelCurrentOperation = () => {
+    if (editingNodeId) {
+      finishTextEditing();
+    }
+    if (editingConnectorLabel) {
+      finishConnectorLabelEditing();
+    }
+
+    const hadContinuousInteraction = Boolean(
+      panState
+      || dragState
+      || resizeState
+      || connectorHandleDrag
+      || connectorPointDrag
+      || connectorEndpointDrag
+      || connectorLabelDrag,
+    );
+    const startSnapshot = interactionStartSnapshotRef.current;
+    if (hadContinuousInteraction && startSnapshot && !snapshotEquals(startSnapshot, board)) {
+      setBoard((current) => ({
+        ...current,
+        nodes: structuredClone(startSnapshot.nodes),
+        connectors: structuredClone(startSnapshot.connectors),
+        viewport: { ...startSnapshot.viewport },
+      }));
+      setIsDirty(true);
+    }
+
+    clearQuickAddPressTimer();
+    quickAddPressRef.current = null;
+    quickAddSuppressClickRef.current = true;
+    connectorSourceRef.current = null;
+    interactionStartSnapshotRef.current = null;
+
+    setQuickAddPreview(null);
+    setShapePlacementPreview(null);
+    setSelectionRect(null);
+    setConnectionDrag(null);
+    setConnectorEndpointDrag(null);
+    setConnectorHandleDrag(null);
+    setConnectorPointDrag(null);
+    setConnectorLabelDrag(null);
+    setPanState(null);
+    setDragState(null);
+    setResizeState(null);
+    setHoveredAnchor(null);
+    setActivePanel(null);
+    setShapePaletteOpen(false);
+    setNotice("");
+    if (dragToolbarTimerRef.current) window.clearTimeout(dragToolbarTimerRef.current);
+    setFloatingToolbarDomHidden(false);
+    setIsTransientToolbarHidden(false);
+    toolRef.current = "select";
+    setTool("select");
+  };
+
+  useEffect(() => {
+    const handleGlobalEscape = (event: globalThis.KeyboardEvent) => {
+      if (!canEdit || event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      cancelCurrentOperation();
+    };
+    window.addEventListener("keydown", handleGlobalEscape);
+    return () => window.removeEventListener("keydown", handleGlobalEscape);
+  }, [
+    canEdit,
+    editingNodeId,
+    panState,
+    dragState,
+    resizeState,
+    connectorHandleDrag,
+    connectorPointDrag,
+    connectorEndpointDrag,
+    board,
+  ]);
+
   const handleCanvasPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (!canEdit) return;
+    if (event.button === 1) {
+      startCanvasPan(event);
+      return;
+    }
+    if (event.button !== 0) return;
     if (tool === "pan") {
-      beginContinuousInteraction();
-      setPanState({
-        startX: event.clientX,
-        startY: event.clientY,
-        viewportX: board.viewport.x,
-        viewportY: board.viewport.y,
-      });
+      startCanvasPan(event);
       return;
     }
     if (tool === "select") {
+      setShapePlacementPreview(null);
       const point = screenToBoard(event);
       setSelectionRect({ start: point, current: point });
     }
+  };
+
+  const handleCanvasPointerLeave = (event: ReactPointerEvent<SVGSVGElement>) => {
+    setShapePlacementPreview(null);
+    handlePointerUp(event);
   };
 
   const handleCanvasClick = (event: ReactMouseEvent<SVGSVGElement>) => {
@@ -1935,6 +2889,7 @@ export function BoardDocumentPage({
       const type = activeTool === "text" ? "text" : pendingShape;
       const { width, height } = defaultNodeSize(type);
       addNodeAt(type, point.x - width / 2, point.y - height / 2);
+      setShapePlacementPreview(null);
       setShapePaletteOpen(false);
       return;
     }
@@ -1953,9 +2908,10 @@ export function BoardDocumentPage({
     const target = event.target as HTMLElement;
     const isEditingText = target.tagName === "TEXTAREA" || target.tagName === "INPUT";
     if (event.key === "Escape") {
-      setActivePanel(null);
-      setShapePaletteOpen(false);
-      if (editingNodeId) finishTextEditing();
+      event.preventDefault();
+      event.stopPropagation();
+      event.nativeEvent.stopImmediatePropagation();
+      cancelCurrentOperation();
       return;
     }
     if (isEditingText) return;
@@ -2024,10 +2980,12 @@ export function BoardDocumentPage({
       const viewportWidth = typeof window === "undefined" ? 1280 : window.innerWidth;
       const viewportHeight = typeof window === "undefined" ? 720 : window.innerHeight;
       const toolbarWidth = 438;
-      const below = boardToScreen({ x: selectedNode.x + selectedNode.width / 2, y: selectedNode.y + selectedNode.height + 14 });
-      const above = boardToScreen({ x: selectedNode.x + selectedNode.width / 2, y: selectedNode.y - 54 });
+      const toolbarHeight = 40;
+      const quickAddClearance = 42;
+      const below = boardToScreen({ x: selectedNode.x + selectedNode.width / 2, y: selectedNode.y + selectedNode.height + quickAddClearance });
+      const above = boardToScreen({ x: selectedNode.x + selectedNode.width / 2, y: selectedNode.y - toolbarHeight - quickAddClearance });
       const left = Math.max(68, Math.min(viewportWidth - toolbarWidth - 24, below.x - toolbarWidth / 2));
-      const top = below.y > viewportHeight - 112 ? above.y : below.y;
+      const top = below.y > viewportHeight - toolbarHeight - 24 ? above.y : below.y;
       return { left, top: Math.max(58, top) };
     }
     if (selectedConnector) {
@@ -2048,13 +3006,31 @@ export function BoardDocumentPage({
     }
     return null;
   }, [selectedNode, selectedConnector, board, isMultiSelect, activeMultiSelectionBounds]);
+  const toolbarPanelStyle = useMemo(() => {
+    const toolbarHeight = 40;
+    const gap = 4;
+    const edgePadding = 12;
+    const minPanelHeight = 160;
+    const preferredPanelHeight = activePanel === "line" ? 340 : 240;
+    const viewportHeight = typeof window === "undefined" ? 720 : window.innerHeight;
+    if (!toolbarPoint) {
+      return { top: toolbarHeight + gap, maxHeight: preferredPanelHeight };
+    }
+    const belowSpace = viewportHeight - (toolbarPoint.top + toolbarHeight + gap) - edgePadding;
+    const aboveSpace = toolbarPoint.top - edgePadding;
+    const shouldOpenAbove = belowSpace < preferredPanelHeight && aboveSpace > belowSpace;
+    const availableSpace = Math.max(minPanelHeight, Math.floor(shouldOpenAbove ? aboveSpace : belowSpace));
+    return shouldOpenAbove
+      ? { bottom: toolbarHeight + gap, maxHeight: availableSpace }
+      : { top: toolbarHeight + gap, maxHeight: availableSpace };
+  }, [activePanel, toolbarPoint]);
 
   const renderNodeShape = (node: BoardNode, selected: boolean) => {
     const common = {
       fill: node.style.fill,
       fillOpacity: DEFAULT_NODE_FILL_OPACITY,
-      stroke: node.style.stroke,
-      strokeWidth: selected ? Math.max(1.4, node.style.strokeWidth) : node.style.strokeWidth,
+      stroke: selected ? "#5b8cff" : node.style.stroke,
+      strokeWidth: selected ? Math.max(2.4, node.style.strokeWidth) : node.style.strokeWidth,
       strokeDasharray: node.style.strokeDasharray || undefined,
     };
     if (node.type === "ellipse") {
@@ -2088,12 +3064,13 @@ export function BoardDocumentPage({
       );
     }
     if (node.type === "text") {
-      return <rect x={node.x} y={node.y} width={node.width} height={node.height} fill="transparent" stroke={selected ? "#4f7cff" : "transparent"} strokeWidth="1.5" />;
+      return <rect x={node.x} y={node.y} width={node.width} height={node.height} fill="transparent" stroke={selected ? "#5b8cff" : "transparent"} strokeWidth="2" />;
     }
     return <rect x={node.x} y={node.y} width={node.width} height={node.height} rx={node.type === "round_rectangle" ? 8 : 0} {...common} />;
   };
 
   const renderNodeText = (node: BoardNode) => {
+    const lineHeight = node.style.fontSize * 1.25;
     if (editingNodeId === node.id) {
       return (
         <foreignObject x={node.x + 6} y={node.y + 6} width={Math.max(20, node.width - 12)} height={Math.max(20, node.height - 12)}>
@@ -2110,13 +3087,53 @@ export function BoardDocumentPage({
               event.stopPropagation();
             }}
             className="h-full w-full resize-none border-0 bg-transparent p-1 text-center text-slate-800 outline-none"
-            style={{ fontSize: node.style.fontSize, color: node.style.color, textAlign: node.style.textAlign ?? "center", fontWeight: node.style.fontWeight ?? 400 }}
+            style={{
+              fontSize: node.style.fontSize,
+              lineHeight: `${lineHeight}px`,
+              color: node.style.color,
+              textAlign: node.style.textAlign ?? "center",
+              fontWeight: node.style.fontWeight ?? 400,
+              overflow: "auto",
+            }}
           />
         </foreignObject>
       );
     }
-    const lines = wrapText(node.text, Math.max(4, Math.floor(node.width / Math.max(8, node.style.fontSize * 0.58))));
-    const lineHeight = node.style.fontSize * 1.25;
+    const lines = boardNodeTextLines(node);
+    const textOverflows = requiredNodeHeightForText(node) > node.height + 1;
+    if (textOverflows) {
+      return (
+        <foreignObject
+          x={node.x + 8}
+          y={node.y + 8}
+          width={Math.max(20, node.width - 16)}
+          height={Math.max(20, node.height - 16)}
+          data-board-node-text-overflow="true"
+        >
+          <div
+            className="h-full w-full overflow-auto whitespace-pre-wrap break-words"
+            onClick={(event) => {
+              event.stopPropagation();
+              handleNodeClick(node);
+            }}
+            onDoubleClick={(event) => {
+              event.stopPropagation();
+              startTextEditing(node);
+            }}
+            onPointerDown={(event) => handleNodePointerDown(event as unknown as ReactPointerEvent<SVGElement>, node)}
+            style={{
+              color: node.style.color,
+              fontSize: node.style.fontSize,
+              fontWeight: node.style.fontWeight,
+              lineHeight: `${lineHeight}px`,
+              textAlign: node.style.textAlign ?? "center",
+            }}
+          >
+            {node.text || " "}
+          </div>
+        </foreignObject>
+      );
+    }
     const startY = node.y + node.height / 2 - ((lines.length - 1) * lineHeight) / 2;
     const textAnchor = node.style.textAlign === "left" ? "start" : node.style.textAlign === "right" ? "end" : "middle";
     const x = node.style.textAlign === "left" ? node.x + 10 : node.style.textAlign === "right" ? node.x + node.width - 10 : node.x + node.width / 2;
@@ -2158,14 +3175,13 @@ export function BoardDocumentPage({
             ["select", "select", "选择"],
             ["shape", "pending-shape", "图形"],
             ["text", "text", "文本"],
-            ["connector", "connector", "连接线"],
             ["pan", "pan", "拖动画布"],
           ].map(([value, icon, label], index) => (
             <div key={`${value}-${index}`} className="contents">
               <button
                 type="button"
                 title={label}
-                disabled={!(value === "select" || value === "shape" || value === "text" || value === "connector" || value === "pan")}
+                disabled={!(value === "select" || value === "shape" || value === "text" || value === "pan")}
                 onMouseEnter={() => {
                   if (value === "shape" && canEdit) {
                     openShapePalette();
@@ -2177,7 +3193,7 @@ export function BoardDocumentPage({
                   }
                 }}
                 onClick={() => {
-                  if (!(value === "select" || value === "shape" || value === "text" || value === "connector" || value === "pan")) {
+                  if (!(value === "select" || value === "shape" || value === "text" || value === "pan")) {
                     return;
                   }
                   const nextTool = value as BoardTool;
@@ -2185,16 +3201,15 @@ export function BoardDocumentPage({
                   setTool(nextTool);
                   connectorSourceRef.current = null;
                   setConnectionDrag(null);
-                  if (nextTool === "connector") {
-                    setSelectedNodeId(null);
-                    setSelectedConnectorId(null);
-                  }
                   if (nextTool === "shape") {
                     setActivePanel(null);
                   }
                   setShapePaletteOpen(nextTool === "shape" ? !shapePaletteOpen : false);
                   if (nextTool !== "shape") {
                     setActivePanel(null);
+                  }
+                  if (nextTool !== "shape" && nextTool !== "text") {
+                    setShapePlacementPreview(null);
                   }
                 }}
                 className={`my-0.5 grid h-[46px] w-[46px] place-items-center rounded-[10px] border border-transparent text-[16px] transition-[background-color,color,box-shadow,border-color] ${tool === value ? "border-[#d6e4ff] bg-[#eef3ff] text-[#1456f0] shadow-[0_1px_0_rgba(20,86,240,0.04),inset_0_0_0_1px_#d9e4ff]" : "bg-transparent text-[#1f2329] hover:border-[#e2e7f0] hover:bg-[#f5f7fb]"} disabled:cursor-not-allowed disabled:text-[#8f959e]`}
@@ -2225,6 +3240,7 @@ export function BoardDocumentPage({
                       setPendingShape(shape.type);
                       toolRef.current = "shape";
                       setTool("shape");
+                      setShapePlacementPreview(null);
                       setShapePaletteOpen(false);
                     }}
                     className={`grid h-8 w-8 place-items-center rounded-[8px] border transition-colors ${pendingShape === shape.type ? "border-[#d6e4ff] bg-[#eef3ff] text-[#1456f0]" : "border-transparent text-[#1f2329] hover:border-[#e6ebf5] hover:bg-[#f6f8fc] hover:text-[#1456f0]"}`}
@@ -2241,14 +3257,15 @@ export function BoardDocumentPage({
             ref={svgRef}
             className={`h-full w-full ${tool === "pan" ? "cursor-grab" : tool === "shape" || tool === "text" ? "cursor-crosshair" : "cursor-default"}`}
             style={{
-              backgroundColor: "#fbfbfa",
-              backgroundImage: "radial-gradient(circle, #c8cdd6 1px, transparent 1.2px)",
+                          backgroundColor: "#fbfbfa",
+              backgroundImage: "radial-gradient(circle, #c9d1da 1px, transparent 1.2px)",
               backgroundSize: "43px 43px",
             }}
             onPointerDown={handleCanvasPointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
-            onPointerLeave={handlePointerUp}
+            onPointerLeave={handleCanvasPointerLeave}
+            onAuxClick={(event) => event.preventDefault()}
             onClick={handleCanvasClick}
           >
             <defs>
@@ -2269,6 +3286,7 @@ export function BoardDocumentPage({
                       fill="none"
                       stroke="transparent"
                       strokeWidth={Math.max(14, connector.style.strokeWidth * 8)}
+                      pointerEvents="stroke"
                       className="cursor-pointer"
                       onPointerDown={(event) => {
                         if (!canEdit || !isMultiSelect || !activeMultiSelectedConnectors.some((item) => item.id === connector.id) || activeMultiSelectionBounds == null) return;
@@ -2276,8 +3294,19 @@ export function BoardDocumentPage({
                       }}
                       onClick={(event) => {
                         event.stopPropagation();
+                        const now = window.performance.now();
+                        const lastClick = connectorClickRef.current;
+                        connectorClickRef.current = { connectorId: connector.id, at: now };
+                        if (event.detail >= 2 || (lastClick?.connectorId === connector.id && now - lastClick.at <= 350)) {
+                          startConnectorLabelEditing(connector, screenToBoard(event));
+                          return;
+                        }
                         if (isMultiSelect && activeMultiSelectedConnectors.some((item) => item.id === connector.id)) return;
                         selectSingleConnector(connector.id);
+                      }}
+                      onDoubleClick={(event) => {
+                        event.stopPropagation();
+                        startConnectorLabelEditing(connector, screenToBoard(event));
                       }}
                     />
                     <path
@@ -2290,6 +3319,33 @@ export function BoardDocumentPage({
                       markerEnd={connector.style.endArrow === "arrow" ? "url(#board-arrow)" : undefined}
                       className="pointer-events-none"
                     />
+                    {connector.label ? (() => {
+                      const point = connectorLabelPoint(connector, geometry.points);
+                      const labelWidth = Math.min(220, Math.max(36, connector.label.length * 8 + 16));
+                      const labelActive = selected || connectorLabelDrag?.connectorId === connector.id;
+                      return (
+                        <foreignObject
+                          x={point.x - labelWidth / 2}
+                          y={point.y - 12}
+                          width={labelWidth}
+                          height={24}
+                          className={canEdit ? "overflow-visible" : "pointer-events-none"}
+                        >
+                          <div
+                            data-board-connector-label={connector.id}
+                            className={`flex h-full items-center justify-center whitespace-nowrap border bg-[#fbfbfa]/90 px-1 text-[12px] leading-6 text-[#1f2329] ${canEdit ? "cursor-move" : ""} ${labelActive ? "border-[#5b8cff] shadow-[0_1px_4px_rgba(51,112,255,0.18)]" : "border-transparent hover:border-[#8fb1ff]"}`}
+                            onPointerDown={(event) => startConnectorLabelDrag(event, connector)}
+                            onDoubleClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              startConnectorLabelEditing(connector, point);
+                            }}
+                          >
+                            {connector.label}
+                          </div>
+                        </foreignObject>
+                      );
+                    })() : null}
                   </g>
                 );
               })}
@@ -2303,17 +3359,17 @@ export function BoardDocumentPage({
                   id: "draft",
                   from: connectionDrag.from,
                   to: hoveredTargetNode && hoveredAnchor ? { nodeId: hoveredTargetNode.id, anchor: hoveredAnchor.anchor } : { nodeId: "draft", anchor: "left" },
-                  routingMode: "orthogonal",
+                  routingMode: "rounded-orthogonal",
                   waypoints: [],
                   label: "",
-                  style: { ...DEFAULT_CONNECTOR_STYLE, stroke: "#5b7fd8", strokeDasharray: "4 3", cornerRadius: 0 },
+                  style: { ...DEFAULT_CONNECTOR_STYLE, stroke: "#5b7fd8", strokeDasharray: "4 3", cornerRadius: DEFAULT_CONNECTOR_STYLE.cornerRadius },
                   zIndex: 0,
                 };
                 const points = hoveredTargetNode && hoveredAnchor
                   ? [start, ...defaultConnectorWaypointsForNodes(draftConnector, from, hoveredTargetNode), targetPoint]
                   : connectorPoints({
                       ...draftConnector,
-                      waypoints: defaultConnectorWaypoints(start, targetPoint, connectionDrag.from.anchor, "left", "orthogonal"),
+                      waypoints: defaultConnectorWaypoints(start, targetPoint, connectionDrag.from.anchor, "left", "rounded-orthogonal"),
                     }, start, targetPoint);
                 return <path d={connectorPath(points, draftConnector)} fill="none" stroke="#5b7fd8" strokeWidth="1.5" strokeDasharray="4 3" markerEnd="url(#board-arrow)" />;
               })() : null}
@@ -2352,75 +3408,182 @@ export function BoardDocumentPage({
                     }, start, end);
                 return <path d={connectorPath(points, draftConnector)} fill="none" stroke="#3370ff" strokeWidth="1.8" strokeDasharray="4 3" markerEnd={connector.style.endArrow === "arrow" ? "url(#board-arrow)" : undefined} />;
               })() : null}
+              {quickAddPreview && !connectionDrag && !connectorEndpointDrag ? (() => {
+                const source = board.nodes.find((node) => node.id === quickAddPreview.sourceNodeId);
+                if (!source) return null;
+                const previewNode = buildQuickAddPreviewNode(source, quickAddPreview.anchor);
+                const previewConnector: BoardConnector = {
+                  id: "quick-add-preview-connector",
+                  from: { nodeId: source.id, anchor: quickAddPreview.anchor },
+                  to: { nodeId: previewNode.id, anchor: oppositeAnchor(quickAddPreview.anchor) },
+                  routingMode: "rounded-orthogonal",
+                  waypoints: defaultConnectorWaypointsForNodes({
+                    id: "quick-add-preview-connector",
+                    from: { nodeId: source.id, anchor: quickAddPreview.anchor },
+                    to: { nodeId: previewNode.id, anchor: oppositeAnchor(quickAddPreview.anchor) },
+                    routingMode: "rounded-orthogonal",
+                    waypoints: [],
+                    label: "",
+                    style: { ...DEFAULT_CONNECTOR_STYLE, stroke: "#5b7fd8", strokeDasharray: "4 3", cornerRadius: DEFAULT_CONNECTOR_STYLE.cornerRadius },
+                    zIndex: 0,
+                  }, source, previewNode),
+                  label: "",
+                  style: { ...DEFAULT_CONNECTOR_STYLE, stroke: "#5b7fd8", strokeDasharray: "4 3", cornerRadius: DEFAULT_CONNECTOR_STYLE.cornerRadius },
+                  zIndex: 0,
+                };
+                const start = anchorPoint(source, quickAddPreview.anchor);
+                const end = anchorPoint(previewNode, oppositeAnchor(quickAddPreview.anchor));
+                const points = connectorPoints(previewConnector, start, end);
+                return (
+                  <g className="pointer-events-none">
+                    <path d={connectorPath(points, previewConnector)} fill="none" stroke="#5b7fd8" strokeWidth="1.5" strokeDasharray="4 3" markerEnd="url(#board-arrow)" />
+                    <g opacity="0.48">
+                      {renderNodeShape(previewNode, false)}
+                      {renderNodeText(previewNode)}
+                    </g>
+                  </g>
+                );
+              })() : null}
+              {shapePlacementPreview && !connectionDrag && !connectorEndpointDrag && !dragState && !resizeState ? (() => {
+                const previewNode: BoardNode = {
+                  id: "shape-placement-preview",
+                  type: shapePlacementPreview.type,
+                  x: shapePlacementPreview.x,
+                  y: shapePlacementPreview.y,
+                  width: shapePlacementPreview.width,
+                  height: shapePlacementPreview.height,
+                  text: "",
+                  manualSize: false,
+                  style: {
+                    ...DEFAULT_NODE_STYLE,
+                    fill: shapePlacementPreview.type === "text" ? "transparent" : DEFAULT_NODE_STYLE.fill,
+                    strokeDasharray: "5 4",
+                  },
+                  zIndex: 0,
+                };
+                return (
+                  <g data-board-placement-preview="true" className="pointer-events-none" opacity="0.52">
+                    {previewNode.type === "text" ? (
+                      <rect
+                        x={previewNode.x}
+                        y={previewNode.y}
+                        width={previewNode.width}
+                        height={previewNode.height}
+                        fill="transparent"
+                        stroke="#5b8cff"
+                        strokeWidth="2"
+                        strokeDasharray="5 4"
+                      />
+                    ) : renderNodeShape(previewNode, false)}
+                  </g>
+                );
+              })() : null}
               {[...board.nodes].sort((a, b) => a.zIndex - b.zIndex).map((node) => {
-                const selected = selectedNodeId === node.id || (isMultiSelect && activeMultiSelectedNodes.some((item) => item.id === node.id));
+                const renderNode = editingNodeId === node.id && !node.manualSize ? fitNodeHeightToText({ ...node, text: editingText }, editingText) : node;
+                const selected = selectedNodeId === renderNode.id || (isMultiSelect && activeMultiSelectedNodes.some((item) => item.id === renderNode.id));
                 const showResizeHandles = selected && !isMultiSelect && canEdit && editingNodeId !== node.id;
                 const showAnchors = !isMultiSelect && canEdit && editingNodeId !== node.id && (selected || Boolean(connectionDrag) || Boolean(connectorEndpointDrag));
+                const showQuickAddHandles = showAnchors && selected && !connectionDrag && !connectorEndpointDrag && tool === "select";
                 return (
                   <g
-                    key={node.id}
-                    data-board-node={node.id}
+                    key={renderNode.id}
+                    data-board-node={renderNode.id}
                     onClick={(event) => {
                       event.stopPropagation();
-                      handleNodeClick(node);
+                      handleNodeClick(renderNode);
                     }}
                     onDoubleClick={(event) => {
                       event.stopPropagation();
-                      startTextEditing(node);
+                      startTextEditing(renderNode);
                     }}
-                    onPointerDown={(event) => handleNodePointerDown(event, node)}
+                    onPointerDown={(event) => handleNodePointerDown(event, renderNode)}
                     className={canEdit ? "cursor-move" : "cursor-default"}
                   >
-                    {renderNodeShape(node, selected)}
-                    {renderNodeText(node)}
+                    {renderNodeShape(renderNode, selected)}
+                    {renderNodeText(renderNode)}
                     {showResizeHandles || showAnchors ? (
                       <>
-                        {showResizeHandles ? (
-                          <>
-                            <rect x={node.x - 4} y={node.y - 4} width={node.width + 8} height={node.height + 8} fill="none" stroke="#3370ff" strokeWidth="1.5" />
-                            {RESIZE_HANDLES.map((handle) => (
-                              <circle
-                                key={handle.id}
-                                cx={node.x + node.width * handle.x}
-                                cy={node.y + node.height * handle.y}
-                                r={3.8}
-                                fill="#ffffff"
-                                stroke="#3370ff"
-                                strokeWidth="1.5"
-                                style={{ cursor: handle.cursor }}
-                                onPointerDown={(event) => handleResizePointerDown(event, node, handle.id)}
-                              />
-                            ))}
-                          </>
-                        ) : null}
                         {showAnchors ? ANCHORS.map((anchor) => {
-                          const point = anchorPoint(node, anchor);
-                          const isSourceAnchor = connectionDrag?.from.nodeId === node.id && connectionDrag.from.anchor === anchor;
-                          const isHoverAnchor = hoveredAnchor?.nodeId === node.id && hoveredAnchor.anchor === anchor;
+                          const point = anchorPoint(renderNode, anchor);
+                          const isSourceAnchor = connectionDrag?.from.nodeId === renderNode.id && connectionDrag.from.anchor === anchor;
+                          const isHoverAnchor = hoveredAnchor?.nodeId === renderNode.id && hoveredAnchor.anchor === anchor;
                           const isEndpointTarget = Boolean(connectorEndpointDrag);
                           return (
                             <circle
                               key={anchor}
                               cx={point.x}
                               cy={point.y}
-                              r={isHoverAnchor ? 5.5 : 4}
-                              fill={isHoverAnchor ? "#3370ff" : isSourceAnchor ? "#e8f0ff" : "#ffffff"}
-                              stroke={isHoverAnchor ? "#1456f0" : "#3370ff"}
-                              strokeWidth={isHoverAnchor ? "2" : "1.5"}
+                              r={isHoverAnchor ? 5.4 : 4.4}
+                              fill={isHoverAnchor ? "#5b8cff" : isSourceAnchor ? "#dfeaff" : "#bdd0ff"}
+                              stroke={isHoverAnchor ? "#ffffff" : "transparent"}
+                              strokeWidth={isHoverAnchor ? "1.5" : "0"}
                               className="cursor-crosshair"
                               onPointerEnter={() => {
-                                if ((connectionDrag && connectionDrag.from.nodeId !== node.id) || isEndpointTarget) {
-                                  setHoveredAnchor({ nodeId: node.id, anchor });
+                                if ((connectionDrag && connectionDrag.from.nodeId !== renderNode.id) || isEndpointTarget) {
+                                  setHoveredAnchor({ nodeId: renderNode.id, anchor });
                                 }
                               }}
                               onPointerLeave={() => {
-                                if (hoveredAnchor?.nodeId === node.id && hoveredAnchor.anchor === anchor) {
+                                if (hoveredAnchor?.nodeId === renderNode.id && hoveredAnchor.anchor === anchor) {
                                   setHoveredAnchor(null);
                                 }
                               }}
-                              onPointerDown={(event) => handleAnchorPointerDown(event, node, anchor)}
-                              onPointerUp={(event) => handleAnchorPointerUp(event, node, anchor)}
+                              onPointerDown={(event) => handleAnchorPointerDown(event, renderNode, anchor)}
+                              onPointerUp={(event) => handleAnchorPointerUp(event, renderNode, anchor)}
                             />
+                          );
+                        }) : null}
+                        {showResizeHandles ? (
+                          <>
+                            {RESIZE_HANDLES.map((handle) => (
+                              <rect
+                                key={handle.id}
+                                x={renderNode.x + renderNode.width * handle.x - 3.4}
+                                y={renderNode.y + renderNode.height * handle.y - 3.4}
+                                width={6.8}
+                                height={6.8}
+                                rx={1.5}
+                                fill="#ffffff"
+                                stroke="#5b8cff"
+                                strokeWidth="1.4"
+                                style={{ cursor: handle.cursor }}
+                                onPointerDown={(event) => handleResizePointerDown(event, renderNode, handle.id)}
+                              />
+                            ))}
+                          </>
+                        ) : null}
+                        {showQuickAddHandles ? ANCHORS.map((anchor) => {
+                          const edgePoint = anchorPoint(renderNode, anchor);
+                          const buttonPoint = outwardPoint(edgePoint, anchor, 21);
+                          const isActive = quickAddPreview?.sourceNodeId === renderNode.id && quickAddPreview.anchor === anchor;
+                          return (
+                            <g
+                              key={`quick-add-${anchor}`}
+                              data-board-quick-add-handle={anchor}
+                              data-active={isActive ? "true" : "false"}
+                              className="cursor-pointer"
+                              onPointerEnter={() => setQuickAddPreview({ sourceNodeId: renderNode.id, anchor })}
+                              onPointerLeave={(event) => handleQuickAddPointerLeave(event, renderNode, anchor)}
+                              onPointerDown={(event) => handleQuickAddPointerDown(event, renderNode, anchor)}
+                              onPointerMove={(event) => handleQuickAddPointerMove(event, renderNode, anchor)}
+                              onPointerUp={(event) => handleQuickAddPointerUp(event, renderNode, anchor)}
+                              onClick={(event) => handleQuickAddClick(event, renderNode, anchor)}
+                            >
+                              <circle cx={buttonPoint.x} cy={buttonPoint.y} r={13} fill="transparent" />
+                              {isActive ? (
+                                <>
+                                  <circle cx={buttonPoint.x} cy={buttonPoint.y} r={10.5} fill="#3370ff" stroke="#ffffff" strokeWidth="1.8" />
+                                  <text x={buttonPoint.x} y={buttonPoint.y + 0.5} textAnchor="middle" dominantBaseline="middle" fontSize="12" fontWeight="700" fill="#ffffff" className="pointer-events-none select-none">
+                                    {quickAddSymbol(anchor)}
+                                  </text>
+                                </>
+                              ) : (
+                                <>
+                                  <circle cx={buttonPoint.x} cy={buttonPoint.y} r={5.2} fill="#eaf1ff" stroke="#ffffff" strokeWidth="2.2" />
+                                  <circle cx={buttonPoint.x} cy={buttonPoint.y} r={3.4} fill="#5b8cff" stroke="#3370ff" strokeWidth="0.8" />
+                                </>
+                              )}
+                            </g>
                           );
                         }) : null}
                       </>
@@ -2462,31 +3625,88 @@ export function BoardDocumentPage({
                       );
                     })}
                     {segmentHandles.map((handle) => (
-                      <circle
-                        key={`${selectedConnector.id}-overlay-segment-${handle.segmentIndex}`}
-                        cx={handle.x}
-                        cy={handle.y}
-                        r={3.2}
-                        fill="#3370ff"
-                        stroke="#ffffff"
-                        strokeWidth="1"
-                        className="cursor-move"
-                        onPointerDown={(event) => {
-                          event.stopPropagation();
-                          beginContinuousInteraction();
-                          hideToolbarDuringDrag();
-                          setConnectorHandleDrag({
-                            connectorId: selectedConnector.id,
-                            segmentIndex: handle.segmentIndex,
-                            orientation: handle.orientation,
-                            points: geometry.points.map((point) => ({ ...point })),
-                          });
-                          setSelectedConnectorId(selectedConnector.id);
-                          setSelectedNodeId(null);
-                        }}
-                      />
+                      <g key={`${selectedConnector.id}-overlay-segment-${handle.segmentIndex}`}>
+                        <path
+                          d={`M ${handle.start.x} ${handle.start.y} L ${handle.end.x} ${handle.end.y}`}
+                          fill="none"
+                          stroke="transparent"
+                          strokeWidth="12"
+                          className={handle.orientation === "horizontal" ? "cursor-ns-resize" : "cursor-ew-resize"}
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            beginContinuousInteraction();
+                            hideToolbarDuringDrag();
+                            setConnectorHandleDrag({
+                              connectorId: selectedConnector.id,
+                              segmentIndex: handle.segmentIndex,
+                              orientation: handle.orientation,
+                              points: geometry.points.map((point) => ({ ...point })),
+                            });
+                            setSelectedConnectorId(selectedConnector.id);
+                            setSelectedNodeId(null);
+                          }}
+                        />
+                        <circle
+                          cx={handle.x}
+                          cy={handle.y}
+                          r={3.2}
+                          fill="#3370ff"
+                          stroke="#ffffff"
+                          strokeWidth="1"
+                          className={handle.orientation === "horizontal" ? "cursor-ns-resize" : "cursor-ew-resize"}
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            beginContinuousInteraction();
+                            hideToolbarDuringDrag();
+                            setConnectorHandleDrag({
+                              connectorId: selectedConnector.id,
+                              segmentIndex: handle.segmentIndex,
+                              orientation: handle.orientation,
+                              points: geometry.points.map((point) => ({ ...point })),
+                            });
+                            setSelectedConnectorId(selectedConnector.id);
+                            setSelectedNodeId(null);
+                          }}
+                        />
+                      </g>
                     ))}
                   </g>
+                );
+              })() : null}
+              {editingConnectorLabel ? (() => {
+                const value = editingConnectorLabelText || "";
+                const inputWidth = Math.min(220, Math.max(58, value.length * 8 + 28));
+                return (
+                  <foreignObject
+                    x={editingConnectorLabel.position.x - inputWidth / 2}
+                    y={editingConnectorLabel.position.y - 15}
+                    width={inputWidth}
+                    height={30}
+                    className="overflow-visible"
+                  >
+                    <input
+                      ref={connectorLabelInputRef}
+                      data-board-connector-label-input="true"
+                      value={editingConnectorLabelText}
+                      placeholder="输入文本"
+                      onChange={(event) => setEditingConnectorLabelText(event.target.value)}
+                      onBlur={finishConnectorLabelEditing}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => event.stopPropagation()}
+                      onDoubleClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          finishConnectorLabelEditing();
+                        }
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          finishConnectorLabelEditing();
+                        }
+                      }}
+                      className="h-[26px] w-full border border-[#5b8cff] bg-white px-1.5 text-center text-[12px] leading-[24px] text-[#1f2329] shadow-[0_2px_8px_rgba(31,35,41,0.12)] outline-none"
+                    />
+                  </foreignObject>
                 );
               })() : null}
               {selectionRect ? (() => {
@@ -2597,7 +3817,7 @@ export function BoardDocumentPage({
                 </>
               ) : null}
               {activePanel ? (
-                <div className="absolute left-0 top-11 z-50 min-w-48 rounded-[12px] border border-[#e3e7ef] bg-white p-3 text-xs shadow-[0_10px_28px_rgba(31,35,41,0.16)]" onMouseEnter={() => {
+                <div className="absolute left-0 z-50 min-w-48 overflow-y-auto rounded-[12px] border border-[#e3e7ef] bg-white p-3 text-xs shadow-[0_10px_28px_rgba(31,35,41,0.16)]" style={toolbarPanelStyle} onMouseEnter={() => {
                   if (panelHoverTimerRef.current) window.clearTimeout(panelHoverTimerRef.current);
                 }} onMouseLeave={scheduleCloseToolbarPanel}>
                   {activePanel === "multiFilter" ? (

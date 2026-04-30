@@ -306,7 +306,7 @@ def _board_anchor_point(node: dict, anchor: str) -> tuple[float, float]:
 
 
 def _valid_board_connector_path(connector: dict, nodes_by_id: dict[str, dict]) -> bool:
-    routing_mode = connector.get("routingMode", connector.get("routing", "orthogonal"))
+    routing_mode = connector.get("routingMode", connector.get("routing", "rounded-orthogonal"))
     if routing_mode == "straight":
         return True
     from_endpoint = connector.get("from")
@@ -375,7 +375,7 @@ def is_valid_board_content(content_json: dict) -> bool:
             return False
         if not isinstance(connector.get("id"), str) or not connector["id"].strip():
             return False
-        routing_mode = connector.get("routingMode", connector.get("routing", "orthogonal"))
+        routing_mode = connector.get("routingMode", connector.get("routing", "rounded-orthogonal"))
         if routing_mode not in {"straight", "orthogonal", "polyline", "rounded-orthogonal"}:
             return False
         if not _valid_board_endpoint(connector.get("from"), node_ids):
