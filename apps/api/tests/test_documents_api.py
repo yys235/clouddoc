@@ -1029,6 +1029,52 @@ def test_create_and_update_board_document() -> None:
                     },
                     "zIndex": 3,
                 },
+                {
+                    "id": "node-4",
+                    "type": "table",
+                    "x": 720,
+                    "y": 120,
+                    "width": 360,
+                    "height": 148,
+                    "text": "title",
+                    "table": {
+                        "title": "title",
+                        "titleHeight": 40,
+                        "columns": [
+                            {"id": "col-1", "width": 120},
+                            {"id": "col-2", "width": 120},
+                            {"id": "col-3", "width": 120},
+                        ],
+                        "rows": [
+                            {
+                                "id": "row-1",
+                                "height": 36,
+                                "cells": [
+                                    {"id": "cell-1", "text": "Field", "align": "left"},
+                                    {"id": "cell-2", "text": "Field", "align": "left"},
+                                    {"id": "cell-3", "text": "Type", "align": "left"},
+                                ],
+                            },
+                            {
+                                "id": "row-2",
+                                "height": 36,
+                                "cells": [
+                                    {"id": "cell-4", "text": "", "align": "left"},
+                                    {"id": "cell-5", "text": "", "align": "left"},
+                                    {"id": "cell-6", "text": "", "align": "left"},
+                                ],
+                            },
+                        ],
+                    },
+                    "style": {
+                        "fill": "#ffffff",
+                        "stroke": "#5b7fd8",
+                        "strokeWidth": 1,
+                        "fontSize": 14,
+                        "color": "#1f2937",
+                    },
+                    "zIndex": 4,
+                },
             ],
             "connectors": [
                 {
@@ -1064,6 +1110,7 @@ def test_create_and_update_board_document() -> None:
         assert update_response.json()["content"]["content_json"]["nodes"][0]["text"] == "开始"
         assert update_response.json()["content"]["content_json"]["nodes"][1]["type"] == "predefined_process"
         assert update_response.json()["content"]["content_json"]["nodes"][2]["type"] == "cloud"
+        assert update_response.json()["content"]["content_json"]["nodes"][3]["type"] == "table"
         assert update_response.json()["content"]["content_json"]["connectors"][0]["routingMode"] == "rounded-orthogonal"
         assert update_response.json()["content"]["content_json"]["connectors"][0]["waypoints"][1]["x"] == 280
 
@@ -1136,6 +1183,22 @@ def test_create_and_update_board_document() -> None:
             },
         )
         assert missing_target_response.status_code == 400
+
+        invalid_table = {
+            **content_json,
+            "nodes": [
+                *content_json["nodes"][:3],
+                {**content_json["nodes"][3], "table": {"title": "bad", "columns": [], "rows": []}},
+            ],
+        }
+        invalid_table_response = client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "content_json": invalid_table,
+                "plain_text": "pytest-board",
+            },
+        )
+        assert invalid_table_response.status_code == 400
     finally:
         cleanup_document(document_id)
 

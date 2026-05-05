@@ -291,6 +291,49 @@ def _valid_board_connector_style(value: object) -> bool:
     return True
 
 
+def _valid_board_table(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if not isinstance(value.get("title", ""), str):
+        return False
+    if not isinstance(value.get("titleHeight", value.get("title_height", 40)), (int, float)):
+        return False
+    columns = value.get("columns")
+    rows = value.get("rows")
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        return False
+    if len(columns) < 1 or len(rows) < 1:
+        return False
+    for column in columns:
+        if not isinstance(column, dict):
+            return False
+        if not isinstance(column.get("id"), str) or not column["id"].strip():
+            return False
+        if not isinstance(column.get("width"), (int, float)) or float(column["width"]) < 48:
+            return False
+    column_count = len(columns)
+    for row in rows:
+        if not isinstance(row, dict):
+            return False
+        if not isinstance(row.get("id"), str) or not row["id"].strip():
+            return False
+        if not isinstance(row.get("height"), (int, float)) or float(row["height"]) < 28:
+            return False
+        cells = row.get("cells")
+        if not isinstance(cells, list) or len(cells) != column_count:
+            return False
+        for cell in cells:
+            if not isinstance(cell, dict):
+                return False
+            if not isinstance(cell.get("id"), str) or not cell["id"].strip():
+                return False
+            if not isinstance(cell.get("text", ""), str):
+                return False
+            if cell.get("align", "left") not in {"left", "center", "right"}:
+                return False
+    return True
+
+
 def _board_anchor_point(node: dict, anchor: str) -> tuple[float, float]:
     x = float(node["x"])
     y = float(node["y"])
@@ -359,6 +402,7 @@ def is_valid_board_content(content_json: dict) -> bool:
         "parallelogram",
         "hexagon",
         "plus",
+        "table",
     }
     for node in nodes:
         if not isinstance(node, dict) or node.get("type") not in allowed_node_types:
@@ -368,6 +412,8 @@ def is_valid_board_content(content_json: dict) -> bool:
         for key in ("x", "y", "width", "height"):
             if not isinstance(node.get(key), (int, float)):
                 return False
+        if node.get("type") == "table" and not _valid_board_table(node.get("table")):
+            return False
     node_ids = {node["id"] for node in nodes}
     nodes_by_id = {node["id"]: node for node in nodes}
     for connector in connectors:

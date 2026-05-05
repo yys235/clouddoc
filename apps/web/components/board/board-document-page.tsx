@@ -26,7 +26,8 @@ type BoardNodeType =
   | "arrow"
   | "parallelogram"
   | "hexagon"
-  | "plus";
+  | "plus"
+  | "table";
 type BoardTool = "select" | "pan" | "shape" | "text" | "connector";
 type BoardAnchor = "top" | "right" | "bottom" | "left";
 type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
@@ -48,6 +49,32 @@ type QuickAddPressState = {
   startedConnection: boolean;
 };
 type ShapePlacementPreviewState = { type: BoardNodeType; x: number; y: number; width: number; height: number };
+type BoardTableCell = {
+  id: string;
+  text: string;
+  align?: "left" | "center" | "right";
+};
+type BoardTableColumn = {
+  id: string;
+  width: number;
+};
+type BoardTableRow = {
+  id: string;
+  height: number;
+  cells: BoardTableCell[];
+};
+type BoardTableData = {
+  title: string;
+  titleHeight: number;
+  columns: BoardTableColumn[];
+  rows: BoardTableRow[];
+};
+type BoardTableSelection =
+  | { nodeId: string; kind: "table" }
+  | { nodeId: string; kind: "title" }
+  | { nodeId: string; kind: "cell"; rowId: string; columnId: string }
+  | { nodeId: string; kind: "row"; rowId: string }
+  | { nodeId: string; kind: "column"; columnId: string };
 type MultiSelectionOption = { key: MultiSelectionFilter; label: string; count: number };
 type BoardIconName =
   | "orb"
@@ -80,6 +107,7 @@ type BoardNode = {
   width: number;
   height: number;
   text: string;
+  table?: BoardTableData;
   manualSize: boolean;
   style: {
     fill: string;
@@ -170,6 +198,7 @@ const SHAPE_ITEMS: Array<{ type: BoardNodeType; label: string; icon: string }> =
   { type: "star", label: "星形", icon: "☆" },
   { type: "cloud", label: "云朵", icon: "☁" },
   { type: "plus", label: "加号", icon: "✚" },
+  { type: "table", label: "表格", icon: "▦" },
 ];
 const COLOR_SWATCHES = [
   "#ffffff", "#f8fafc", "#e2e8f0", "#94a3b8", "#1f2937", "#ef4444", "#f97316", "#f59e0b",
@@ -336,6 +365,12 @@ function ShapeIcon({ type, className = "h-[18px] w-[18px]" }: { type: BoardNodeT
       {type === "triangle" ? <path {...common} d="M12 4l8 16H4L12 4z" /> : null}
       {type === "star" ? <path {...common} d="M12 4l2.2 5 5.3.5-4 3.5 1.2 5.2L12 15.5l-4.7 2.7L8.5 13l-4-3.5 5.3-.5L12 4z" /> : null}
       {type === "plus" ? <path {...common} d="M9 4h6v5h5v6h-5v5H9v-5H4V9h5V4z" /> : null}
+      {type === "table" ? (
+        <>
+          <rect {...common} x="4.5" y="5" width="15" height="14" />
+          <path {...common} d="M4.5 9h15M4.5 14h15M9.5 5v14M14.5 5v14" />
+        </>
+      ) : null}
       {type === "text" ? <path {...common} d="M5 6h14M12 6v12M8.5 18h7" /> : null}
     </svg>
   );
@@ -393,6 +428,83 @@ function normalizeDefaultConnectorStroke(value: unknown) {
 function normalizeDefaultConnectorStrokeWidth(value: unknown) {
   const strokeWidth = Number(value ?? DEFAULT_CONNECTOR_STYLE.strokeWidth) || DEFAULT_CONNECTOR_STYLE.strokeWidth;
   return strokeWidth === LEGACY_DEFAULT_CONNECTOR_STROKE_WIDTH ? DEFAULT_CONNECTOR_STYLE.strokeWidth : strokeWidth;
+}
+
+function createBoardTableCell(text = "Field"): BoardTableCell {
+  return { id: crypto.randomUUID(), text, align: "left" };
+}
+
+function createDefaultBoardTableData(): BoardTableData {
+  const columns = Array.from({ length: 3 }, () => ({ id: crypto.randomUUID(), width: 120 }));
+  return {
+    title: "title",
+    titleHeight: 40,
+    columns,
+    rows: Array.from({ length: 3 }, (_, rowIndex) => ({
+      id: crypto.randomUUID(),
+      height: 36,
+      cells: columns.map((column, columnIndex) => createBoardTableCell(rowIndex === 0 && columnIndex === 2 ? "Type" : "Field")),
+    })),
+  };
+}
+
+function normalizeBoardTableData(raw: unknown, width: number, height: number): BoardTableData {
+  const fallback = createDefaultBoardTableData();
+  if (!raw || typeof raw !== "object") return fallback;
+  const table = raw as Record<string, unknown>;
+  const rawColumns = Array.isArray(table.columns) ? table.columns : [];
+  const columns = rawColumns.flatMap((item): BoardTableColumn[] => {
+    if (!item || typeof item !== "object") return [];
+    const column = item as Record<string, unknown>;
+    const id = String(column.id || crypto.randomUUID());
+    const columnWidth = Math.max(48, Number(column.width ?? 120) || 120);
+    return [{ id, width: columnWidth }];
+  });
+  const normalizedColumns = columns.length > 0 ? columns : fallback.columns;
+  const rawRows = Array.isArray(table.rows) ? table.rows : [];
+  const rows = rawRows.flatMap((item): BoardTableRow[] => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
+    const rawCells = Array.isArray(row.cells) ? row.cells : [];
+    const cells = normalizedColumns.map((column, index) => {
+      const rawCell = rawCells[index];
+      if (!rawCell || typeof rawCell !== "object") return createBoardTableCell("");
+      const cell = rawCell as Record<string, unknown>;
+      const align = ["left", "center", "right"].includes(String(cell.align)) ? cell.align as BoardTableCell["align"] : "left";
+      return { id: String(cell.id || crypto.randomUUID()), text: String(cell.text ?? ""), align };
+    });
+    return [{ id: String(row.id || crypto.randomUUID()), height: Math.max(28, Number(row.height ?? 36) || 36), cells }];
+  });
+  const normalizedRows = rows.length > 0 ? rows : fallback.rows;
+  const totalColumnWidth = normalizedColumns.reduce((sum, column) => sum + column.width, 0);
+  if (totalColumnWidth < width && normalizedColumns.length > 0) {
+    const extra = (width - totalColumnWidth) / normalizedColumns.length;
+    normalizedColumns.forEach((column) => {
+      column.width += extra;
+    });
+  }
+  const titleHeight = Math.max(30, Number(table.titleHeight ?? table.title_height ?? fallback.titleHeight) || fallback.titleHeight);
+  const totalHeight = titleHeight + normalizedRows.reduce((sum, row) => sum + row.height, 0);
+  if (totalHeight < height && normalizedRows.length > 0) {
+    const extra = (height - totalHeight) / normalizedRows.length;
+    normalizedRows.forEach((row) => {
+      row.height += extra;
+    });
+  }
+  return {
+    title: String(table.title ?? fallback.title),
+    titleHeight,
+    columns: normalizedColumns,
+    rows: normalizedRows,
+  };
+}
+
+function tableTotalWidth(table: BoardTableData) {
+  return table.columns.reduce((sum, column) => sum + column.width, 0);
+}
+
+function tableTotalHeight(table: BoardTableData) {
+  return table.titleHeight + table.rows.reduce((sum, row) => sum + row.height, 0);
 }
 
 function boardNodeTextLines(node: Pick<BoardNode, "text" | "width" | "style">, text = node.text) {
@@ -456,6 +568,7 @@ function normalizeBoardState(raw: Record<string, unknown>): BoardState {
         width: Math.max(48, Number(node.width ?? 160) || 160),
         height: Math.max(32, Number(node.height ?? 64) || 64),
         text: String(node.text ?? ""),
+        table: type === "table" ? normalizeBoardTableData(node.table, Math.max(48, Number(node.width ?? 360) || 360), Math.max(32, Number(node.height ?? 148) || 148)) : undefined,
         manualSize: Boolean(node.manualSize ?? node.manual_size ?? false),
         style: {
           fill: normalizeDefaultNodeFill(type, style.fill),
@@ -469,6 +582,12 @@ function normalizeBoardState(raw: Record<string, unknown>): BoardState {
         },
         zIndex: Number(node.zIndex ?? 1) || 1,
       };
+      if (normalizedNode.type === "table" && normalizedNode.table) {
+        normalizedNode.width = Math.max(160, tableTotalWidth(normalizedNode.table));
+        normalizedNode.height = Math.max(92, tableTotalHeight(normalizedNode.table));
+        normalizedNode.text = normalizedNode.table.title;
+        normalizedNode.manualSize = true;
+      }
       return [normalizedNode.manualSize ? normalizedNode : fitNodeHeightToText(normalizedNode)];
     }),
     connectors: connectors.flatMap((item): BoardConnector[] => {
@@ -612,6 +731,7 @@ function cloudPath(node: BoardNode) {
 
 function defaultNodeSize(type: BoardNodeType) {
   if (type === "text") return { width: 180, height: 48 };
+  if (type === "table") return { width: 360, height: 148 };
   if (type === "triangle" || type === "star" || type === "plus" || type === "cloud") return { width: 110, height: 92 };
   if (type === "comment_bubble" || type === "document") return { width: 176, height: 92 };
   if (type === "predefined_process" || type === "trapezoid") return { width: 174, height: 76 };
@@ -620,6 +740,7 @@ function defaultNodeSize(type: BoardNodeType) {
 }
 
 function defaultNodeText(type: BoardNodeType) {
+  if (type === "table") return "title";
   return type === "text" ? "输入文本" : "输入文本";
 }
 
@@ -1412,6 +1533,59 @@ function nodeRect(node: BoardNode): BoardRect {
   return { x: node.x, y: node.y, width: node.width, height: node.height };
 }
 
+function tableColumnOffset(table: BoardTableData, columnId: string) {
+  let offset = 0;
+  for (const column of table.columns) {
+    if (column.id === columnId) return offset;
+    offset += column.width;
+  }
+  return 0;
+}
+
+function tableRowOffset(table: BoardTableData, rowId: string) {
+  let offset = table.titleHeight;
+  for (const row of table.rows) {
+    if (row.id === rowId) return offset;
+    offset += row.height;
+  }
+  return table.titleHeight;
+}
+
+function tableCellRect(node: BoardNode, rowId: string, columnId: string): BoardRect | null {
+  if (!node.table) return null;
+  const row = node.table.rows.find((item) => item.id === rowId);
+  const column = node.table.columns.find((item) => item.id === columnId);
+  if (!row || !column) return null;
+  return {
+    x: node.x + tableColumnOffset(node.table, columnId),
+    y: node.y + tableRowOffset(node.table, rowId),
+    width: column.width,
+    height: row.height,
+  };
+}
+
+function tableSelectionMatches(left: BoardTableSelection | null, right: BoardTableSelection | null) {
+  if (!left || !right) return false;
+  if (left.nodeId !== right.nodeId || left.kind !== right.kind) return false;
+  if (left.kind === "cell" && right.kind === "cell") return left.rowId === right.rowId && left.columnId === right.columnId;
+  if (left.kind === "row" && right.kind === "row") return left.rowId === right.rowId;
+  if (left.kind === "column" && right.kind === "column") return left.columnId === right.columnId;
+  return true;
+}
+
+function resizeBoardTableData(table: BoardTableData, width: number, height: number): BoardTableData {
+  const currentWidth = Math.max(1, tableTotalWidth(table));
+  const bodyHeight = Math.max(1, table.rows.reduce((sum, row) => sum + row.height, 0));
+  const nextTitleHeight = Math.max(30, Math.min(table.titleHeight, height * 0.45));
+  const nextBodyHeight = Math.max(28 * table.rows.length, height - nextTitleHeight);
+  return {
+    ...table,
+    titleHeight: nextTitleHeight,
+    columns: table.columns.map((column) => ({ ...column, width: Math.max(48, column.width * width / currentWidth) })),
+    rows: table.rows.map((row) => ({ ...row, height: Math.max(28, row.height * nextBodyHeight / bodyHeight) })),
+  };
+}
+
 function connectorBounds(connector: BoardConnector, nodes: BoardNode[]): BoardRect | null {
   const geometry = connectorGeometry(connector, nodes);
   if (!geometry) return null;
@@ -1451,6 +1625,9 @@ export function BoardDocumentPage({
   const [pendingShape, setPendingShape] = useState<BoardNodeType>("rectangle");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedConnectorId, setSelectedConnectorId] = useState<string | null>(null);
+  const [tableSelection, setTableSelection] = useState<BoardTableSelection | null>(null);
+  const [editingTableTarget, setEditingTableTarget] = useState<BoardTableSelection | null>(null);
+  const [editingTableText, setEditingTableText] = useState("");
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedConnectorIds, setSelectedConnectorIds] = useState<string[]>([]);
   const [multiSelectionFilter, setMultiSelectionFilter] = useState<MultiSelectionFilter>("all");
@@ -1477,6 +1654,11 @@ export function BoardDocumentPage({
     connectorWaypoints: Record<string, BoardWaypoint[]>;
   } | null>(null);
   const [resizeState, setResizeState] = useState<{ nodeId: string; handle: ResizeHandle; startX: number; startY: number; node: BoardNode } | null>(null);
+  const [tableResizeState, setTableResizeState] = useState<
+    | { nodeId: string; kind: "column"; columnId: string; startX: number; width: number }
+    | { nodeId: string; kind: "row"; rowId: string; startY: number; height: number }
+    | null
+  >(null);
   const [connectorHandleDrag, setConnectorHandleDrag] = useState<{
     connectorId: string;
     segmentIndex: number;
@@ -1507,6 +1689,7 @@ export function BoardDocumentPage({
   const [isMutating, startTransition] = useTransition();
   const svgRef = useRef<SVGSVGElement | null>(null);
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const tableEditRef = useRef<HTMLTextAreaElement | null>(null);
   const connectorLabelInputRef = useRef<HTMLInputElement | null>(null);
   const connectorClickRef = useRef<{ connectorId: string; at: number } | null>(null);
   const saveTimerRef = useRef<number | null>(null);
@@ -1576,6 +1759,9 @@ export function BoardDocumentPage({
     setBoard(normalizeBoardState(document.contentJson));
     setSelectedNodeId(null);
     setSelectedConnectorId(null);
+    setTableSelection(null);
+    setEditingTableTarget(null);
+    setEditingTableText("");
     setSelectedNodeIds([]);
     setSelectedConnectorIds([]);
     setMultiSelectionFilter("all");
@@ -1585,6 +1771,7 @@ export function BoardDocumentPage({
     setActivePanel(null);
     setConnectionDrag(null);
     setConnectorEndpointDrag(null);
+    setTableResizeState(null);
     setConnectorLabelDrag(null);
     setHoveredAnchor(null);
     setEditingConnectorLabel(null);
@@ -1601,6 +1788,14 @@ export function BoardDocumentPage({
     if (!editingNodeId) return;
     window.setTimeout(() => textAreaRef.current?.focus(), 0);
   }, [editingNodeId]);
+
+  useEffect(() => {
+    if (!editingTableTarget) return;
+    window.setTimeout(() => {
+      tableEditRef.current?.focus();
+      tableEditRef.current?.select();
+    }, 0);
+  }, [editingTableTarget]);
 
   useEffect(() => {
     if (!editingConnectorLabel) return;
@@ -1686,7 +1881,10 @@ export function BoardDocumentPage({
   };
 
   const addNodeAt = (type: BoardNodeType, x: number, y: number) => {
-    const { width, height } = defaultNodeSize(type);
+    const table = type === "table" ? createDefaultBoardTableData() : undefined;
+    const defaultSize = defaultNodeSize(type);
+    const width = table ? tableTotalWidth(table) : defaultSize.width;
+    const height = table ? tableTotalHeight(table) : defaultSize.height;
     let newId = "";
     commitBoard((current) => {
       newId = crypto.randomUUID();
@@ -1702,7 +1900,8 @@ export function BoardDocumentPage({
             width,
             height,
             text: defaultNodeText(type),
-            manualSize: false,
+            table,
+            manualSize: type === "table",
             style: { ...DEFAULT_NODE_STYLE, fill: type === "text" ? "transparent" : DEFAULT_NODE_STYLE.fill },
             zIndex: Math.max(0, ...current.nodes.map((node) => node.zIndex)) + 1,
           },
@@ -1778,6 +1977,9 @@ export function BoardDocumentPage({
   const clearSelection = () => {
     setSelectedNodeId(null);
     setSelectedConnectorId(null);
+    setTableSelection(null);
+    setEditingTableTarget(null);
+    setEditingTableText("");
     setSelectedNodeIds([]);
     setSelectedConnectorIds([]);
     setMultiSelectionFilter("all");
@@ -1791,6 +1993,9 @@ export function BoardDocumentPage({
   const selectSingleNode = (nodeId: string) => {
     setSelectedNodeId(nodeId);
     setSelectedConnectorId(null);
+    setTableSelection(null);
+    setEditingTableTarget(null);
+    setEditingTableText("");
     setSelectedNodeIds([]);
     setSelectedConnectorIds([]);
     setMultiSelectionFilter("all");
@@ -1804,6 +2009,9 @@ export function BoardDocumentPage({
   const selectSingleConnector = (connectorId: string) => {
     setSelectedNodeId(null);
     setSelectedConnectorId(connectorId);
+    setTableSelection(null);
+    setEditingTableTarget(null);
+    setEditingTableText("");
     setSelectedNodeIds([]);
     setSelectedConnectorIds([]);
     setMultiSelectionFilter("all");
@@ -1860,6 +2068,188 @@ export function BoardDocumentPage({
           : connector,
       ),
     }));
+  };
+
+  const selectTablePart = (selection: BoardTableSelection) => {
+    setSelectedNodeId(selection.nodeId);
+    setSelectedConnectorId(null);
+    setSelectedNodeIds([]);
+    setSelectedConnectorIds([]);
+    setMultiSelectionFilter("all");
+    setQuickAddPreview(null);
+    setShapePlacementPreview(null);
+    setActivePanel(null);
+    setEditingNodeId(null);
+    setEditingText("");
+    setTableSelection(selection);
+  };
+
+  const updateTableNode = (nodeId: string, updater: (table: BoardTableData) => BoardTableData) => {
+    commitBoard((current) => ({
+      ...current,
+      nodes: current.nodes.map((node) => {
+        if (node.id !== nodeId || node.type !== "table") return node;
+        const table = updater(node.table ?? createDefaultBoardTableData());
+        return {
+          ...node,
+          table,
+          text: table.title,
+          width: Math.max(160, tableTotalWidth(table)),
+          height: Math.max(92, tableTotalHeight(table)),
+          manualSize: true,
+        };
+      }),
+    }));
+  };
+
+  const startTableEditing = (selection: BoardTableSelection) => {
+    if (!canEdit || selection.kind === "table" || selection.kind === "row" || selection.kind === "column") return;
+    const node = board.nodes.find((item) => item.id === selection.nodeId);
+    if (!node?.table) return;
+    let text = "";
+    if (selection.kind === "title") {
+      text = node.table.title;
+    } else {
+      const row = node.table.rows.find((item) => item.id === selection.rowId);
+      const columnIndex = node.table.columns.findIndex((item) => item.id === selection.columnId);
+      text = row?.cells[columnIndex]?.text ?? "";
+    }
+    selectTablePart(selection);
+    setEditingTableTarget(selection);
+    setEditingTableText(text);
+  };
+
+  const finishTableEditing = () => {
+    if (!editingTableTarget) return;
+    const target = editingTableTarget;
+    const text = editingTableText;
+    updateTableNode(target.nodeId, (table) => {
+      if (target.kind === "title") {
+        return { ...table, title: text };
+      }
+      if (target.kind !== "cell") return table;
+      const columnIndex = table.columns.findIndex((column) => column.id === target.columnId);
+      return {
+        ...table,
+        rows: table.rows.map((row) => {
+          if (row.id !== target.rowId || columnIndex < 0) return row;
+          return {
+            ...row,
+            cells: row.cells.map((cell, index) => index === columnIndex ? { ...cell, text } : cell),
+          };
+        }),
+      };
+    });
+    setEditingTableTarget(null);
+    setEditingTableText("");
+  };
+
+  const moveTableCellSelection = (direction: "next" | "previous") => {
+    if (!editingTableTarget || editingTableTarget.kind !== "cell") return;
+    const target = editingTableTarget;
+    const node = board.nodes.find((item) => item.id === target.nodeId);
+    if (!node?.table) return;
+    const rowIndex = node.table.rows.findIndex((row) => row.id === target.rowId);
+    const columnIndex = node.table.columns.findIndex((column) => column.id === target.columnId);
+    if (rowIndex < 0 || columnIndex < 0) return;
+    let nextRowIndex = rowIndex;
+    let nextColumnIndex = columnIndex + (direction === "next" ? 1 : -1);
+    if (nextColumnIndex >= node.table.columns.length) {
+      nextColumnIndex = 0;
+      nextRowIndex += 1;
+    }
+    if (nextColumnIndex < 0) {
+      nextColumnIndex = node.table.columns.length - 1;
+      nextRowIndex -= 1;
+    }
+    if (direction === "next" && nextRowIndex >= node.table.rows.length) {
+      const newRowId = crypto.randomUUID();
+      updateTableNode(node.id, (table) => ({
+        ...table,
+        rows: [
+          ...table.rows,
+          {
+            id: newRowId,
+            height: 36,
+            cells: table.columns.map(() => createBoardTableCell("")),
+          },
+        ],
+      }));
+      const nextSelection = { nodeId: node.id, kind: "cell" as const, rowId: newRowId, columnId: node.table.columns[0].id };
+      window.setTimeout(() => startTableEditing(nextSelection), 0);
+      return;
+    }
+    if (nextRowIndex < 0 || nextRowIndex >= node.table.rows.length) return;
+    const nextSelection = {
+      nodeId: node.id,
+      kind: "cell" as const,
+      rowId: node.table.rows[nextRowIndex].id,
+      columnId: node.table.columns[nextColumnIndex].id,
+    };
+    finishTableEditing();
+    window.setTimeout(() => startTableEditing(nextSelection), 0);
+  };
+
+  const insertTableRow = (position: "above" | "below") => {
+    const node = selectedNode;
+    if (!node?.table || !tableSelection || tableSelection.nodeId !== node.id) return;
+    const selectedRowId = tableSelection.kind === "row" || tableSelection.kind === "cell" ? tableSelection.rowId : node.table.rows[0]?.id;
+    const newRowId = crypto.randomUUID();
+    updateTableNode(node.id, (table) => {
+      const index = Math.max(0, table.rows.findIndex((row) => row.id === selectedRowId));
+      const insertIndex = position === "above" ? index : index + 1;
+      const row: BoardTableRow = { id: newRowId, height: 36, cells: table.columns.map(() => createBoardTableCell("")) };
+      return { ...table, rows: [...table.rows.slice(0, insertIndex), row, ...table.rows.slice(insertIndex)] };
+    });
+    setTableSelection({ nodeId: node.id, kind: "row", rowId: newRowId });
+  };
+
+  const insertTableColumn = (position: "left" | "right") => {
+    const node = selectedNode;
+    if (!node?.table || !tableSelection || tableSelection.nodeId !== node.id) return;
+    const selectedColumnId = tableSelection.kind === "column" || tableSelection.kind === "cell" ? tableSelection.columnId : node.table.columns[0]?.id;
+    const newColumnId = crypto.randomUUID();
+    updateTableNode(node.id, (table) => {
+      const index = Math.max(0, table.columns.findIndex((column) => column.id === selectedColumnId));
+      const insertIndex = position === "left" ? index : index + 1;
+      const column: BoardTableColumn = { id: newColumnId, width: 120 };
+      return {
+        ...table,
+        columns: [...table.columns.slice(0, insertIndex), column, ...table.columns.slice(insertIndex)],
+        rows: table.rows.map((row) => ({
+          ...row,
+          cells: [...row.cells.slice(0, insertIndex), createBoardTableCell(""), ...row.cells.slice(insertIndex)],
+        })),
+      };
+    });
+    setTableSelection({ nodeId: node.id, kind: "column", columnId: newColumnId });
+  };
+
+  const deleteSelectedTablePart = () => {
+    const node = selectedNode;
+    if (!node?.table || !tableSelection || tableSelection.nodeId !== node.id) return;
+    if (tableSelection.kind === "row") {
+      if (node.table.rows.length <= 1) {
+        setNotice("表格至少保留一行");
+        return;
+      }
+      updateTableNode(node.id, (table) => ({ ...table, rows: table.rows.filter((row) => row.id !== tableSelection.rowId) }));
+      setTableSelection({ nodeId: node.id, kind: "table" });
+      return;
+    }
+    if (tableSelection.kind === "column") {
+      if (node.table.columns.length <= 1) {
+        setNotice("表格至少保留一列");
+        return;
+      }
+      const columnIndex = node.table.columns.findIndex((column) => column.id === tableSelection.columnId);
+      updateTableNode(node.id, (table) => ({
+        ...table,
+        columns: table.columns.filter((column) => column.id !== tableSelection.columnId),
+        rows: table.rows.map((row) => ({ ...row, cells: row.cells.filter((_, index) => index !== columnIndex) })),
+      }));
+      setTableSelection({ nodeId: node.id, kind: "table" });
+    }
   };
 
   const startConnectorLabelEditing = (connector: BoardConnector, point: BoardPoint) => {
@@ -2611,6 +3001,33 @@ export function BoardDocumentPage({
       });
       return;
     }
+    if (tableResizeState) {
+      setShapePlacementPreview(null);
+      hideToolbarDuringDrag();
+      const point = screenToBoard(event);
+      setBoard((current) => ({
+        ...current,
+        nodes: current.nodes.map((node) => {
+          if (node.id !== tableResizeState.nodeId || node.type !== "table" || !node.table) return node;
+          if (tableResizeState.kind === "column") {
+            const width = Math.max(48, tableResizeState.width + point.x - tableResizeState.startX);
+            const table = {
+              ...node.table,
+              columns: node.table.columns.map((column) => column.id === tableResizeState.columnId ? { ...column, width } : column),
+            };
+            return { ...node, table, width: tableTotalWidth(table), height: tableTotalHeight(table), manualSize: true };
+          }
+          const height = Math.max(28, tableResizeState.height + point.y - tableResizeState.startY);
+          const table = {
+            ...node.table,
+            rows: node.table.rows.map((row) => row.id === tableResizeState.rowId ? { ...row, height } : row),
+          };
+          return { ...node, table, width: tableTotalWidth(table), height: tableTotalHeight(table), manualSize: true };
+        }),
+      }));
+      setIsDirty(true);
+      return;
+    }
     if (resizeState) {
       setShapePlacementPreview(null);
       hideToolbarDuringDrag();
@@ -2634,6 +3051,12 @@ export function BoardDocumentPage({
             next.y = Math.min(resizeState.node.y + resizeState.node.height - 32, resizeState.node.y + dy);
             next.height = Math.max(32, resizeState.node.height - dy);
           }
+          if (next.type === "table" && next.table) {
+            const table = resizeBoardTableData(next.table, next.width, next.height);
+            next.table = table;
+            next.width = tableTotalWidth(table);
+            next.height = tableTotalHeight(table);
+          }
           return next;
           });
           return nextNodes;
@@ -2653,6 +3076,12 @@ export function BoardDocumentPage({
             if (resizeState.handle.includes("n")) {
               next.y = Math.min(resizeState.node.y + resizeState.node.height - 32, resizeState.node.y + dy);
               next.height = Math.max(32, resizeState.node.height - dy);
+            }
+            if (next.type === "table" && next.table) {
+              const table = resizeBoardTableData(next.table, next.width, next.height);
+              next.table = table;
+              next.width = tableTotalWidth(table);
+              next.height = tableTotalHeight(table);
             }
             return next;
           }),
@@ -2744,7 +3173,7 @@ export function BoardDocumentPage({
       setIsTransientToolbarHidden(false);
       return;
     }
-    if (panState || dragState || resizeState || connectorHandleDrag || connectorPointDrag || connectorLabelDrag) {
+    if (panState || dragState || resizeState || tableResizeState || connectorHandleDrag || connectorPointDrag || connectorLabelDrag) {
       const startSnapshot = interactionStartSnapshotRef.current;
       if (startSnapshot && !snapshotEquals(startSnapshot, board)) {
         setHistory((current) => ({ past: [...current.past, startSnapshot].slice(-80), future: [] }));
@@ -2754,6 +3183,7 @@ export function BoardDocumentPage({
     setPanState(null);
     setDragState(null);
     setResizeState(null);
+    setTableResizeState(null);
     setConnectorHandleDrag(null);
     setConnectorPointDrag(null);
     setConnectorEndpointDrag(null);
@@ -2793,6 +3223,7 @@ export function BoardDocumentPage({
       panState
       || dragState
       || resizeState
+      || tableResizeState
       || connectorHandleDrag
       || connectorPointDrag
       || connectorEndpointDrag
@@ -2826,6 +3257,7 @@ export function BoardDocumentPage({
     setPanState(null);
     setDragState(null);
     setResizeState(null);
+    setTableResizeState(null);
     setHoveredAnchor(null);
     setActivePanel(null);
     setShapePaletteOpen(false);
@@ -2851,6 +3283,7 @@ export function BoardDocumentPage({
     panState,
     dragState,
     resizeState,
+    tableResizeState,
     connectorHandleDrag,
     connectorPointDrag,
     connectorEndpointDrag,
@@ -2920,6 +3353,10 @@ export function BoardDocumentPage({
     if (isEditingText) return;
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
+      if (tableSelection?.kind === "row" || tableSelection?.kind === "column") {
+        deleteSelectedTablePart();
+        return;
+      }
       deleteSelected();
       return;
     }
@@ -3028,7 +3465,222 @@ export function BoardDocumentPage({
       : { top: toolbarHeight + gap, maxHeight: availableSpace };
   }, [activePanel, toolbarPoint]);
 
+  const renderTableNode = (node: BoardNode, selected: boolean) => {
+    const table = node.table ?? createDefaultBoardTableData();
+    const isTargetEditing = (target: BoardTableSelection) => tableSelectionMatches(editingTableTarget, target);
+    const isTargetSelected = (target: BoardTableSelection) => tableSelectionMatches(tableSelection, target);
+    let currentX = node.x;
+    let currentY = node.y + table.titleHeight;
+    return (
+      <g>
+        <rect
+          x={node.x}
+          y={node.y}
+          width={node.width}
+          height={node.height}
+          fill="#ffffff"
+          stroke={selected ? "#3370ff" : "#b8c0cc"}
+          strokeWidth={selected ? 1.8 : 1}
+          onClick={(event) => {
+            event.stopPropagation();
+            selectTablePart({ nodeId: node.id, kind: "table" });
+          }}
+        />
+        <rect
+          x={node.x}
+          y={node.y}
+          width={node.width}
+          height={table.titleHeight}
+          fill={isTargetSelected({ nodeId: node.id, kind: "title" }) ? "#e8f0ff" : "#f4f6f8"}
+          stroke="#d8dde6"
+          strokeWidth={1}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            selectTablePart({ nodeId: node.id, kind: "title" });
+          }}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            startTableEditing({ nodeId: node.id, kind: "title" });
+          }}
+        />
+        {isTargetEditing({ nodeId: node.id, kind: "title" }) ? (
+          <foreignObject x={node.x + 8} y={node.y + 6} width={Math.max(40, node.width - 16)} height={Math.max(24, table.titleHeight - 12)}>
+            <textarea
+              ref={tableEditRef}
+              value={editingTableText}
+              onChange={(event) => setEditingTableText(event.target.value)}
+              onBlur={finishTableEditing}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  finishTableEditing();
+                }
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  finishTableEditing();
+                }
+                event.stopPropagation();
+              }}
+              className="h-full w-full resize-none border-0 bg-transparent p-0 text-[14px] font-semibold leading-6 text-[#1f2329] outline-none"
+            />
+          </foreignObject>
+        ) : (
+          <text x={node.x + 12} y={node.y + table.titleHeight / 2} dominantBaseline="middle" fill="#1f2329" fontSize={14} fontWeight={600} className="pointer-events-none select-none">
+            {table.title || "title"}
+          </text>
+        )}
+        {table.columns.map((column) => {
+          const x = currentX;
+          currentX += column.width;
+          const selectedColumn = isTargetSelected({ nodeId: node.id, kind: "column", columnId: column.id });
+          return (
+            <rect
+              key={`column-highlight-${column.id}`}
+              x={x}
+              y={node.y + table.titleHeight}
+              width={column.width}
+              height={node.height - table.titleHeight}
+              fill={selectedColumn ? "#eef5ff" : "transparent"}
+              stroke="transparent"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                selectTablePart({ nodeId: node.id, kind: "column", columnId: column.id });
+              }}
+            />
+          );
+        })}
+        {table.rows.map((row) => {
+          const y = currentY;
+          currentY += row.height;
+          const selectedRow = isTargetSelected({ nodeId: node.id, kind: "row", rowId: row.id });
+          let rowX = node.x;
+          return (
+            <g key={row.id}>
+              <rect
+                x={node.x}
+                y={y}
+                width={node.width}
+                height={row.height}
+                fill={selectedRow ? "#eef5ff" : "transparent"}
+                stroke="transparent"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  selectTablePart({ nodeId: node.id, kind: "row", rowId: row.id });
+                }}
+              />
+              {table.columns.map((column, columnIndex) => {
+                const cell = row.cells[columnIndex] ?? createBoardTableCell("");
+                const x = rowX;
+                rowX += column.width;
+                const target = { nodeId: node.id, kind: "cell" as const, rowId: row.id, columnId: column.id };
+                const selectedCell = isTargetSelected(target);
+                const editingCell = isTargetEditing(target);
+                return (
+                  <g key={`${row.id}-${column.id}`}>
+                    <rect
+                      x={x}
+                      y={y}
+                      width={column.width}
+                      height={row.height}
+                      fill={selectedCell ? "#e8f0ff" : "transparent"}
+                      stroke={selectedCell ? "#3370ff" : "#d8dde6"}
+                      strokeWidth={selectedCell ? 1.6 : 1}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        selectTablePart(target);
+                      }}
+                      onDoubleClick={(event) => {
+                        event.stopPropagation();
+                        startTableEditing(target);
+                      }}
+                    />
+                    {editingCell ? (
+                      <foreignObject x={x + 6} y={y + 5} width={Math.max(28, column.width - 12)} height={Math.max(20, row.height - 10)}>
+                        <textarea
+                          ref={tableEditRef}
+                          value={editingTableText}
+                          onChange={(event) => setEditingTableText(event.target.value)}
+                          onBlur={finishTableEditing}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              finishTableEditing();
+                            } else if (event.key === "Tab") {
+                              event.preventDefault();
+                              moveTableCellSelection(event.shiftKey ? "previous" : "next");
+                            } else if (event.key === "Enter" && !event.shiftKey) {
+                              event.preventDefault();
+                              moveTableCellSelection("next");
+                            }
+                            event.stopPropagation();
+                          }}
+                          className="h-full w-full resize-none border-0 bg-transparent p-0 text-[13px] leading-5 text-[#1f2329] outline-none"
+                        />
+                      </foreignObject>
+                    ) : (
+                      <foreignObject x={x + 8} y={y + 4} width={Math.max(20, column.width - 16)} height={Math.max(20, row.height - 8)} className="pointer-events-none">
+                        <div className="h-full overflow-hidden whitespace-pre-wrap break-words text-[13px] leading-5 text-[#1f2329]" style={{ textAlign: cell.align ?? "left" }}>
+                          {cell.text || " "}
+                        </div>
+                      </foreignObject>
+                    )}
+                  </g>
+                );
+              })}
+              {selected ? (
+                <rect
+                  x={node.x - 4}
+                  y={y + row.height - 3}
+                  width={node.width + 8}
+                  height={6}
+                  fill="transparent"
+                  className="cursor-row-resize"
+                  onPointerDown={(event) => {
+                    if (!canEdit) return;
+                    event.stopPropagation();
+                    beginContinuousInteraction();
+                    setTableResizeState({ nodeId: node.id, kind: "row", rowId: row.id, startY: screenToBoard(event).y, height: row.height });
+                  }}
+                />
+              ) : null}
+            </g>
+          );
+        })}
+        {selected ? (() => {
+          let x = node.x;
+          return table.columns.map((column) => {
+            x += column.width;
+            return (
+              <rect
+                key={`column-resize-${column.id}`}
+                x={x - 3}
+                y={node.y}
+                width={6}
+                height={node.height}
+                fill="transparent"
+                className="cursor-col-resize"
+                onPointerDown={(event) => {
+                  if (!canEdit) return;
+                  event.stopPropagation();
+                  beginContinuousInteraction();
+                  setTableResizeState({ nodeId: node.id, kind: "column", columnId: column.id, startX: screenToBoard(event).x, width: column.width });
+                }}
+              />
+            );
+          });
+        })() : null}
+      </g>
+    );
+  };
+
   const renderNodeShape = (node: BoardNode, selected: boolean) => {
+    if (node.type === "table") {
+      return renderTableNode(node, selected);
+    }
     const common = {
       fill: node.style.fill,
       fillOpacity: DEFAULT_NODE_FILL_OPACITY,
@@ -3073,6 +3725,7 @@ export function BoardDocumentPage({
   };
 
   const renderNodeText = (node: BoardNode) => {
+    if (node.type === "table") return null;
     const lineHeight = node.style.fontSize * 1.25;
     if (editingNodeId === node.id) {
       return (
@@ -3916,7 +4569,18 @@ export function BoardDocumentPage({
                     </div>
                   ) : null}
                   {activePanel === "more" && selectedNode ? (
-                    <div className="w-44">
+                    <div className="w-52">
+                      {selectedNode.type === "table" ? (
+                        <>
+                          <div className="px-2 pb-1 text-[11px] text-[#8a9099]">表格操作</div>
+                          <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => insertTableRow("above")}>在上方插入行</button>
+                          <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => insertTableRow("below")}>在下方插入行</button>
+                          <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => insertTableColumn("left")}>在左侧插入列</button>
+                          <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => insertTableColumn("right")}>在右侧插入列</button>
+                          <button type="button" className="block h-8 w-full px-2 text-left text-[#d83931] hover:bg-[#fff1f0]" onClick={deleteSelectedTablePart}>删除选中行/列</button>
+                          <div className="my-1 border-t border-[#eef1f6]" />
+                        </>
+                      ) : null}
                       <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => setClipboardNode(structuredClone(selectedNode))}>复制</button>
                       <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => { setClipboardNode(structuredClone(selectedNode)); deleteSelected(); }}>剪切</button>
                       <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={duplicateSelected}>创建副本</button>
