@@ -53,6 +53,12 @@ type BoardTableCell = {
   id: string;
   text: string;
   align?: "left" | "center" | "right";
+  style?: {
+    color?: string;
+    fontSize?: number;
+    fontWeight?: number;
+    textAlign?: "left" | "center" | "right";
+  };
 };
 type BoardTableColumn = {
   id: string;
@@ -75,6 +81,11 @@ type BoardTableSelection =
   | { nodeId: string; kind: "cell"; rowId: string; columnId: string }
   | { nodeId: string; kind: "row"; rowId: string }
   | { nodeId: string; kind: "column"; columnId: string };
+type BoardTableActionMenu = {
+  selection: Extract<BoardTableSelection, { kind: "row" | "column" }>;
+  left: number;
+  top: number;
+} | null;
 type MultiSelectionOption = { key: MultiSelectionFilter; label: string; count: number };
 type BoardIconName =
   | "orb"
@@ -431,7 +442,18 @@ function normalizeDefaultConnectorStrokeWidth(value: unknown) {
 }
 
 function createBoardTableCell(text = "Field"): BoardTableCell {
-  return { id: crypto.randomUUID(), text, align: "left" };
+  return { id: crypto.randomUUID(), text, align: "left", style: { textAlign: "left" } };
+}
+
+function normalizeBoardTableCellStyle(raw: unknown): BoardTableCell["style"] | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const style = raw as Record<string, unknown>;
+  const normalized: BoardTableCell["style"] = {};
+  if (typeof style.color === "string") normalized.color = style.color;
+  if (typeof style.fontSize === "number" && Number.isFinite(style.fontSize)) normalized.fontSize = Math.max(10, Math.min(48, style.fontSize));
+  if (typeof style.fontWeight === "number" && Number.isFinite(style.fontWeight)) normalized.fontWeight = style.fontWeight >= 600 ? 600 : 400;
+  if (["left", "center", "right"].includes(String(style.textAlign))) normalized.textAlign = style.textAlign as NonNullable<BoardTableCell["style"]>["textAlign"];
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 function createDefaultBoardTableData(): BoardTableData {
@@ -442,7 +464,7 @@ function createDefaultBoardTableData(): BoardTableData {
     columns,
     rows: Array.from({ length: 3 }, (_, rowIndex) => ({
       id: crypto.randomUUID(),
-      height: 36,
+      height: 140 / 3,
       cells: columns.map((column, columnIndex) => createBoardTableCell(rowIndex === 0 && columnIndex === 2 ? "Type" : "Field")),
     })),
   };
@@ -457,7 +479,7 @@ function normalizeBoardTableData(raw: unknown, width: number, height: number): B
     if (!item || typeof item !== "object") return [];
     const column = item as Record<string, unknown>;
     const id = String(column.id || crypto.randomUUID());
-    const columnWidth = Math.max(48, Number(column.width ?? 120) || 120);
+    const columnWidth = Math.max(56, Number(column.width ?? 120) || 120);
     return [{ id, width: columnWidth }];
   });
   const normalizedColumns = columns.length > 0 ? columns : fallback.columns;
@@ -471,7 +493,8 @@ function normalizeBoardTableData(raw: unknown, width: number, height: number): B
       if (!rawCell || typeof rawCell !== "object") return createBoardTableCell("");
       const cell = rawCell as Record<string, unknown>;
       const align = ["left", "center", "right"].includes(String(cell.align)) ? cell.align as BoardTableCell["align"] : "left";
-      return { id: String(cell.id || crypto.randomUUID()), text: String(cell.text ?? ""), align };
+      const style = normalizeBoardTableCellStyle(cell.style) ?? { textAlign: align };
+      return { id: String(cell.id || crypto.randomUUID()), text: String(cell.text ?? ""), align, style };
     });
     return [{ id: String(row.id || crypto.randomUUID()), height: Math.max(28, Number(row.height ?? 36) || 36), cells }];
   });
@@ -483,7 +506,7 @@ function normalizeBoardTableData(raw: unknown, width: number, height: number): B
       column.width += extra;
     });
   }
-  const titleHeight = Math.max(30, Number(table.titleHeight ?? table.title_height ?? fallback.titleHeight) || fallback.titleHeight);
+  const titleHeight = Math.max(32, Number(table.titleHeight ?? table.title_height ?? fallback.titleHeight) || fallback.titleHeight);
   const totalHeight = titleHeight + normalizedRows.reduce((sum, row) => sum + row.height, 0);
   if (totalHeight < height && normalizedRows.length > 0) {
     const extra = (height - totalHeight) / normalizedRows.length;
@@ -731,7 +754,7 @@ function cloudPath(node: BoardNode) {
 
 function defaultNodeSize(type: BoardNodeType) {
   if (type === "text") return { width: 180, height: 48 };
-  if (type === "table") return { width: 360, height: 148 };
+  if (type === "table") return { width: 360, height: 180 };
   if (type === "triangle" || type === "star" || type === "plus" || type === "cloud") return { width: 110, height: 92 };
   if (type === "comment_bubble" || type === "document") return { width: 176, height: 92 };
   if (type === "predefined_process" || type === "trapezoid") return { width: 174, height: 76 };
@@ -861,7 +884,7 @@ function protectConnectorEndpointStubs(points: BoardPoint[], fromAnchor: BoardAn
         : [{ x: previous.x, y: endOut.y }];
     protectedPoints = [...protectedPoints.slice(0, -1), ...bridge, endOut, end];
   }
-  return simplifyWaypoints(orthogonalizePath(protectedPoints));
+  return collapseShortOrthogonalJogs(simplifyWaypoints(orthogonalizePath(protectedPoints)));
 }
 
 function orthogonalizePath(points: BoardPoint[]) {
@@ -947,7 +970,38 @@ function simplifyWaypoints(points: BoardPoint[]) {
 }
 
 function simplifyOrthogonalPath(points: BoardPoint[]) {
-  return mergeOverlappingOrthogonalSegments(simplifyWaypoints(points));
+  return collapseShortOrthogonalJogs(mergeOverlappingOrthogonalSegments(simplifyWaypoints(points)));
+}
+
+function collapseShortOrthogonalJogs(points: BoardPoint[], threshold = 8) {
+  let nextPoints = compactWaypoints(points.map((point) => ({ ...point })));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let index = 0; index < nextPoints.length - 3; index += 1) {
+      const first = nextPoints[index];
+      const second = nextPoints[index + 1];
+      const third = nextPoints[index + 2];
+      const fourth = nextPoints[index + 3];
+      const horizontalVerticalHorizontal = first.y === second.y && second.x === third.x && third.y === fourth.y;
+      if (horizontalVerticalHorizontal && Math.abs(second.y - third.y) <= threshold) {
+        nextPoints[index + 2] = { ...third, y: second.y };
+        nextPoints[index + 3] = { ...fourth, y: second.y };
+        nextPoints = simplifyWaypoints(nextPoints);
+        changed = true;
+        break;
+      }
+      const verticalHorizontalVertical = first.x === second.x && second.y === third.y && third.x === fourth.x;
+      if (verticalHorizontalVertical && Math.abs(second.x - third.x) <= threshold) {
+        nextPoints[index + 2] = { ...third, x: second.x };
+        nextPoints[index + 3] = { ...fourth, x: second.x };
+        nextPoints = simplifyWaypoints(nextPoints);
+        changed = true;
+        break;
+      }
+    }
+  }
+  return nextPoints;
 }
 
 function mergeOverlappingOrthogonalSegments(points: BoardPoint[]) {
@@ -1286,11 +1340,9 @@ function connectorGeometry(connector: BoardConnector, nodes: BoardNode[]) {
   const end = anchorPoint(toNode, connector.to.anchor);
   const resolvedWaypoints = connector.routingMode === "straight"
     ? []
-    : shouldUseAutoConnectorWaypoints(connector)
-      ? defaultConnectorWaypointsForNodes(connector, fromNode, toNode)
-      : connector.waypoints.length > 0
-        ? connector.waypoints
-        : defaultConnectorWaypointsForNodes(connector, fromNode, toNode);
+    : connector.waypoints.length > 0
+      ? connector.waypoints
+      : defaultConnectorWaypointsForNodes(connector, fromNode, toNode);
   const points = connector.routingMode === "straight" ? [start, end] : [start, ...resolvedWaypoints, end];
   const normalizedPoints = simplifyOrthogonalPath(points);
   const safePoints = isAxisAlignedPath(normalizedPoints)
@@ -1373,26 +1425,105 @@ function rerouteConnectorForNodes(connector: BoardConnector, nodes: BoardNode[])
   };
 }
 
+function translateConnectorWaypoints(waypoints: BoardWaypoint[], dx: number, dy: number) {
+  return waypoints.map((point) => ({ x: point.x + dx, y: point.y + dy }));
+}
+
+function moveEndpointAdjacentWaypoints(
+  connector: BoardConnector,
+  waypoints: BoardWaypoint[],
+  endpoint: "from" | "to",
+  dx: number,
+  dy: number,
+) {
+  if (waypoints.length === 0) return waypoints;
+  const nextWaypoints = waypoints.map((point) => ({ ...point }));
+  if (endpoint === "from") {
+    nextWaypoints[0] = { x: nextWaypoints[0].x + dx, y: nextWaypoints[0].y + dy };
+    if (nextWaypoints.length > 1) {
+      if (anchorAxis(connector.from.anchor) === "horizontal") {
+        nextWaypoints[1] = { ...nextWaypoints[1], y: nextWaypoints[0].y };
+      } else {
+        nextWaypoints[1] = { ...nextWaypoints[1], x: nextWaypoints[0].x };
+      }
+    }
+    return nextWaypoints;
+  }
+
+  const lastIndex = nextWaypoints.length - 1;
+  nextWaypoints[lastIndex] = { x: nextWaypoints[lastIndex].x + dx, y: nextWaypoints[lastIndex].y + dy };
+  if (lastIndex > 0) {
+    if (anchorAxis(connector.to.anchor) === "horizontal") {
+      nextWaypoints[lastIndex - 1] = { ...nextWaypoints[lastIndex - 1], y: nextWaypoints[lastIndex].y };
+    } else {
+      nextWaypoints[lastIndex - 1] = { ...nextWaypoints[lastIndex - 1], x: nextWaypoints[lastIndex].x };
+    }
+  }
+  return nextWaypoints;
+}
+
+function connectorFullPath(connector: BoardConnector, fromNode: BoardNode, toNode: BoardNode, waypoints: BoardWaypoint[]) {
+  return protectConnectorEndpointStubs(
+    [
+      anchorPoint(fromNode, connector.from.anchor),
+      ...waypoints,
+      anchorPoint(toNode, connector.to.anchor),
+    ],
+    connector.from.anchor,
+    connector.to.anchor,
+  );
+}
+
+function chooseSimplerMovedConnectorWaypoints(
+  connector: BoardConnector,
+  nodes: BoardNode[],
+  localWaypoints: BoardWaypoint[],
+) {
+  const fromNode = nodes.find((node) => node.id === connector.from.nodeId);
+  const toNode = nodes.find((node) => node.id === connector.to.nodeId);
+  if (!fromNode || !toNode || connector.routingMode === "straight") return localWaypoints;
+
+  const localPath = connectorFullPath(connector, fromNode, toNode, localWaypoints);
+  const autoWaypoints = defaultConnectorWaypointsForNodes(connector, fromNode, toNode);
+  const autoPath = connectorFullPath(connector, fromNode, toNode, autoWaypoints);
+  const localCrosses = pathCrossesNodes(localPath, [fromNode, toNode], 2);
+  const autoCrosses = pathCrossesNodes(autoPath, [fromNode, toNode], 2);
+
+  if (!autoCrosses && (localCrosses || autoPath.length < localPath.length)) {
+    return autoPath.slice(1, -1);
+  }
+  return localPath.slice(1, -1);
+}
+
 function adaptConnectorsForMovedNodes(
   connectors: BoardConnector[],
   nodes: BoardNode[],
   movedNodeIds: string[],
-  translatedConnectorWaypoints: Record<string, BoardWaypoint[]> = {},
+  baseConnectorWaypoints: Record<string, BoardWaypoint[]> = {},
+  delta: BoardPoint = { x: 0, y: 0 },
 ) {
   const moved = new Set(movedNodeIds);
   return connectors.map((connector) => {
-    const translatedWaypoints = translatedConnectorWaypoints[connector.id];
+    const hasBaseWaypoints = Object.prototype.hasOwnProperty.call(baseConnectorWaypoints, connector.id);
+    const baseWaypoints = baseConnectorWaypoints[connector.id] ?? connector.waypoints;
     const fromMoved = moved.has(connector.from.nodeId);
     const toMoved = moved.has(connector.to.nodeId);
-    if (translatedWaypoints && fromMoved && toMoved) {
-      return { ...connector, waypoints: translatedWaypoints };
+    if (baseWaypoints && fromMoved && toMoved) {
+      const nextWaypoints = translateConnectorWaypoints(baseWaypoints, delta.x, delta.y);
+      return { ...connector, waypoints: chooseSimplerMovedConnectorWaypoints(connector, nodes, nextWaypoints) };
     }
-    if (translatedWaypoints && !fromMoved && !toMoved) {
-      return { ...connector, waypoints: translatedWaypoints };
+    if (hasBaseWaypoints && !fromMoved && !toMoved) {
+      return { ...connector, waypoints: translateConnectorWaypoints(baseWaypoints, delta.x, delta.y) };
     }
-    if (fromMoved || toMoved) {
-      return rerouteConnectorForNodes(connector, nodes);
+    if (fromMoved && !toMoved && baseWaypoints.length > 0) {
+      const nextWaypoints = moveEndpointAdjacentWaypoints(connector, baseWaypoints, "from", delta.x, delta.y);
+      return { ...connector, waypoints: chooseSimplerMovedConnectorWaypoints(connector, nodes, nextWaypoints) };
     }
+    if (toMoved && !fromMoved && baseWaypoints.length > 0) {
+      const nextWaypoints = moveEndpointAdjacentWaypoints(connector, baseWaypoints, "to", delta.x, delta.y);
+      return { ...connector, waypoints: chooseSimplerMovedConnectorWaypoints(connector, nodes, nextWaypoints) };
+    }
+    if (fromMoved || toMoved) return rerouteConnectorForNodes(connector, nodes);
     return connector;
   });
 }
@@ -1402,6 +1533,7 @@ function normalizeBoardAutoConnectors(boardState: BoardState) {
     ...boardState,
     connectors: boardState.connectors.map((connector) => {
       if (!shouldUseAutoConnectorWaypoints(connector)) return connector;
+      if (connector.waypoints.length > 0) return connector;
       const fromNode = boardState.nodes.find((node) => node.id === connector.from.nodeId);
       const toNode = boardState.nodes.find((node) => node.id === connector.to.nodeId);
       if (!fromNode || !toNode) return connector;
@@ -1573,15 +1705,24 @@ function tableSelectionMatches(left: BoardTableSelection | null, right: BoardTab
   return true;
 }
 
+function tableSelectionLabel(selection: BoardTableSelection | null) {
+  if (!selection) return "表格";
+  if (selection.kind === "cell") return "单元格";
+  if (selection.kind === "row") return "行";
+  if (selection.kind === "column") return "列";
+  if (selection.kind === "title") return "标题";
+  return "表格";
+}
+
 function resizeBoardTableData(table: BoardTableData, width: number, height: number): BoardTableData {
   const currentWidth = Math.max(1, tableTotalWidth(table));
   const bodyHeight = Math.max(1, table.rows.reduce((sum, row) => sum + row.height, 0));
-  const nextTitleHeight = Math.max(30, Math.min(table.titleHeight, height * 0.45));
+  const nextTitleHeight = Math.max(32, Math.min(table.titleHeight, height * 0.45));
   const nextBodyHeight = Math.max(28 * table.rows.length, height - nextTitleHeight);
   return {
     ...table,
     titleHeight: nextTitleHeight,
-    columns: table.columns.map((column) => ({ ...column, width: Math.max(48, column.width * width / currentWidth) })),
+    columns: table.columns.map((column) => ({ ...column, width: Math.max(56, column.width * width / currentWidth) })),
     rows: table.rows.map((row) => ({ ...row, height: Math.max(28, row.height * nextBodyHeight / bodyHeight) })),
   };
 }
@@ -1626,6 +1767,7 @@ export function BoardDocumentPage({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedConnectorId, setSelectedConnectorId] = useState<string | null>(null);
   const [tableSelection, setTableSelection] = useState<BoardTableSelection | null>(null);
+  const [tableActionMenu, setTableActionMenu] = useState<BoardTableActionMenu>(null);
   const [editingTableTarget, setEditingTableTarget] = useState<BoardTableSelection | null>(null);
   const [editingTableText, setEditingTableText] = useState("");
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
@@ -1657,6 +1799,7 @@ export function BoardDocumentPage({
   const [tableResizeState, setTableResizeState] = useState<
     | { nodeId: string; kind: "column"; columnId: string; startX: number; width: number }
     | { nodeId: string; kind: "row"; rowId: string; startY: number; height: number }
+    | { nodeId: string; kind: "title"; startY: number; height: number }
     | null
   >(null);
   const [connectorHandleDrag, setConnectorHandleDrag] = useState<{
@@ -1685,6 +1828,8 @@ export function BoardDocumentPage({
   const [isDirty, setIsDirty] = useState(false);
   const [isTransientToolbarHidden, setIsTransientToolbarHidden] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [tableDeleteConfirm, setTableDeleteConfirm] = useState<BoardTableSelection | null>(null);
+  const [tableClearConfirm, setTableClearConfirm] = useState<BoardTableSelection | null>(null);
   const [history, setHistory] = useState<{ past: BoardSnapshot[]; future: BoardSnapshot[] }>({ past: [], future: [] });
   const [isMutating, startTransition] = useTransition();
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -1760,6 +1905,7 @@ export function BoardDocumentPage({
     setSelectedNodeId(null);
     setSelectedConnectorId(null);
     setTableSelection(null);
+    setTableActionMenu(null);
     setEditingTableTarget(null);
     setEditingTableText("");
     setSelectedNodeIds([]);
@@ -1978,6 +2124,7 @@ export function BoardDocumentPage({
     setSelectedNodeId(null);
     setSelectedConnectorId(null);
     setTableSelection(null);
+    setTableActionMenu(null);
     setEditingTableTarget(null);
     setEditingTableText("");
     setSelectedNodeIds([]);
@@ -1994,6 +2141,7 @@ export function BoardDocumentPage({
     setSelectedNodeId(nodeId);
     setSelectedConnectorId(null);
     setTableSelection(null);
+    setTableActionMenu(null);
     setEditingTableTarget(null);
     setEditingTableText("");
     setSelectedNodeIds([]);
@@ -2010,6 +2158,7 @@ export function BoardDocumentPage({
     setSelectedNodeId(null);
     setSelectedConnectorId(connectorId);
     setTableSelection(null);
+    setTableActionMenu(null);
     setEditingTableTarget(null);
     setEditingTableText("");
     setSelectedNodeIds([]);
@@ -2081,7 +2230,21 @@ export function BoardDocumentPage({
     setActivePanel(null);
     setEditingNodeId(null);
     setEditingText("");
+    setTableActionMenu(null);
     setTableSelection(selection);
+  };
+
+  const openTableActionMenu = (
+    selection: Extract<BoardTableSelection, { kind: "row" | "column" }>,
+    point: BoardPoint,
+  ) => {
+    const screen = boardToScreen(point);
+    selectTablePart(selection);
+    setTableActionMenu({
+      selection,
+      left: Math.max(72, Math.min((typeof window === "undefined" ? 1280 : window.innerWidth) - 180, screen.x + 8)),
+      top: Math.max(56, Math.min((typeof window === "undefined" ? 720 : window.innerHeight) - 180, screen.y + 8)),
+    });
   };
 
   const updateTableNode = (nodeId: string, updater: (table: BoardTableData) => BoardTableData) => {
@@ -2100,6 +2263,181 @@ export function BoardDocumentPage({
         };
       }),
     }));
+  };
+
+  const updateSelectedTableCells = (updater: (cell: BoardTableCell) => BoardTableCell, forcedSelection?: BoardTableSelection) => {
+    const node = selectedNode;
+    const selection = forcedSelection ?? tableSelection;
+    if (!node?.table || !selection || selection.nodeId !== node.id) return;
+    updateTableNode(node.id, (table) => {
+      const columnIndex = selection.kind === "cell"
+        ? table.columns.findIndex((column) => column.id === selection.columnId)
+        : selection.kind === "column"
+          ? table.columns.findIndex((column) => column.id === selection.columnId)
+          : -1;
+      return {
+        ...table,
+        rows: table.rows.map((row) => {
+          const rowMatches = selection.kind === "row" && row.id === selection.rowId;
+          return {
+            ...row,
+            cells: row.cells.map((cell, index) => {
+              const cellMatches = selection.kind === "cell" && row.id === selection.rowId && index === columnIndex;
+              const columnMatches = selection.kind === "column" && index === columnIndex;
+              const tableMatches = selection.kind === "table";
+              if (!cellMatches && !rowMatches && !columnMatches && !tableMatches) return cell;
+              return tableMatches || cellMatches || rowMatches || columnMatches ? updater(cell) : cell;
+            }),
+          };
+        }),
+      };
+    });
+  };
+
+  const updateSelectedTableCellStyle = (patch: NonNullable<BoardTableCell["style"]>) => {
+    updateSelectedTableCells((cell) => ({
+      ...cell,
+      align: patch.textAlign ?? cell.align,
+      style: { ...(cell.style || {}), ...patch },
+    }));
+  };
+
+  const selectedTableCellStyle = () => {
+    const node = selectedNode;
+    if (!node?.table || !tableSelection || tableSelection.nodeId !== node.id) return undefined;
+    if (tableSelection.kind === "cell") {
+      const row = node.table.rows.find((item) => item.id === tableSelection.rowId);
+      const columnIndex = node.table.columns.findIndex((item) => item.id === tableSelection.columnId);
+      return columnIndex >= 0 ? row?.cells[columnIndex]?.style : undefined;
+    }
+    if (tableSelection.kind === "row") {
+      return node.table.rows.find((item) => item.id === tableSelection.rowId)?.cells[0]?.style;
+    }
+    if (tableSelection.kind === "column") {
+      const columnIndex = node.table.columns.findIndex((item) => item.id === tableSelection.columnId);
+      return columnIndex >= 0 ? node.table.rows[0]?.cells[columnIndex]?.style : undefined;
+    }
+    return undefined;
+  };
+
+  const selectedTableCellText = () => {
+    const node = selectedNode;
+    if (!node?.table || !tableSelection || tableSelection.nodeId !== node.id) return "";
+    if (tableSelection.kind === "title") return node.table.title;
+    if (tableSelection.kind === "cell") {
+      const row = node.table.rows.find((item) => item.id === tableSelection.rowId);
+      const columnIndex = node.table.columns.findIndex((item) => item.id === tableSelection.columnId);
+      return columnIndex >= 0 ? row?.cells[columnIndex]?.text ?? "" : "";
+    }
+    if (tableSelection.kind === "row") {
+      const row = node.table.rows.find((item) => item.id === tableSelection.rowId);
+      return row?.cells.map((cell) => cell.text).join("\t") ?? "";
+    }
+    if (tableSelection.kind === "column") {
+      const columnIndex = node.table.columns.findIndex((item) => item.id === tableSelection.columnId);
+      return columnIndex >= 0 ? node.table.rows.map((row) => row.cells[columnIndex]?.text ?? "").join("\n") : "";
+    }
+    return node.table.rows.map((row) => row.cells.map((cell) => cell.text).join("\t")).join("\n");
+  };
+
+  const pasteTextIntoSelectedTableSelection = (text: string) => {
+    if (!tableSelection) return;
+    if (tableSelection.kind === "title") {
+      updateTableNode(tableSelection.nodeId, (table) => ({ ...table, title: text }));
+      return;
+    }
+    const matrix = text.split(/\r?\n/).map((line) => line.split("\t"));
+    updateTableNode(tableSelection.nodeId, (table) => {
+      const startRowIndex = tableSelection.kind === "cell"
+        ? table.rows.findIndex((row) => row.id === tableSelection.rowId)
+        : tableSelection.kind === "row"
+          ? table.rows.findIndex((row) => row.id === tableSelection.rowId)
+          : 0;
+      const startColumnIndex = tableSelection.kind === "cell"
+        ? table.columns.findIndex((column) => column.id === tableSelection.columnId)
+        : tableSelection.kind === "column"
+          ? table.columns.findIndex((column) => column.id === tableSelection.columnId)
+          : 0;
+      if (startRowIndex < 0 || startColumnIndex < 0) return table;
+      return {
+        ...table,
+        rows: table.rows.map((row, rowIndex) => {
+          const sourceRowIndex = tableSelection.kind === "column" ? rowIndex - startRowIndex : rowIndex - startRowIndex;
+          if (sourceRowIndex < 0 || sourceRowIndex >= matrix.length) return row;
+          return {
+            ...row,
+            cells: row.cells.map((cell, columnIndex) => {
+              if (tableSelection.kind === "column") {
+                if (columnIndex !== startColumnIndex) return cell;
+                return { ...cell, text: matrix[sourceRowIndex]?.[0] ?? cell.text };
+              }
+              const sourceColumnIndex = columnIndex - startColumnIndex;
+              if (sourceColumnIndex < 0 || sourceColumnIndex >= (matrix[sourceRowIndex]?.length ?? 0)) return cell;
+              return { ...cell, text: matrix[sourceRowIndex][sourceColumnIndex] };
+            }),
+          };
+        }),
+      };
+    });
+  };
+
+  const copySelectedTableSelectionToClipboard = async () => {
+    const text = selectedTableCellText();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      setNotice("当前浏览器不允许复制表格内容");
+    }
+  };
+
+  const pasteClipboardIntoTableSelection = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      pasteTextIntoSelectedTableSelection(text);
+    } catch {
+      setNotice("当前浏览器不允许读取剪贴板");
+    }
+  };
+
+  const moveSelectedTableCellSelection = (direction: "left" | "right" | "up" | "down") => {
+    const node = selectedNode;
+    if (!node?.table || !tableSelection || tableSelection.nodeId !== node.id || tableSelection.kind !== "cell") return false;
+    const rowIndex = node.table.rows.findIndex((row) => row.id === tableSelection.rowId);
+    const columnIndex = node.table.columns.findIndex((column) => column.id === tableSelection.columnId);
+    if (rowIndex < 0 || columnIndex < 0) return false;
+    const nextRowIndex = Math.max(0, Math.min(node.table.rows.length - 1, rowIndex + (direction === "down" ? 1 : direction === "up" ? -1 : 0)));
+    const nextColumnIndex = Math.max(0, Math.min(node.table.columns.length - 1, columnIndex + (direction === "right" ? 1 : direction === "left" ? -1 : 0)));
+    setTableSelection({
+      nodeId: node.id,
+      kind: "cell",
+      rowId: node.table.rows[nextRowIndex].id,
+      columnId: node.table.columns[nextColumnIndex].id,
+    });
+    return true;
+  };
+
+  const clearSelectedTableContent = (forcedSelection?: BoardTableSelection) => {
+    const node = selectedNode;
+    const selection = forcedSelection ?? tableSelection;
+    if (!node?.table || !selection || selection.nodeId !== node.id) return;
+    if (selection.kind === "title") {
+      updateTableNode(node.id, (table) => ({ ...table, title: "" }));
+      return;
+    }
+    if (selection.kind === "cell" || selection.kind === "row" || selection.kind === "column") {
+      updateSelectedTableCells((cell) => ({ ...cell, text: "" }), selection);
+    }
+  };
+
+  const requestClearSelectedTableContent = () => {
+    const node = selectedNode;
+    if (!node?.table || !tableSelection || tableSelection.nodeId !== node.id) return;
+    if (tableSelection.kind === "table") {
+      setNotice("请先选择标题、单元格、行或列");
+      return;
+    }
+    setTableClearConfirm(tableSelection);
   };
 
   const startTableEditing = (selection: BoardTableSelection) => {
@@ -2140,6 +2478,11 @@ export function BoardDocumentPage({
         }),
       };
     });
+    setEditingTableTarget(null);
+    setEditingTableText("");
+  };
+
+  const cancelTableEditing = () => {
     setEditingTableTarget(null);
     setEditingTableText("");
   };
@@ -2190,29 +2533,33 @@ export function BoardDocumentPage({
     window.setTimeout(() => startTableEditing(nextSelection), 0);
   };
 
-  const insertTableRow = (position: "above" | "below") => {
+  const insertTableRow = (position: "above" | "below", forcedSelection?: BoardTableSelection) => {
     const node = selectedNode;
-    if (!node?.table || !tableSelection || tableSelection.nodeId !== node.id) return;
-    const selectedRowId = tableSelection.kind === "row" || tableSelection.kind === "cell" ? tableSelection.rowId : node.table.rows[0]?.id;
+    const selection = forcedSelection ?? tableSelection;
+    if (!node?.table || !selection || selection.nodeId !== node.id) return;
+    const selectedRowId = selection.kind === "row" || selection.kind === "cell" ? selection.rowId : node.table.rows[0]?.id;
     const newRowId = crypto.randomUUID();
     updateTableNode(node.id, (table) => {
       const index = Math.max(0, table.rows.findIndex((row) => row.id === selectedRowId));
       const insertIndex = position === "above" ? index : index + 1;
-      const row: BoardTableRow = { id: newRowId, height: 36, cells: table.columns.map(() => createBoardTableCell("")) };
+      const sourceRow = table.rows[index];
+      const row: BoardTableRow = { id: newRowId, height: Math.max(28, sourceRow?.height ?? 36), cells: table.columns.map(() => createBoardTableCell("")) };
       return { ...table, rows: [...table.rows.slice(0, insertIndex), row, ...table.rows.slice(insertIndex)] };
     });
     setTableSelection({ nodeId: node.id, kind: "row", rowId: newRowId });
   };
 
-  const insertTableColumn = (position: "left" | "right") => {
+  const insertTableColumn = (position: "left" | "right", forcedSelection?: BoardTableSelection) => {
     const node = selectedNode;
-    if (!node?.table || !tableSelection || tableSelection.nodeId !== node.id) return;
-    const selectedColumnId = tableSelection.kind === "column" || tableSelection.kind === "cell" ? tableSelection.columnId : node.table.columns[0]?.id;
+    const selection = forcedSelection ?? tableSelection;
+    if (!node?.table || !selection || selection.nodeId !== node.id) return;
+    const selectedColumnId = selection.kind === "column" || selection.kind === "cell" ? selection.columnId : node.table.columns[0]?.id;
     const newColumnId = crypto.randomUUID();
     updateTableNode(node.id, (table) => {
       const index = Math.max(0, table.columns.findIndex((column) => column.id === selectedColumnId));
       const insertIndex = position === "left" ? index : index + 1;
-      const column: BoardTableColumn = { id: newColumnId, width: 120 };
+      const sourceColumn = table.columns[index];
+      const column: BoardTableColumn = { id: newColumnId, width: Math.max(56, sourceColumn?.width ?? 120) };
       return {
         ...table,
         columns: [...table.columns.slice(0, insertIndex), column, ...table.columns.slice(insertIndex)],
@@ -2225,31 +2572,99 @@ export function BoardDocumentPage({
     setTableSelection({ nodeId: node.id, kind: "column", columnId: newColumnId });
   };
 
-  const deleteSelectedTablePart = () => {
+  const insertTableRowAtEdge = (nodeId: string, position: "top" | "bottom") => {
+    const newRowId = crypto.randomUUID();
+    updateTableNode(nodeId, (table) => {
+      const sourceRow = position === "top" ? table.rows[0] : table.rows.at(-1);
+      const row: BoardTableRow = {
+        id: newRowId,
+        height: Math.max(28, sourceRow?.height ?? 36),
+        cells: table.columns.map(() => createBoardTableCell("")),
+      };
+      return position === "top"
+        ? { ...table, rows: [row, ...table.rows] }
+        : { ...table, rows: [...table.rows, row] };
+    });
+    setTableSelection({ nodeId, kind: "row", rowId: newRowId });
+  };
+
+  const insertTableColumnAtEdge = (nodeId: string, position: "left" | "right") => {
+    const newColumnId = crypto.randomUUID();
+    updateTableNode(nodeId, (table) => {
+      const sourceColumn = position === "left" ? table.columns[0] : table.columns.at(-1);
+      const column: BoardTableColumn = { id: newColumnId, width: Math.max(56, sourceColumn?.width ?? 120) };
+      return {
+        ...table,
+        columns: position === "left" ? [column, ...table.columns] : [...table.columns, column],
+        rows: table.rows.map((row) => ({
+          ...row,
+          cells: position === "left" ? [createBoardTableCell(""), ...row.cells] : [...row.cells, createBoardTableCell("")],
+        })),
+      };
+    });
+    setTableSelection({ nodeId, kind: "column", columnId: newColumnId });
+  };
+
+  const deleteSelectedTablePart = (forcedSelection?: BoardTableSelection) => {
     const node = selectedNode;
-    if (!node?.table || !tableSelection || tableSelection.nodeId !== node.id) return;
-    if (tableSelection.kind === "row") {
+    const selection = forcedSelection ?? tableSelection;
+    if (!node?.table || !selection || selection.nodeId !== node.id) return;
+    if (selection.kind === "row") {
       if (node.table.rows.length <= 1) {
         setNotice("表格至少保留一行");
         return;
       }
-      updateTableNode(node.id, (table) => ({ ...table, rows: table.rows.filter((row) => row.id !== tableSelection.rowId) }));
+      updateTableNode(node.id, (table) => ({ ...table, rows: table.rows.filter((row) => row.id !== selection.rowId) }));
       setTableSelection({ nodeId: node.id, kind: "table" });
       return;
     }
-    if (tableSelection.kind === "column") {
+    if (selection.kind === "column") {
       if (node.table.columns.length <= 1) {
         setNotice("表格至少保留一列");
         return;
       }
-      const columnIndex = node.table.columns.findIndex((column) => column.id === tableSelection.columnId);
+      const columnIndex = node.table.columns.findIndex((column) => column.id === selection.columnId);
       updateTableNode(node.id, (table) => ({
         ...table,
-        columns: table.columns.filter((column) => column.id !== tableSelection.columnId),
+        columns: table.columns.filter((column) => column.id !== selection.columnId),
         rows: table.rows.map((row) => ({ ...row, cells: row.cells.filter((_, index) => index !== columnIndex) })),
       }));
       setTableSelection({ nodeId: node.id, kind: "table" });
     }
+  };
+
+  const requestDeleteSelectedTablePart = () => {
+    const node = selectedNode;
+    if (!node?.table || !tableSelection || tableSelection.nodeId !== node.id) return;
+    if (tableSelection.kind !== "row" && tableSelection.kind !== "column") {
+      setNotice("请先选择要删除的行或列");
+      return;
+    }
+    if (tableSelection.kind === "row" && node.table.rows.length <= 1) {
+      setNotice("表格至少保留一行");
+      return;
+    }
+    if (tableSelection.kind === "column" && node.table.columns.length <= 1) {
+      setNotice("表格至少保留一列");
+      return;
+    }
+    setTableDeleteConfirm(tableSelection);
+  };
+
+  const requestDeleteTablePart = (selection: Extract<BoardTableSelection, { kind: "row" | "column" }>) => {
+    const node = selectedNode;
+    if (!node?.table || selection.nodeId !== node.id) return;
+    if (selection.kind === "row" && node.table.rows.length <= 1) {
+      setNotice("表格至少保留一行");
+      return;
+    }
+    if (selection.kind === "column" && node.table.columns.length <= 1) {
+      setNotice("表格至少保留一列");
+      return;
+    }
+    setTableSelection(selection);
+    setTableActionMenu(null);
+    setTableDeleteConfirm(selection);
   };
 
   const startConnectorLabelEditing = (connector: BoardConnector, point: BoardPoint) => {
@@ -2787,10 +3202,19 @@ export function BoardDocumentPage({
       startX: point.x,
       startY: point.y,
       nodePositions: Object.fromEntries(board.nodes.filter((item) => dragNodeIds.includes(item.id)).map((item) => [item.id, { x: item.x, y: item.y }])),
-      connectorWaypoints: Object.fromEntries(board.connectors.filter((item) => dragConnectorIds.includes(item.id) || (dragNodeIds.includes(item.from.nodeId) && dragNodeIds.includes(item.to.nodeId))).map((item) => [item.id, item.waypoints.map((point) => ({ ...point }))])),
+      connectorWaypoints: Object.fromEntries(board.connectors.filter((item) => dragConnectorIds.includes(item.id) || dragNodeIds.includes(item.from.nodeId) || dragNodeIds.includes(item.to.nodeId)).map((item) => [item.id, item.waypoints.map((point) => ({ ...point }))])),
     });
     if (!isActiveMultiNode) {
-      selectSingleNode(node.id);
+      if (node.type === "table") {
+        setSelectedNodeId(node.id);
+        setSelectedConnectorId(null);
+        setSelectedNodeIds([]);
+        setSelectedConnectorIds([]);
+        setMultiSelectionFilter("all");
+        setActivePanel(null);
+      } else {
+        selectSingleNode(node.id);
+      }
     }
   };
 
@@ -3010,11 +3434,16 @@ export function BoardDocumentPage({
         nodes: current.nodes.map((node) => {
           if (node.id !== tableResizeState.nodeId || node.type !== "table" || !node.table) return node;
           if (tableResizeState.kind === "column") {
-            const width = Math.max(48, tableResizeState.width + point.x - tableResizeState.startX);
+            const width = Math.max(56, tableResizeState.width + point.x - tableResizeState.startX);
             const table = {
               ...node.table,
               columns: node.table.columns.map((column) => column.id === tableResizeState.columnId ? { ...column, width } : column),
             };
+            return { ...node, table, width: tableTotalWidth(table), height: tableTotalHeight(table), manualSize: true };
+          }
+          if (tableResizeState.kind === "title") {
+            const titleHeight = Math.max(32, tableResizeState.height + point.y - tableResizeState.startY);
+            const table = { ...node.table, titleHeight };
             return { ...node, table, width: tableTotalWidth(table), height: tableTotalHeight(table), manualSize: true };
           }
           const height = Math.max(28, tableResizeState.height + point.y - tableResizeState.startY);
@@ -3114,10 +3543,8 @@ export function BoardDocumentPage({
           return base ? { ...node, x: base.x + dx, y: base.y + dy } : node;
         }),
         dragState.nodeIds,
-        Object.fromEntries(Object.entries(dragState.connectorWaypoints).map(([connectorId, waypoints]) => [
-          connectorId,
-          waypoints.map((point) => ({ x: point.x + dx, y: point.y + dy })),
-        ])),
+        dragState.connectorWaypoints,
+        { x: dx, y: dy },
       ),
     }));
     setIsDirty(true);
@@ -3354,11 +3781,20 @@ export function BoardDocumentPage({
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
       if (tableSelection?.kind === "row" || tableSelection?.kind === "column") {
-        deleteSelectedTablePart();
+        requestDeleteSelectedTablePart();
+        return;
+      }
+      if (tableSelection?.kind === "cell" || tableSelection?.kind === "title") {
+        requestClearSelectedTableContent();
         return;
       }
       deleteSelected();
       return;
+    }
+    if (tableSelection?.kind === "cell" && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+      event.preventDefault();
+      const direction = event.key.replace("Arrow", "").toLowerCase() as "left" | "right" | "up" | "down";
+      if (moveSelectedTableCellSelection(direction)) return;
     }
     const meta = event.metaKey || event.ctrlKey;
     if (!meta) return;
@@ -3371,11 +3807,18 @@ export function BoardDocumentPage({
       undo();
     } else if (key === "c" && selectedNode) {
       event.preventDefault();
+      if (selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id) {
+        void copySelectedTableSelectionToClipboard();
+        return;
+      }
       setClipboardNode(structuredClone(selectedNode));
     } else if (key === "x" && selectedNode) {
       event.preventDefault();
       setClipboardNode(structuredClone(selectedNode));
       deleteSelected();
+    } else if (key === "v" && selectedNode?.type === "table" && tableSelection?.nodeId === selectedNode.id) {
+      event.preventDefault();
+      void pasteClipboardIntoTableSelection();
     } else if (key === "v" && clipboardNode) {
       event.preventDefault();
       let newId = "";
@@ -3469,6 +3912,8 @@ export function BoardDocumentPage({
     const table = node.table ?? createDefaultBoardTableData();
     const isTargetEditing = (target: BoardTableSelection) => tableSelectionMatches(editingTableTarget, target);
     const isTargetSelected = (target: BoardTableSelection) => tableSelectionMatches(tableSelection, target);
+    const firstRowHeight = table.rows[0]?.height ?? 36;
+    const firstColumnWidth = table.columns[0]?.width ?? 120;
     let currentX = node.x;
     let currentY = node.y + table.titleHeight;
     return (
@@ -3481,6 +3926,7 @@ export function BoardDocumentPage({
           fill="#ffffff"
           stroke={selected ? "#3370ff" : "#b8c0cc"}
           strokeWidth={selected ? 1.8 : 1}
+          onPointerDown={(event) => handleNodePointerDown(event as unknown as ReactPointerEvent<SVGElement>, node)}
           onClick={(event) => {
             event.stopPropagation();
             selectTablePart({ nodeId: node.id, kind: "table" });
@@ -3494,7 +3940,7 @@ export function BoardDocumentPage({
           fill={isTargetSelected({ nodeId: node.id, kind: "title" }) ? "#e8f0ff" : "#f4f6f8"}
           stroke="#d8dde6"
           strokeWidth={1}
-          onPointerDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => handleNodePointerDown(event as unknown as ReactPointerEvent<SVGElement>, node)}
           onClick={(event) => {
             event.stopPropagation();
             selectTablePart({ nodeId: node.id, kind: "title" });
@@ -3514,7 +3960,7 @@ export function BoardDocumentPage({
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   event.preventDefault();
-                  finishTableEditing();
+                  cancelTableEditing();
                 }
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
@@ -3530,6 +3976,22 @@ export function BoardDocumentPage({
             {table.title || "title"}
           </text>
         )}
+        {selected ? (
+          <rect
+            x={node.x - 4}
+            y={node.y + table.titleHeight - 3}
+            width={node.width + 8}
+            height={6}
+            fill="transparent"
+            className="cursor-row-resize"
+            onPointerDown={(event) => {
+              if (!canEdit) return;
+              event.stopPropagation();
+              beginContinuousInteraction();
+              setTableResizeState({ nodeId: node.id, kind: "title", startY: screenToBoard(event).y, height: table.titleHeight });
+            }}
+          />
+        ) : null}
         {table.columns.map((column) => {
           const x = currentX;
           currentX += column.width;
@@ -3543,7 +4005,7 @@ export function BoardDocumentPage({
               height={node.height - table.titleHeight}
               fill={selectedColumn ? "#eef5ff" : "transparent"}
               stroke="transparent"
-              onPointerDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => handleNodePointerDown(event as unknown as ReactPointerEvent<SVGElement>, node)}
               onClick={(event) => {
                 event.stopPropagation();
                 selectTablePart({ nodeId: node.id, kind: "column", columnId: column.id });
@@ -3551,6 +4013,40 @@ export function BoardDocumentPage({
             />
           );
         })}
+        {selected ? table.columns.map((column) => {
+          const x = node.x + tableColumnOffset(table, column.id);
+          const selectedColumn = isTargetSelected({ nodeId: node.id, kind: "column", columnId: column.id });
+          return (
+            <g key={`column-control-${column.id}`}>
+              <rect
+                x={x + column.width / 2 - 11}
+                y={node.y - 20}
+                width={22}
+                height={16}
+                rx={3}
+                fill={selectedColumn ? "#3370ff" : "#ffffff"}
+                stroke={selectedColumn ? "#3370ff" : "#cfd6e2"}
+                strokeWidth={1}
+                className="cursor-pointer"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openTableActionMenu(
+                    { nodeId: node.id, kind: "column", columnId: column.id },
+                    { x: x + column.width / 2, y: node.y - 20 },
+                  );
+                }}
+              />
+              <path
+                d={`M ${x + column.width / 2 - 4} ${node.y - 12} H ${x + column.width / 2 + 4}`}
+                stroke={selectedColumn ? "#ffffff" : "#667085"}
+                strokeWidth={1.5}
+                strokeLinecap="round"
+                className="pointer-events-none"
+              />
+            </g>
+          );
+        }) : null}
         {table.rows.map((row) => {
           const y = currentY;
           currentY += row.height;
@@ -3565,7 +4061,7 @@ export function BoardDocumentPage({
                 height={row.height}
                 fill={selectedRow ? "#eef5ff" : "transparent"}
                 stroke="transparent"
-                onPointerDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => handleNodePointerDown(event as unknown as ReactPointerEvent<SVGElement>, node)}
                 onClick={(event) => {
                   event.stopPropagation();
                   selectTablePart({ nodeId: node.id, kind: "row", rowId: row.id });
@@ -3578,6 +4074,11 @@ export function BoardDocumentPage({
                 const target = { nodeId: node.id, kind: "cell" as const, rowId: row.id, columnId: column.id };
                 const selectedCell = isTargetSelected(target);
                 const editingCell = isTargetEditing(target);
+                const cellStyle = cell.style ?? { textAlign: cell.align ?? "left" };
+                const cellTextAlign = cellStyle.textAlign ?? cell.align ?? "left";
+                const cellTextColor = cellStyle.color ?? "#1f2329";
+                const cellFontSize = cellStyle.fontSize ?? 13;
+                const cellFontWeight = cellStyle.fontWeight ?? 400;
                 return (
                   <g key={`${row.id}-${column.id}`}>
                     <rect
@@ -3588,7 +4089,7 @@ export function BoardDocumentPage({
                       fill={selectedCell ? "#e8f0ff" : "transparent"}
                       stroke={selectedCell ? "#3370ff" : "#d8dde6"}
                       strokeWidth={selectedCell ? 1.6 : 1}
-                      onPointerDown={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => handleNodePointerDown(event as unknown as ReactPointerEvent<SVGElement>, node)}
                       onClick={(event) => {
                         event.stopPropagation();
                         selectTablePart(target);
@@ -3608,7 +4109,7 @@ export function BoardDocumentPage({
                           onKeyDown={(event) => {
                             if (event.key === "Escape") {
                               event.preventDefault();
-                              finishTableEditing();
+                              cancelTableEditing();
                             } else if (event.key === "Tab") {
                               event.preventDefault();
                               moveTableCellSelection(event.shiftKey ? "previous" : "next");
@@ -3618,12 +4119,13 @@ export function BoardDocumentPage({
                             }
                             event.stopPropagation();
                           }}
-                          className="h-full w-full resize-none border-0 bg-transparent p-0 text-[13px] leading-5 text-[#1f2329] outline-none"
+                          className="h-full w-full resize-none border-0 bg-transparent p-0 leading-5 outline-none"
+                          style={{ color: cellTextColor, fontSize: cellFontSize, fontWeight: cellFontWeight, textAlign: cellTextAlign }}
                         />
                       </foreignObject>
                     ) : (
                       <foreignObject x={x + 8} y={y + 4} width={Math.max(20, column.width - 16)} height={Math.max(20, row.height - 8)} className="pointer-events-none">
-                        <div className="h-full overflow-hidden whitespace-pre-wrap break-words text-[13px] leading-5 text-[#1f2329]" style={{ textAlign: cell.align ?? "left" }}>
+                        <div className="h-full overflow-hidden whitespace-pre-wrap break-words leading-5" style={{ color: cellTextColor, fontSize: cellFontSize, fontWeight: cellFontWeight, textAlign: cellTextAlign }}>
                           {cell.text || " "}
                         </div>
                       </foreignObject>
@@ -3632,20 +4134,48 @@ export function BoardDocumentPage({
                 );
               })}
               {selected ? (
-                <rect
-                  x={node.x - 4}
-                  y={y + row.height - 3}
-                  width={node.width + 8}
-                  height={6}
-                  fill="transparent"
-                  className="cursor-row-resize"
-                  onPointerDown={(event) => {
-                    if (!canEdit) return;
-                    event.stopPropagation();
-                    beginContinuousInteraction();
-                    setTableResizeState({ nodeId: node.id, kind: "row", rowId: row.id, startY: screenToBoard(event).y, height: row.height });
-                  }}
-                />
+                <>
+                  <rect
+                    x={node.x - 20}
+                    y={y + row.height / 2 - 8}
+                    width={16}
+                    height={16}
+                    rx={3}
+                    fill={selectedRow ? "#3370ff" : "#ffffff"}
+                    stroke={selectedRow ? "#3370ff" : "#cfd6e2"}
+                    strokeWidth={1}
+                    className="cursor-pointer"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openTableActionMenu(
+                        { nodeId: node.id, kind: "row", rowId: row.id },
+                        { x: node.x - 20, y: y + row.height / 2 },
+                      );
+                    }}
+                  />
+                  <path
+                    d={`M ${node.x - 15} ${y + row.height / 2 - 4} V ${y + row.height / 2 + 4}`}
+                    stroke={selectedRow ? "#ffffff" : "#667085"}
+                    strokeWidth={1.5}
+                    strokeLinecap="round"
+                    className="pointer-events-none"
+                  />
+                  <rect
+                    x={node.x - 4}
+                    y={y + row.height - 3}
+                    width={node.width + 8}
+                    height={6}
+                    fill="transparent"
+                    className="cursor-row-resize"
+                    onPointerDown={(event) => {
+                      if (!canEdit) return;
+                      event.stopPropagation();
+                      beginContinuousInteraction();
+                      setTableResizeState({ nodeId: node.id, kind: "row", rowId: row.id, startY: screenToBoard(event).y, height: row.height });
+                    }}
+                  />
+                </>
               ) : null}
             </g>
           );
@@ -3673,6 +4203,34 @@ export function BoardDocumentPage({
             );
           });
         })() : null}
+        {selected && canEdit ? (
+          <>
+            <g
+              className="cursor-pointer"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                insertTableColumnAtEdge(node.id, "right");
+              }}
+            >
+              <circle cx={node.x + node.width + 16} cy={node.y + table.titleHeight + firstRowHeight / 2} r={10} fill="#ffffff" stroke="#b8c7e6" strokeWidth={1.2} />
+              <path d={`M ${node.x + node.width + 12} ${node.y + table.titleHeight + firstRowHeight / 2} H ${node.x + node.width + 20} M ${node.x + node.width + 16} ${node.y + table.titleHeight + firstRowHeight / 2 - 4} V ${node.y + table.titleHeight + firstRowHeight / 2 + 4}`} stroke="#3370ff" strokeWidth={1.5} strokeLinecap="round" className="pointer-events-none" />
+              <title>在右侧添加列</title>
+            </g>
+            <g
+              className="cursor-pointer"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                insertTableRowAtEdge(node.id, "bottom");
+              }}
+            >
+              <circle cx={node.x + firstColumnWidth / 2} cy={node.y + node.height + 16} r={10} fill="#ffffff" stroke="#b8c7e6" strokeWidth={1.2} />
+              <path d={`M ${node.x + firstColumnWidth / 2 - 4} ${node.y + node.height + 16} H ${node.x + firstColumnWidth / 2 + 4} M ${node.x + firstColumnWidth / 2} ${node.y + node.height + 12} V ${node.y + node.height + 20}`} stroke="#3370ff" strokeWidth={1.5} strokeLinecap="round" className="pointer-events-none" />
+              <title>在下方添加行</title>
+            </g>
+          </>
+        ) : null}
       </g>
     );
   };
@@ -4455,7 +5013,14 @@ export function BoardDocumentPage({
                   <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] hover:bg-[#f5f7fb]" onMouseEnter={() => openToolbarPanel("fill")} onClick={() => setActivePanel(activePanel === "fill" ? null : "fill")} title="填充色"><span className="h-4 w-4 rounded-full border border-[#c9d0dc]" style={{ background: selectedNode.style.fill === "transparent" ? "repeating-linear-gradient(45deg,#fff,#fff 3px,#e5e7eb 3px,#e5e7eb 6px)" : selectedNode.style.fill }} /></button>
                   <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] hover:bg-[#f5f7fb]" onMouseEnter={() => openToolbarPanel("stroke")} onClick={() => setActivePanel(activePanel === "stroke" ? null : "stroke")} title="边框色"><span className="h-4 w-4 rounded-full border-[3px]" style={{ borderColor: selectedNode.style.stroke }} /></button>
                   <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] font-semibold hover:bg-[#f5f7fb]" style={{ color: selectedNode.style.color }} onMouseEnter={() => openToolbarPanel("text")} onClick={() => setActivePanel(activePanel === "text" ? null : "text")} title="文字颜色">A</button>
-                  <select value={selectedNode.style.fontSize} onChange={(event) => updateSelectedStyle({ fontSize: Number(event.target.value) })} className="h-10 border-0 border-r border-[#eef1f6] bg-white px-2 text-[#1f2329] outline-none">
+                  <select value={selectedNode.style.fontSize} onChange={(event) => {
+                    const fontSize = Number(event.target.value);
+                    if (selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title") {
+                      updateSelectedTableCellStyle({ fontSize });
+                    } else {
+                      updateSelectedStyle({ fontSize });
+                    }
+                  }} className="h-10 border-0 border-r border-[#eef1f6] bg-white px-2 text-[#1f2329] outline-none">
                     {[12, 14, 16, 18, 20, 24, 28].map((size) => <option key={size} value={size}>{size}</option>)}
                   </select>
                   <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] text-[13px] font-medium hover:bg-[#f5f7fb]" onMouseEnter={() => openToolbarPanel("textStyle")} onClick={() => setActivePanel(activePanel === "textStyle" ? null : "textStyle")} title="文本样式">A≡</button>
@@ -4519,19 +5084,27 @@ export function BoardDocumentPage({
                       {COLOR_SWATCHES.map((color) => <button key={color} type="button" title={color} className="h-5 w-5 rounded-full border border-[#d7dce5]" style={{ background: color === "transparent" ? "repeating-linear-gradient(45deg,#fff,#fff 4px,#e5e7eb 4px,#e5e7eb 8px)" : color }} onClick={() => {
                         if (activePanel === "fill") updateSelectedStyle({ fill: color });
                         if (activePanel === "stroke") updateSelectedStyle({ stroke: color });
-                        if (activePanel === "text") updateSelectedStyle({ color });
+                        if (activePanel === "text" && selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title") {
+                          updateSelectedTableCellStyle({ color });
+                        } else if (activePanel === "text") updateSelectedStyle({ color });
                         setActivePanel(null);
                       }} />)}
                     </div>
                   ) : null}
                   {activePanel === "textStyle" && selectedNode ? (
                     <div className="w-44 space-y-1">
-                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => updateSelectedStyle({ fontWeight: selectedNode.style.fontWeight === 600 ? 400 : 600 })}>
+                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => {
+                        if (selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title") {
+                          updateSelectedTableCellStyle({ fontWeight: selectedTableCellStyle()?.fontWeight === 600 ? 400 : 600 });
+                          return;
+                        }
+                        updateSelectedStyle({ fontWeight: selectedNode.style.fontWeight === 600 ? 400 : 600 });
+                      }}>
                         {selectedNode.style.fontWeight === 600 ? "取消加粗" : "加粗"}
                       </button>
-                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => updateSelectedStyle({ textAlign: "left" })}>左对齐</button>
-                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => updateSelectedStyle({ textAlign: "center" })}>居中</button>
-                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => updateSelectedStyle({ textAlign: "right" })}>右对齐</button>
+                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title" ? updateSelectedTableCellStyle({ textAlign: "left" }) : updateSelectedStyle({ textAlign: "left" })}>左对齐</button>
+                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title" ? updateSelectedTableCellStyle({ textAlign: "center" }) : updateSelectedStyle({ textAlign: "center" })}>居中</button>
+                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title" ? updateSelectedTableCellStyle({ textAlign: "right" }) : updateSelectedStyle({ textAlign: "right" })}>右对齐</button>
                     </div>
                   ) : null}
                   {activePanel === "stroke" && selectedConnector ? (
@@ -4577,7 +5150,8 @@ export function BoardDocumentPage({
                           <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => insertTableRow("below")}>在下方插入行</button>
                           <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => insertTableColumn("left")}>在左侧插入列</button>
                           <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => insertTableColumn("right")}>在右侧插入列</button>
-                          <button type="button" className="block h-8 w-full px-2 text-left text-[#d83931] hover:bg-[#fff1f0]" onClick={deleteSelectedTablePart}>删除选中行/列</button>
+                          <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={requestClearSelectedTableContent}>清空选中内容</button>
+                          <button type="button" className="block h-8 w-full px-2 text-left text-[#d83931] hover:bg-[#fff1f0]" onClick={requestDeleteSelectedTablePart}>删除选中行/列</button>
                           <div className="my-1 border-t border-[#eef1f6]" />
                         </>
                       ) : null}
@@ -4605,6 +5179,42 @@ export function BoardDocumentPage({
             <button type="button" onClick={() => zoom(0.1)} disabled={!canEdit} className="h-8 w-8 border-l border-[#eef1f6] disabled:opacity-40">+</button>
           </div>
           {notice ? <div className="absolute left-[76px] top-16 z-40 border border-[#dee3ee] bg-white px-3 py-2 text-sm text-[#646a73] shadow-[0_2px_10px_rgba(31,35,41,0.08)]">{notice}</div> : null}
+          {tableActionMenu && selectedNode?.type === "table" ? (
+            <div
+              className="absolute z-[70] w-40 border border-[#dfe4ee] bg-white py-1 text-xs text-[#1f2329] shadow-[0_8px_24px_rgba(31,35,41,0.14)]"
+              style={{ left: tableActionMenu.left, top: tableActionMenu.top }}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <div className="px-3 py-1 text-[11px] text-[#8a9099]">
+                {tableActionMenu.selection.kind === "column" ? "列操作" : "行操作"}
+              </div>
+              {tableActionMenu.selection.kind === "column" ? (
+                <>
+                  <button type="button" className="block h-8 w-full px-3 text-left hover:bg-[#f5f7fb]" onClick={() => {
+                    insertTableColumn("left", tableActionMenu.selection);
+                    setTableActionMenu(null);
+                  }}>在左侧插入列</button>
+                  <button type="button" className="block h-8 w-full px-3 text-left hover:bg-[#f5f7fb]" onClick={() => {
+                    insertTableColumn("right", tableActionMenu.selection);
+                    setTableActionMenu(null);
+                  }}>在右侧插入列</button>
+                  <button type="button" className="block h-8 w-full px-3 text-left text-[#d83931] hover:bg-[#fff1f0]" onClick={() => requestDeleteTablePart(tableActionMenu.selection)}>删除列</button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="block h-8 w-full px-3 text-left hover:bg-[#f5f7fb]" onClick={() => {
+                    insertTableRow("above", tableActionMenu.selection);
+                    setTableActionMenu(null);
+                  }}>在上方插入行</button>
+                  <button type="button" className="block h-8 w-full px-3 text-left hover:bg-[#f5f7fb]" onClick={() => {
+                    insertTableRow("below", tableActionMenu.selection);
+                    setTableActionMenu(null);
+                  }}>在下方插入行</button>
+                  <button type="button" className="block h-8 w-full px-3 text-left text-[#d83931] hover:bg-[#fff1f0]" onClick={() => requestDeleteTablePart(tableActionMenu.selection)}>删除行</button>
+                </>
+              )}
+            </div>
+          ) : null}
         </section>
       </main>
 
@@ -4617,6 +5227,36 @@ export function BoardDocumentPage({
         pending={isMutating}
         onCancel={() => setShowDeleteConfirm(false)}
         onConfirm={handleDeleteDocument}
+      />
+      <ConfirmDialog
+        open={Boolean(tableDeleteConfirm)}
+        title={tableDeleteConfirm?.kind === "column" ? "确认删除表格列" : "确认删除表格行"}
+        description={tableDeleteConfirm?.kind === "column" ? "删除后该列及列内内容会从当前表格中移除。确认删除吗？" : "删除后该行及行内内容会从当前表格中移除。确认删除吗？"}
+        confirmLabel="删除"
+        danger
+        pending={false}
+        onCancel={() => setTableDeleteConfirm(null)}
+        onConfirm={() => {
+          if (tableDeleteConfirm) {
+            deleteSelectedTablePart(tableDeleteConfirm);
+          }
+          setTableDeleteConfirm(null);
+        }}
+      />
+      <ConfirmDialog
+        open={Boolean(tableClearConfirm)}
+        title={`确认清空${tableSelectionLabel(tableClearConfirm)}`}
+        description="清空后只会保留表格结构，选中范围内的文本内容会被移除。确认清空吗？"
+        confirmLabel="清空"
+        danger
+        pending={false}
+        onCancel={() => setTableClearConfirm(null)}
+        onConfirm={() => {
+          if (tableClearConfirm) {
+            clearSelectedTableContent(tableClearConfirm);
+          }
+          setTableClearConfirm(null);
+        }}
       />
     </div>
   );

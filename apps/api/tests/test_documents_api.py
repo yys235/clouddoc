@@ -1050,7 +1050,17 @@ def test_create_and_update_board_document() -> None:
                                 "id": "row-1",
                                 "height": 36,
                                 "cells": [
-                                    {"id": "cell-1", "text": "Field", "align": "left"},
+                                    {
+                                        "id": "cell-1",
+                                        "text": "Field",
+                                        "align": "left",
+                                        "style": {
+                                            "color": "#1f2329",
+                                            "fontSize": 13,
+                                            "fontWeight": 600,
+                                            "textAlign": "center",
+                                        },
+                                    },
                                     {"id": "cell-2", "text": "Field", "align": "left"},
                                     {"id": "cell-3", "text": "Type", "align": "left"},
                                 ],
@@ -1199,6 +1209,40 @@ def test_create_and_update_board_document() -> None:
             },
         )
         assert invalid_table_response.status_code == 400
+
+        invalid_table_style = {
+            **content_json,
+            "nodes": [
+                *content_json["nodes"][:3],
+                {
+                    **content_json["nodes"][3],
+                    "table": {
+                        **content_json["nodes"][3]["table"],
+                        "rows": [
+                            {
+                                **content_json["nodes"][3]["table"]["rows"][0],
+                                "cells": [
+                                    {
+                                        **content_json["nodes"][3]["table"]["rows"][0]["cells"][0],
+                                        "style": {"textAlign": "justify"},
+                                    },
+                                    *content_json["nodes"][3]["table"]["rows"][0]["cells"][1:],
+                                ],
+                            },
+                            *content_json["nodes"][3]["table"]["rows"][1:],
+                        ],
+                    },
+                },
+            ],
+        }
+        invalid_table_style_response = client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "content_json": invalid_table_style,
+                "plain_text": "pytest-board",
+            },
+        )
+        assert invalid_table_style_response.status_code == 400
     finally:
         cleanup_document(document_id)
 

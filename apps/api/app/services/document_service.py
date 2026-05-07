@@ -296,7 +296,8 @@ def _valid_board_table(value: object) -> bool:
         return False
     if not isinstance(value.get("title", ""), str):
         return False
-    if not isinstance(value.get("titleHeight", value.get("title_height", 40)), (int, float)):
+    title_height = value.get("titleHeight", value.get("title_height", 40))
+    if not isinstance(title_height, (int, float)) or float(title_height) < 32:
         return False
     columns = value.get("columns")
     rows = value.get("rows")
@@ -309,7 +310,7 @@ def _valid_board_table(value: object) -> bool:
             return False
         if not isinstance(column.get("id"), str) or not column["id"].strip():
             return False
-        if not isinstance(column.get("width"), (int, float)) or float(column["width"]) < 48:
+        if not isinstance(column.get("width"), (int, float)) or float(column["width"]) < 56:
             return False
     column_count = len(columns)
     for row in rows:
@@ -331,6 +332,20 @@ def _valid_board_table(value: object) -> bool:
                 return False
             if cell.get("align", "left") not in {"left", "center", "right"}:
                 return False
+            style = cell.get("style")
+            if style is not None:
+                if not isinstance(style, dict):
+                    return False
+                if "color" in style and not isinstance(style["color"], str):
+                    return False
+                if "fontSize" in style and (
+                    not isinstance(style["fontSize"], (int, float)) or float(style["fontSize"]) < 8
+                ):
+                    return False
+                if "fontWeight" in style and not isinstance(style["fontWeight"], (int, float)):
+                    return False
+                if style.get("textAlign", "left") not in {"left", "center", "right"}:
+                    return False
     return True
 
 
