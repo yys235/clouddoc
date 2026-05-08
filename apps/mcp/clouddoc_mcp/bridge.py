@@ -111,6 +111,399 @@ def _markdown_escape_table_cell(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ").strip()
 
 
+BOARD_NODE_TYPE_LABELS = {
+    "text": "文本",
+    "rectangle": "矩形",
+    "round_rectangle": "圆角矩形",
+    "ellipse": "椭圆",
+    "diamond": "菱形",
+    "cylinder": "圆柱",
+    "predefined_process": "预定义流程",
+    "trapezoid": "梯形",
+    "document": "文档",
+    "comment_bubble": "气泡",
+    "cloud": "云朵",
+    "left_arrow": "左箭头",
+    "triangle": "三角形",
+    "star": "星形",
+    "arrow": "箭头",
+    "parallelogram": "平行四边形",
+    "hexagon": "六边形",
+    "plus": "加号",
+    "table": "表格",
+}
+
+
+def _safe_float(value: Any, default: float = 0) -> float:
+    return float(value) if isinstance(value, (int, float)) else default
+
+
+def _compact_number(value: float) -> int | float:
+    return int(value) if float(value).is_integer() else round(value, 3)
+
+
+def _board_node_text(node: dict[str, Any]) -> str:
+    node_type = str(node.get("type") or "")
+    if node_type == "table" and isinstance(node.get("table"), dict):
+        table_title = node["table"].get("title")
+        if isinstance(table_title, str) and table_title.strip():
+            return table_title.strip()
+    text = node.get("text")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _board_node_label(node: dict[str, Any], ref_by_id: dict[str, str]) -> str:
+    ref = ref_by_id.get(str(node.get("id") or ""), str(node.get("id") or "unknown"))
+    text = _board_node_text(node)
+    node_type = str(node.get("type") or "unknown")
+    type_label = BOARD_NODE_TYPE_LABELS.get(node_type, node_type)
+    return f"{ref} {type_label}" + (f"「{text}」" if text else "")
+
+
+def _board_anchor_point_for_ai(node: dict[str, Any], anchor: str) -> dict[str, int | float]:
+    x = _safe_float(node.get("x"))
+    y = _safe_float(node.get("y"))
+    width = _safe_float(node.get("width"))
+    height = _safe_float(node.get("height"))
+    if anchor == "top":
+        point = {"x": x + width / 2, "y": y}
+    elif anchor == "right":
+        point = {"x": x + width, "y": y + height / 2}
+    elif anchor == "bottom":
+        point = {"x": x + width / 2, "y": y + height}
+    else:
+        point = {"x": x, "y": y + height / 2}
+    return {key: _compact_number(value) for key, value in point.items()}
+
+
+def _board_table_to_ai(table: Any) -> dict[str, Any] | None:
+    if not isinstance(table, dict):
+        return None
+    columns = table.get("columns") if isinstance(table.get("columns"), list) else []
+    rows = table.get("rows") if isinstance(table.get("rows"), list) else []
+    normalized_rows: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        cells = row.get("cells") if isinstance(row.get("cells"), list) else []
+        normalized_rows.append(
+            {
+                "ref": f"r{row_index}",
+                "id": row.get("id"),
+                "height": row.get("height"),
+                "cells": [
+                    {
+                        "ref": f"r{row_index}c{cell_index}",
+                        "id": cell.get("id"),
+                        "text": str(cell.get("text") or ""),
+                        "align": cell.get("align")
+                        or (cell.get("style") if isinstance(cell.get("style"), dict) else {}).get("textAlign")
+                        or "left",
+                    }
+                    for cell_index, cell in enumerate(cells, start=1)
+                    if isinstance(cell, dict)
+                ],
+            }
+        )
+    return {
+        "title": str(table.get("title") or ""),
+        "title_height": table.get("titleHeight", table.get("title_height")),
+        "column_count": len(columns),
+        "row_count": len(normalized_rows),
+        "columns": [
+            {"ref": f"c{index}", "id": column.get("id"), "width": column.get("width")}
+            for index, column in enumerate(columns, start=1)
+            if isinstance(column, dict)
+        ],
+        "rows": normalized_rows,
+    }
+
+
+def _board_node_to_ai(node: dict[str, Any], ref: str) -> dict[str, Any]:
+    x = _safe_float(node.get("x"))
+    y = _safe_float(node.get("y"))
+    width = _safe_float(node.get("width"))
+    height = _safe_float(node.get("height"))
+    style = node.get("style") if isinstance(node.get("style"), dict) else {}
+    payload: dict[str, Any] = {
+        "ref": ref,
+        "id": node.get("id"),
+        "type": node.get("type"),
+        "type_label": BOARD_NODE_TYPE_LABELS.get(str(node.get("type") or ""), str(node.get("type") or "unknown")),
+        "text": _board_node_text(node),
+        "position": {
+            "x": _compact_number(x),
+            "y": _compact_number(y),
+            "width": _compact_number(width),
+            "height": _compact_number(height),
+            "center_x": _compact_number(x + width / 2),
+            "center_y": _compact_number(y + height / 2),
+        },
+        "z_index": node.get("zIndex", node.get("z_index")),
+        "manual_size": bool(node.get("manualSize", node.get("manual_size", False))),
+        "style": {
+            "fill": style.get("fill"),
+            "stroke": style.get("stroke"),
+            "stroke_width": style.get("strokeWidth", style.get("stroke_width")),
+            "text_color": style.get("color"),
+            "font_size": style.get("fontSize", style.get("font_size")),
+            "font_weight": style.get("fontWeight", style.get("font_weight")),
+            "text_align": style.get("textAlign", style.get("text_align")),
+        },
+    }
+    table = _board_table_to_ai(node.get("table"))
+    if table is not None:
+        payload["table"] = table
+    return payload
+
+
+def _board_canvas_bounds(nodes: list[dict[str, Any]]) -> dict[str, int | float] | None:
+    if not nodes:
+        return None
+    min_x = min(_safe_float(node.get("x")) for node in nodes)
+    min_y = min(_safe_float(node.get("y")) for node in nodes)
+    max_x = max(_safe_float(node.get("x")) + _safe_float(node.get("width")) for node in nodes)
+    max_y = max(_safe_float(node.get("y")) + _safe_float(node.get("height")) for node in nodes)
+    return {
+        "min_x": _compact_number(min_x),
+        "min_y": _compact_number(min_y),
+        "max_x": _compact_number(max_x),
+        "max_y": _compact_number(max_y),
+        "width": _compact_number(max_x - min_x),
+        "height": _compact_number(max_y - min_y),
+    }
+
+
+def _board_endpoint_to_ai(
+    endpoint: Any,
+    *,
+    nodes_by_id: dict[str, dict[str, Any]],
+    ref_by_id: dict[str, str],
+) -> dict[str, Any]:
+    if isinstance(endpoint, str):
+        node_id = endpoint
+        anchor = "center"
+    elif isinstance(endpoint, dict):
+        node_id = str(endpoint.get("nodeId") or endpoint.get("node_id") or "")
+        anchor = str(endpoint.get("anchor") or "center")
+    else:
+        node_id = ""
+        anchor = "center"
+    node = nodes_by_id.get(node_id)
+    payload: dict[str, Any] = {
+        "node_ref": ref_by_id.get(node_id),
+        "node_id": node_id or None,
+        "anchor": anchor,
+        "text": _board_node_text(node) if node else "",
+        "type": node.get("type") if node else None,
+    }
+    if node and anchor in {"top", "right", "bottom", "left"}:
+        payload["point"] = _board_anchor_point_for_ai(node, anchor)
+    return payload
+
+
+def _board_connector_to_ai(
+    connector: dict[str, Any],
+    *,
+    ref: str,
+    nodes_by_id: dict[str, dict[str, Any]],
+    ref_by_id: dict[str, str],
+) -> dict[str, Any]:
+    from_endpoint = _board_endpoint_to_ai(connector.get("from"), nodes_by_id=nodes_by_id, ref_by_id=ref_by_id)
+    to_endpoint = _board_endpoint_to_ai(connector.get("to"), nodes_by_id=nodes_by_id, ref_by_id=ref_by_id)
+    style = connector.get("style") if isinstance(connector.get("style"), dict) else {}
+    waypoints = [
+        {"x": _compact_number(_safe_float(point.get("x"))), "y": _compact_number(_safe_float(point.get("y")))}
+        for point in connector.get("waypoints", []) or []
+        if isinstance(point, dict)
+    ]
+    path_points: list[dict[str, Any]] = []
+    if isinstance(from_endpoint.get("point"), dict):
+        path_points.append(from_endpoint["point"])
+    path_points.extend(waypoints)
+    if isinstance(to_endpoint.get("point"), dict):
+        path_points.append(to_endpoint["point"])
+    label = str(connector.get("label") or "").strip()
+    return {
+        "ref": ref,
+        "id": connector.get("id"),
+        "from": from_endpoint,
+        "to": to_endpoint,
+        "label": label,
+        "relationship": f"{from_endpoint.get('node_ref') or '?'} -> {to_endpoint.get('node_ref') or '?'}"
+        + (f"：{label}" if label else ""),
+        "routing_mode": connector.get("routingMode", connector.get("routing", "rounded-orthogonal")),
+        "waypoints": waypoints,
+        "path_points": path_points,
+        "label_position": connector.get("labelPosition"),
+        "label_segment_index": connector.get("labelSegmentIndex"),
+        "label_segment_t": connector.get("labelSegmentT"),
+        "style": {
+            "stroke": style.get("stroke"),
+            "stroke_width": style.get("strokeWidth", style.get("stroke_width")),
+            "start_arrow": style.get("startArrow", style.get("start_arrow")),
+            "end_arrow": style.get("endArrow", style.get("end_arrow")),
+            "corner_radius": style.get("cornerRadius", style.get("corner_radius")),
+            "stroke_dasharray": style.get("strokeDasharray", style.get("stroke_dasharray")),
+        },
+    }
+
+
+def board_content_to_ai_view(content_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(content_json, dict) or content_json.get("type") != "board":
+        return None
+
+    raw_nodes = content_json.get("nodes") if isinstance(content_json.get("nodes"), list) else []
+    raw_connectors = content_json.get("connectors") if isinstance(content_json.get("connectors"), list) else []
+    nodes = [node for node in raw_nodes if isinstance(node, dict) and isinstance(node.get("id"), str)]
+    connectors = [connector for connector in raw_connectors if isinstance(connector, dict) and isinstance(connector.get("id"), str)]
+    ref_by_id = {str(node["id"]): f"n{index}" for index, node in enumerate(nodes, start=1)}
+    connector_ref_by_id = {
+        str(connector["id"]): f"c{index}" for index, connector in enumerate(connectors, start=1)
+    }
+    nodes_by_id = {str(node["id"]): node for node in nodes}
+    ai_nodes = [_board_node_to_ai(node, ref_by_id[str(node["id"])]) for node in nodes]
+    ai_connectors = [
+        _board_connector_to_ai(
+            connector,
+            ref=connector_ref_by_id[str(connector["id"])],
+            nodes_by_id=nodes_by_id,
+            ref_by_id=ref_by_id,
+        )
+        for connector in connectors
+    ]
+
+    outgoing: dict[str, list[dict[str, Any]]] = {node["ref"]: [] for node in ai_nodes}
+    incoming: dict[str, list[dict[str, Any]]] = {node["ref"]: [] for node in ai_nodes}
+    for connector in ai_connectors:
+        source = connector["from"].get("node_ref")
+        target = connector["to"].get("node_ref")
+        edge = {
+            "connector_ref": connector["ref"],
+            "label": connector["label"],
+            "routing_mode": connector["routing_mode"],
+        }
+        if source:
+            outgoing.setdefault(source, []).append({**edge, "to": target})
+        if target:
+            incoming.setdefault(target, []).append({**edge, "from": source})
+
+    reading_order = [
+        item["ref"]
+        for item in sorted(
+            ai_nodes,
+            key=lambda node: (
+                float(node["position"]["y"]),
+                float(node["position"]["x"]),
+                int(node["z_index"] or 0),
+            ),
+        )
+    ]
+    node_type_counts: dict[str, int] = {}
+    for node in ai_nodes:
+        node_type = str(node["type"])
+        node_type_counts[node_type] = node_type_counts.get(node_type, 0) + 1
+    unconnected_nodes = [
+        node["ref"]
+        for node in ai_nodes
+        if not outgoing.get(node["ref"]) and not incoming.get(node["ref"])
+    ]
+    warnings: list[str] = []
+    for connector in ai_connectors:
+        if not connector["from"].get("node_ref") or not connector["to"].get("node_ref"):
+            warnings.append(f"{connector['ref']} references missing endpoint node")
+
+    return {
+        "schema": "clouddoc.board.ai_view.v1",
+        "overview": {
+            "node_count": len(ai_nodes),
+            "connector_count": len(ai_connectors),
+            "node_type_counts": node_type_counts,
+            "viewport": content_json.get("viewport") if isinstance(content_json.get("viewport"), dict) else {},
+            "canvas_bounds": _board_canvas_bounds(nodes),
+        },
+        "reading_order": reading_order,
+        "nodes": ai_nodes,
+        "connectors": ai_connectors,
+        "relationships": {
+            "outgoing": outgoing,
+            "incoming": incoming,
+            "unconnected_nodes": unconnected_nodes,
+        },
+        "warnings": warnings,
+    }
+
+
+def board_content_to_markdown(
+    content_json: dict[str, Any] | None,
+    *,
+    title: str = "Board",
+    fallback_plain_text: str = "",
+) -> str:
+    ai_view = board_content_to_ai_view(content_json)
+    if ai_view is None:
+        return fallback_plain_text.strip()
+
+    lines = [f"# {title}", "", "## Board Overview"]
+    overview = ai_view["overview"]
+    lines.append(f"- Nodes: {overview['node_count']}")
+    lines.append(f"- Connectors: {overview['connector_count']}")
+    if overview.get("node_type_counts"):
+        type_counts = ", ".join(f"{key}={value}" for key, value in overview["node_type_counts"].items())
+        lines.append(f"- Node types: {type_counts}")
+
+    lines.extend(["", "## Nodes"])
+    nodes_by_ref = {node["ref"]: node for node in ai_view["nodes"]}
+    for ref in ai_view["reading_order"]:
+        node = nodes_by_ref[ref]
+        position = node["position"]
+        node_text = f"「{node['text']}」" if node["text"] else "无文本"
+        lines.append(
+            f"- [{node['ref']}] {node['type_label']} {node_text} "
+            f"at ({position['x']}, {position['y']}) size {position['width']}x{position['height']}"
+        )
+        table = node.get("table")
+        if isinstance(table, dict):
+            rows = table.get("rows") if isinstance(table.get("rows"), list) else []
+            if rows:
+                width = max((len(row.get("cells", [])) for row in rows if isinstance(row, dict)), default=0)
+                rendered_rows = []
+                for row in rows:
+                    cells = row.get("cells") if isinstance(row, dict) and isinstance(row.get("cells"), list) else []
+                    rendered_rows.append([_markdown_escape_table_cell(str(cell.get("text") or "")) for cell in cells])
+                if width:
+                    header = rendered_rows[0] + [""] * (width - len(rendered_rows[0]))
+                    lines.append("  | " + " | ".join(header) + " |")
+                    lines.append("  | " + " | ".join(["---"] * width) + " |")
+                    for row in rendered_rows[1:]:
+                        normalized = row + [""] * (width - len(row))
+                        lines.append("  | " + " | ".join(normalized) + " |")
+
+    lines.extend(["", "## Relationships"])
+    if ai_view["connectors"]:
+        for connector in ai_view["connectors"]:
+            source = connector["from"]
+            target = connector["to"]
+            label = f" label「{connector['label']}」" if connector["label"] else ""
+            lines.append(
+                f"- [{connector['ref']}] "
+                f"{source.get('node_ref') or '?'}({source.get('text') or '无文本'}) "
+                f"{source.get('anchor')} -> {target.get('node_ref') or '?'}({target.get('text') or '无文本'}) "
+                f"{target.get('anchor')}; routing={connector['routing_mode']}{label}"
+            )
+    else:
+        lines.append("- No connectors")
+
+    if ai_view["relationships"]["unconnected_nodes"]:
+        lines.extend(["", "## Unconnected Nodes"])
+        lines.append("- " + ", ".join(ai_view["relationships"]["unconnected_nodes"]))
+    if ai_view["warnings"]:
+        lines.extend(["", "## Warnings"])
+        for warning in ai_view["warnings"]:
+            lines.append(f"- {warning}")
+    return "\n".join(lines).strip()
+
+
 def _content_node_to_markdown(node: Any, depth: int = 0) -> list[str]:
     if not isinstance(node, dict):
         return []
@@ -209,9 +602,17 @@ def _content_node_to_markdown(node: Any, depth: int = 0) -> list[str]:
     return nested or ([text] if text else [])
 
 
-def content_json_to_markdown(content_json: dict[str, Any] | None, fallback_plain_text: str = "") -> str:
+def content_json_to_markdown(
+    content_json: dict[str, Any] | None,
+    fallback_plain_text: str = "",
+    *,
+    title: str = "Document",
+) -> str:
     if not isinstance(content_json, dict):
         return fallback_plain_text.strip()
+
+    if content_json.get("type") == "board":
+        return board_content_to_markdown(content_json, title=title, fallback_plain_text=fallback_plain_text)
 
     blocks = content_json.get("content")
     if not isinstance(blocks, list):
@@ -230,11 +631,15 @@ def content_json_to_markdown(content_json: dict[str, Any] | None, fallback_plain
 
 def _format_document_payload(document: Any, output_format: str) -> dict[str, Any]:
     dumped = _dump(document)
-    normalized_format = output_format if output_format in {"markdown", "plain_text", "content_json", "full"} else "markdown"
+    normalized_format = (
+        output_format if output_format in {"markdown", "plain_text", "content_json", "full", "ai"} else "markdown"
+    )
     content = dumped.get("content") if isinstance(dumped.get("content"), dict) else {}
     content_json = content.get("content_json") if isinstance(content, dict) else {}
     plain_text = str(content.get("plain_text") or "") if isinstance(content, dict) else ""
-    markdown = content_json_to_markdown(content_json, plain_text)
+    title = str(dumped.get("title") or "Document")
+    markdown = content_json_to_markdown(content_json, plain_text, title=title)
+    ai_view = board_content_to_ai_view(content_json)
 
     metadata = {key: value for key, value in dumped.items() if key != "content"}
     metadata["format"] = normalized_format
@@ -242,6 +647,19 @@ def _format_document_payload(document: Any, output_format: str) -> dict[str, Any
     if normalized_format == "full":
         metadata["content"] = content
         metadata["markdown"] = markdown
+        if ai_view is not None:
+            metadata["ai_view"] = ai_view
+        return metadata
+    if normalized_format == "ai":
+        metadata["markdown"] = markdown
+        if ai_view is not None:
+            metadata["ai_view"] = ai_view
+        else:
+            metadata["ai_view"] = {
+                "schema": "clouddoc.document.ai_view.v1",
+                "markdown": markdown,
+                "plain_text": plain_text,
+            }
         return metadata
     if normalized_format == "content_json":
         metadata["content_json"] = content_json

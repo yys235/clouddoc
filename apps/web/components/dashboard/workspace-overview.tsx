@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
 import { DashboardDocument, subscribeDocumentLibraryBrowserEvents } from "@/lib/api";
+import { subscribeCloudDocEvents } from "@/lib/event-stream";
 import { SearchForm } from "@/components/search/search-form";
 
 function buildCards(documents: DashboardDocument[]) {
@@ -49,7 +50,6 @@ export function WorkspaceOverview({
       return;
     }
 
-    const source = new EventSource("/api/events/stream", { withCredentials: true });
     const listener = (event: MessageEvent<string>) => {
       try {
         const payload = JSON.parse(event.data) as {
@@ -119,18 +119,7 @@ export function WorkspaceOverview({
       "document.content_updated",
       "document.permission_changed",
     ];
-    for (const eventName of eventNames) {
-      source.addEventListener(eventName, listener);
-    }
-    source.onerror = () => {
-      source.close();
-    };
-    return () => {
-      for (const eventName of eventNames) {
-        source.removeEventListener(eventName, listener);
-      }
-      source.close();
-    };
+    return subscribeCloudDocEvents(eventNames, listener);
   }, [apiUnavailable, enableLiveUpdates]);
 
   return (

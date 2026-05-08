@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 import { markAllNotificationsRead, markNotificationRead, type NotificationItem } from "@/lib/api";
+import { subscribeCloudDocEvents } from "@/lib/event-stream";
 
 function formatTime(value: string) {
   try {
@@ -77,7 +78,6 @@ export function NotificationsList({
       return;
     }
 
-    const source = new EventSource("/api/events/stream", { withCredentials: true });
     const handleCreated = (event: MessageEvent) => {
       try {
         const payload = JSON.parse(event.data) as { notification?: unknown };
@@ -122,17 +122,13 @@ export function NotificationsList({
       }
     };
 
-    source.addEventListener("notification.created", handleCreated);
-    source.addEventListener("notification.read", handleRead);
-    source.addEventListener("notification.read_all", handleReadAll);
-    source.onerror = () => {
-      source.close();
-    };
+    const unsubscribeCreated = subscribeCloudDocEvents(["notification.created"], handleCreated);
+    const unsubscribeRead = subscribeCloudDocEvents(["notification.read"], handleRead);
+    const unsubscribeReadAll = subscribeCloudDocEvents(["notification.read_all"], handleReadAll);
     return () => {
-      source.removeEventListener("notification.created", handleCreated);
-      source.removeEventListener("notification.read", handleRead);
-      source.removeEventListener("notification.read_all", handleReadAll);
-      source.close();
+      unsubscribeCreated();
+      unsubscribeRead();
+      unsubscribeReadAll();
     };
   }, [enableLiveUpdates]);
 

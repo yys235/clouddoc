@@ -6,6 +6,7 @@ import { useEffect, useState, useTransition } from "react";
 
 import { GuestAuthLinks, UserMenu } from "@/components/auth/auth-actions";
 import { createDocument, createFolder, fetchSpaces, fetchSpaceTree, importDocxDocument, uploadPdfDocument, type SpaceSummary, type TreeNode } from "@/lib/api";
+import { subscribeCloudDocEvents } from "@/lib/event-stream";
 
 const navItems = [
   { label: "工作台", href: "/" },
@@ -74,7 +75,6 @@ export function SidebarNav({
       return;
     }
 
-    const source = new EventSource("/api/events/stream", { withCredentials: true });
     const handleCreated = (event: MessageEvent) => {
       try {
         const payload = JSON.parse(event.data) as { notification?: { is_read?: boolean } };
@@ -88,17 +88,13 @@ export function SidebarNav({
     const handleRead = () => setLiveUnreadCount((current) => Math.max(0, current - 1));
     const handleReadAll = () => setLiveUnreadCount(0);
 
-    source.addEventListener("notification.created", handleCreated);
-    source.addEventListener("notification.read", handleRead);
-    source.addEventListener("notification.read_all", handleReadAll);
-    source.onerror = () => {
-      source.close();
-    };
+    const unsubscribeCreated = subscribeCloudDocEvents(["notification.created"], handleCreated);
+    const unsubscribeRead = subscribeCloudDocEvents(["notification.read"], handleRead);
+    const unsubscribeReadAll = subscribeCloudDocEvents(["notification.read_all"], handleReadAll);
     return () => {
-      source.removeEventListener("notification.created", handleCreated);
-      source.removeEventListener("notification.read", handleRead);
-      source.removeEventListener("notification.read_all", handleReadAll);
-      source.close();
+      unsubscribeCreated();
+      unsubscribeRead();
+      unsubscribeReadAll();
     };
   }, [currentUser]);
 

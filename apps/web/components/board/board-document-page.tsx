@@ -1096,12 +1096,41 @@ function pathCrossesNodes(points: BoardPoint[], nodes: BoardNode[], padding: num
   return false;
 }
 
+function connectorPathCrossesNodeInterior(points: BoardPoint[], nodes: BoardNode[], padding: number) {
+  const interiorPoints = points.slice(1, -1);
+  if (interiorPoints.length < 2) return false;
+  return pathCrossesNodes(interiorPoints, nodes, padding);
+}
+
 function pathLength(points: BoardPoint[]) {
   let length = 0;
   for (let index = 1; index < points.length; index += 1) {
     length += Math.abs(points[index].x - points[index - 1].x) + Math.abs(points[index].y - points[index - 1].y);
   }
   return length;
+}
+
+function pathBendCount(points: BoardPoint[]) {
+  const compacted = compactWaypoints(points);
+  let bends = 0;
+  let previousOrientation: "horizontal" | "vertical" | null = null;
+  for (let index = 1; index < compacted.length; index += 1) {
+    const previous = compacted[index - 1];
+    const current = compacted[index];
+    if (previous.x === current.x && previous.y === current.y) continue;
+    const orientation = previous.y === current.y ? "horizontal" : "vertical";
+    if (previousOrientation && previousOrientation !== orientation) {
+      bends += 1;
+    }
+    previousOrientation = orientation;
+  }
+  return bends;
+}
+
+function compareConnectorRouteCandidates(a: BoardPoint[], b: BoardPoint[]) {
+  const bendDiff = pathBendCount(a) - pathBendCount(b);
+  if (bendDiff !== 0) return bendDiff;
+  return pathLength(a) - pathLength(b);
 }
 
 function routeBetweenConnectorStubs(startOut: BoardPoint, endOut: BoardPoint, fromNode: BoardNode, toNode: BoardNode, gap: number) {
@@ -1119,7 +1148,7 @@ function routeBetweenConnectorStubs(startOut: BoardPoint, endOut: BoardPoint, fr
   ].map(simplifyWaypoints);
   const valid = candidates.filter((points) => !pathCrossesNodes(points, [fromNode, toNode], 2));
   const pool = valid.length > 0 ? valid : candidates;
-  return [...pool].sort((a, b) => pathLength(a) - pathLength(b))[0] ?? [startOut, endOut];
+  return [...pool].sort(compareConnectorRouteCandidates)[0] ?? [startOut, endOut];
 }
 
 function defaultConnectorWaypointsForNodes(connector: BoardConnector, fromNode: BoardNode, toNode: BoardNode) {
@@ -1486,10 +1515,16 @@ function chooseSimplerMovedConnectorWaypoints(
   const localPath = connectorFullPath(connector, fromNode, toNode, localWaypoints);
   const autoWaypoints = defaultConnectorWaypointsForNodes(connector, fromNode, toNode);
   const autoPath = connectorFullPath(connector, fromNode, toNode, autoWaypoints);
-  const localCrosses = pathCrossesNodes(localPath, [fromNode, toNode], 2);
-  const autoCrosses = pathCrossesNodes(autoPath, [fromNode, toNode], 2);
+  const localCrosses = connectorPathCrossesNodeInterior(localPath, [fromNode, toNode], 2);
+  const autoCrosses = connectorPathCrossesNodeInterior(autoPath, [fromNode, toNode], 2);
+  const localLength = pathLength(localPath);
+  const autoLength = pathLength(autoPath);
+  const localBends = pathBendCount(localPath);
+  const autoBends = pathBendCount(autoPath);
+  const autoHasFewerBends = autoBends < localBends && autoLength <= localLength + 80;
+  const autoIsMeaningfullyShorter = autoLength + 12 < localLength;
 
-  if (!autoCrosses && (localCrosses || autoPath.length < localPath.length)) {
+  if (!autoCrosses && (localCrosses || autoHasFewerBends || autoPath.length < localPath.length || autoIsMeaningfullyShorter)) {
     return autoPath.slice(1, -1);
   }
   return localPath.slice(1, -1);

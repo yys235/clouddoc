@@ -45,6 +45,75 @@
   - MCP bridge 不维护独立文档权限规则；“是否可读、是否可写、是否可删除”的条件不能散落在 bridge 中。
   - MCP bridge 可以保留协议级错误映射、MCP 审计、MCP actor 解析，但复杂列表、搜索、详情读取和业务权限必须下沉到 API service 层。
 
+## 当前新增：画板 AI 语义读取
+
+画板文档的原始 `content_json` 更适合前端渲染，不适合 AI 直接理解，因为节点位置、连接线端点、路由点和表格单元格分散在不同字段中。MCP 在不改变原始 `content_json` 的前提下，为 `board` 类型新增 AI 语义视图。
+
+`clouddoc.get_document` 的 `format` 参数扩展为：
+
+- `markdown`：默认格式。普通文档输出 Markdown；画板输出可读的画板摘要、节点清单、表格内容和关系清单。
+- `ai`：AI 优先结构。画板返回 `ai_view`，用于让模型理解节点、连接线、表格和拓扑关系。
+- `content_json`：只返回原始内容 JSON，用于精确编辑或调试。
+- `full`：返回完整文档、Markdown 和画板 `ai_view`。
+- `plain_text`：返回数据库里的纯文本摘要。
+
+画板 `ai_view` 结构：
+
+```json
+{
+  "schema": "clouddoc.board.ai_view.v1",
+  "overview": {
+    "node_count": 3,
+    "connector_count": 2,
+    "node_type_counts": {
+      "rectangle": 1,
+      "diamond": 1,
+      "table": 1
+    },
+    "viewport": {"x": 0, "y": 0, "zoom": 1},
+    "canvas_bounds": {"min_x": 100, "min_y": 90, "max_x": 880, "max_y": 210}
+  },
+  "reading_order": ["n1", "n2", "n3"],
+  "nodes": [
+    {
+      "ref": "n1",
+      "id": "start-node",
+      "type": "rectangle",
+      "type_label": "矩形",
+      "text": "开始",
+      "position": {"x": 100, "y": 100, "width": 160, "height": 56, "center_x": 180, "center_y": 128},
+      "style": {"fill": "#dfeaff", "stroke": "#5b8cff", "text_color": "#1f2937"}
+    }
+  ],
+  "connectors": [
+    {
+      "ref": "c1",
+      "id": "connector-1",
+      "from": {"node_ref": "n1", "node_id": "start-node", "anchor": "right", "text": "开始"},
+      "to": {"node_ref": "n2", "node_id": "decision-node", "anchor": "left", "text": "是否通过"},
+      "label": "进入判断",
+      "relationship": "n1 -> n2：进入判断",
+      "routing_mode": "rounded-orthogonal",
+      "path_points": [{"x": 260, "y": 128}, {"x": 300, "y": 128}, {"x": 300, "y": 140}, {"x": 340, "y": 140}]
+    }
+  ],
+  "relationships": {
+    "outgoing": {"n1": [{"connector_ref": "c1", "to": "n2", "label": "进入判断"}]},
+    "incoming": {"n2": [{"connector_ref": "c1", "from": "n1", "label": "进入判断"}]},
+    "unconnected_nodes": []
+  },
+  "warnings": []
+}
+```
+
+设计原则：
+
+- 保留节点原始 `id`，同时生成短引用 `n1/c1`，让 AI 输出和讨论更紧凑。
+- 节点按画布阅读顺序输出，但不改变原始数据。
+- 连接线同时输出端点、锚点、标签、路径点和 `relationship`，避免 AI 需要自己解析前端路由字段。
+- 表格节点展开为 `table.rows[].cells[]`，让 AI 能直接读取字段和单元格内容。
+- `content_json` 仍是唯一精确编辑格式；`ai_view` 只用于理解、检索、摘要和关系分析。
+
 ## 1. 文档目标
 
 本文档定义 CloudDoc 的 MCP 接入方案，用于让 AI Agent、IDE 助手、自动化工作流和外部 MCP Client 能以统一协议访问 CloudDoc。

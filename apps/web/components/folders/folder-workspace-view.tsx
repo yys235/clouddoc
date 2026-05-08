@@ -39,6 +39,7 @@ import {
   updateUserPreference,
   uploadPdfDocument,
 } from "@/lib/api";
+import { subscribeCloudDocEvents } from "@/lib/event-stream";
 
 type NodeDragPayload = { id: string; nodeType: "folder" | "document" };
 type TreeDropPosition = "before" | "inside" | "after";
@@ -757,7 +758,6 @@ export function FolderWorkspaceView({
     if (!selectedSpace || apiUnavailable) {
       return;
     }
-    const source = new EventSource("/api/events/stream", { withCredentials: true });
     const applyEvent = (payload: LibraryEvent) => {
       if (!payload.event_type || payload.space_id !== selectedSpace.id) {
         return;
@@ -835,22 +835,10 @@ export function FolderWorkspaceView({
       "folder.moved",
       "folder.reordered",
     ];
-    for (const eventName of eventNames) {
-      source.addEventListener(eventName, listener);
-    }
-    source.onerror = () => {
-      source.close();
-      setNotice("实时连接已断开，当前数据可能不是最新。刷新页面可重新连接。");
-    };
-    source.onopen = () => {
-      setNotice((current) => (current.startsWith("实时连接已断开") ? "" : current));
-    };
-    return () => {
-      for (const eventName of eventNames) {
-        source.removeEventListener(eventName, listener);
-      }
-      source.close();
-    };
+    return subscribeCloudDocEvents(eventNames, listener, {
+      onError: () => setNotice("实时连接异常，当前数据可能不是最新。刷新页面可重新连接。"),
+      onOpen: () => setNotice((current) => (current.startsWith("实时连接") ? "" : current)),
+    });
   }, [apiUnavailable, currentFolderId, selectedSpace]);
 
   useEffect(() => {

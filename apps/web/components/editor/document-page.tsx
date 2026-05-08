@@ -30,6 +30,7 @@ import {
   uploadImageAsset,
   updateDocumentContent,
 } from "@/lib/api";
+import { subscribeCloudDocEvents } from "@/lib/event-stream";
 
 function EyeIcon({ active = false }: { active?: boolean }) {
   return (
@@ -877,7 +878,6 @@ function DocumentTextPage({
     if (currentDocument.isSharedView || (!canEditDocument && !canCommentDocument && !canManageDocument)) {
       return;
     }
-    const source = new EventSource("/api/events/stream", { withCredentials: true });
     const reloadComments = () => {
       if (!showCommentSidebar) {
         return;
@@ -941,24 +941,13 @@ function DocumentTextPage({
     };
     const documentEvents = ["document.updated", "document.content_updated", "document.permission_changed", "document.deleted"];
     const commentEvents = ["comment.thread_created", "comment.created", "comment.updated", "comment.deleted", "comment.resolved", "comment.reopened"];
-    for (const eventName of documentEvents) {
-      source.addEventListener(eventName, handleDocumentEvent);
-    }
-    for (const eventName of commentEvents) {
-      source.addEventListener(eventName, handleCommentEvent);
-    }
-    source.onerror = () => {
-      source.close();
-      setNotice("实时连接已断开，当前文档可能不是最新。刷新页面可重新连接。");
-    };
+    const unsubscribeDocumentEvents = subscribeCloudDocEvents(documentEvents, handleDocumentEvent, {
+      onError: () => setNotice("实时连接异常，当前文档可能不是最新。刷新页面可重新连接。"),
+    });
+    const unsubscribeCommentEvents = subscribeCloudDocEvents(commentEvents, handleCommentEvent);
     return () => {
-      for (const eventName of documentEvents) {
-        source.removeEventListener(eventName, handleDocumentEvent);
-      }
-      for (const eventName of commentEvents) {
-        source.removeEventListener(eventName, handleCommentEvent);
-      }
-      source.close();
+      unsubscribeDocumentEvents();
+      unsubscribeCommentEvents();
     };
   }, [
     canCommentDocument,

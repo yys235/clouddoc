@@ -13,6 +13,7 @@ import {
   subscribeDocumentLibraryBrowserEvents,
   TreeNode,
 } from "@/lib/api";
+import { subscribeCloudDocEvents } from "@/lib/event-stream";
 
 function statusLabel(status: string) {
   return status === "published" ? "已发布" : "草稿";
@@ -84,7 +85,6 @@ export function DocumentListSection({
       return;
     }
 
-    const source = new EventSource("/api/events/stream", { withCredentials: true });
     const listener = (event: MessageEvent<string>) => {
       try {
         const payload = JSON.parse(event.data) as {
@@ -154,18 +154,7 @@ export function DocumentListSection({
       "document.content_updated",
       "document.permission_changed",
     ];
-    for (const eventName of eventNames) {
-      source.addEventListener(eventName, listener);
-    }
-    source.onerror = () => {
-      source.close();
-    };
-    return () => {
-      for (const eventName of eventNames) {
-        source.removeEventListener(eventName, listener);
-      }
-      source.close();
-    };
+    return subscribeCloudDocEvents(eventNames, listener);
   }, [enableLiveUpdates]);
 
   return (

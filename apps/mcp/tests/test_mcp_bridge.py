@@ -309,6 +309,170 @@ def test_mcp_markdown_format_preserves_common_block_structure() -> None:
         _cleanup_document(document_id)
 
 
+def test_mcp_board_ai_format_exposes_nodes_tables_and_relationships() -> None:
+    space_id = _first_space_id()
+    create_payload = create_document_tool(
+        space_id=space_id,
+        title="pytest-mcp-board-ai-format",
+        document_type="board",
+        user_email=DEMO_EMAIL,
+    )
+    document_id = create_payload["document"]["id"]
+
+    try:
+        content_json = {
+            "type": "board",
+            "version": 2,
+            "viewport": {"x": 10, "y": 20, "zoom": 1},
+            "nodes": [
+                {
+                    "id": "start-node",
+                    "type": "rectangle",
+                    "x": 100,
+                    "y": 100,
+                    "width": 160,
+                    "height": 56,
+                    "text": "开始",
+                    "style": {
+                        "fill": "#dfeaff",
+                        "stroke": "#5b8cff",
+                        "strokeWidth": 2,
+                        "fontSize": 14,
+                        "color": "#1f2937",
+                    },
+                    "zIndex": 1,
+                },
+                {
+                    "id": "decision-node",
+                    "type": "diamond",
+                    "x": 340,
+                    "y": 100,
+                    "width": 150,
+                    "height": 80,
+                    "text": "是否通过",
+                    "style": {
+                        "fill": "#dfeaff",
+                        "stroke": "#5b8cff",
+                        "strokeWidth": 2,
+                        "fontSize": 14,
+                        "color": "#1f2937",
+                    },
+                    "zIndex": 2,
+                },
+                {
+                    "id": "table-node",
+                    "type": "table",
+                    "x": 560,
+                    "y": 90,
+                    "width": 320,
+                    "height": 120,
+                    "text": "字段表",
+                    "table": {
+                        "title": "字段表",
+                        "titleHeight": 40,
+                        "columns": [{"id": "col-1", "width": 160}, {"id": "col-2", "width": 160}],
+                        "rows": [
+                            {
+                                "id": "row-1",
+                                "height": 36,
+                                "cells": [
+                                    {"id": "cell-1", "text": "字段", "align": "left"},
+                                    {"id": "cell-2", "text": "类型", "align": "left"},
+                                ],
+                            },
+                            {
+                                "id": "row-2",
+                                "height": 36,
+                                "cells": [
+                                    {"id": "cell-3", "text": "name", "align": "left"},
+                                    {"id": "cell-4", "text": "string", "align": "left"},
+                                ],
+                            },
+                        ],
+                    },
+                    "style": {
+                        "fill": "#ffffff",
+                        "stroke": "#5b8cff",
+                        "strokeWidth": 1,
+                        "fontSize": 14,
+                        "color": "#1f2937",
+                    },
+                    "zIndex": 3,
+                },
+            ],
+            "connectors": [
+                {
+                    "id": "connector-1",
+                    "from": {"nodeId": "start-node", "anchor": "right"},
+                    "to": {"nodeId": "decision-node", "anchor": "left"},
+                    "label": "进入判断",
+                    "routingMode": "rounded-orthogonal",
+                    "waypoints": [{"x": 300, "y": 128}, {"x": 300, "y": 140}],
+                    "style": {
+                        "stroke": "#c2c8cc",
+                        "strokeWidth": 2,
+                        "startArrow": "none",
+                        "endArrow": "arrow",
+                        "cornerRadius": 12,
+                        "strokeDasharray": "",
+                    },
+                    "zIndex": 0,
+                },
+                {
+                    "id": "connector-2",
+                    "from": {"nodeId": "decision-node", "anchor": "right"},
+                    "to": {"nodeId": "table-node", "anchor": "left"},
+                    "label": "",
+                    "routingMode": "rounded-orthogonal",
+                    "waypoints": [{"x": 525, "y": 140}, {"x": 525, "y": 150}],
+                    "style": {
+                        "stroke": "#c2c8cc",
+                        "strokeWidth": 2,
+                        "startArrow": "none",
+                        "endArrow": "arrow",
+                        "cornerRadius": 12,
+                        "strokeDasharray": "",
+                    },
+                    "zIndex": 0,
+                },
+            ],
+        }
+        update_document_content_tool(
+            document_id=document_id,
+            content_json=content_json,
+            plain_text="pytest board ai",
+            user_email=DEMO_EMAIL,
+        )
+
+        markdown_payload = get_document_tool(document_id, user_email=DEMO_EMAIL, format="markdown")
+        markdown = markdown_payload["document"]["markdown"]
+        assert "## Board Overview" in markdown
+        assert "[n1] 矩形 「开始」" in markdown
+        assert "[c1] n1(开始) right -> n2(是否通过) left" in markdown
+        assert "| 字段 | 类型 |" in markdown
+
+        ai_payload = get_document_tool(document_id, user_email=DEMO_EMAIL, format="ai")
+        document = ai_payload["document"]
+        ai_view = document["ai_view"]
+        assert document["format"] == "ai"
+        assert ai_view["schema"] == "clouddoc.board.ai_view.v1"
+        assert ai_view["overview"]["node_count"] == 3
+        assert ai_view["overview"]["connector_count"] == 2
+        assert ai_view["nodes"][0]["ref"] == "n1"
+        assert ai_view["nodes"][2]["table"]["rows"][1]["cells"][0]["text"] == "name"
+        assert ai_view["connectors"][0]["relationship"] == "n1 -> n2：进入判断"
+        assert ai_view["relationships"]["outgoing"]["n1"][0]["to"] == "n2"
+
+        full_payload = get_document_tool(document_id, user_email=DEMO_EMAIL, format="full")
+        assert full_payload["document"]["ai_view"]["overview"]["node_type_counts"]["table"] == 1
+
+        content_payload = get_document_tool(document_id, user_email=DEMO_EMAIL, format="content_json")
+        assert "ai_view" not in content_payload["document"]
+        assert content_payload["document"]["content_json"]["type"] == "board"
+    finally:
+        _cleanup_document(document_id)
+
+
 def test_mcp_can_create_and_update_document_from_markdown() -> None:
     space_id = _first_space_id()
     created_document_id: str | None = None

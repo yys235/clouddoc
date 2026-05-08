@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
 
 import { DashboardDocument, restoreDocument } from "@/lib/api";
+import { subscribeCloudDocEvents } from "@/lib/event-stream";
 
 export function TrashList({ documents, enableLiveUpdates = false }: { documents: DashboardDocument[]; enableLiveUpdates?: boolean }) {
   const router = useRouter();
@@ -21,7 +22,6 @@ export function TrashList({ documents, enableLiveUpdates = false }: { documents:
       return;
     }
 
-    const source = new EventSource("/api/events/stream", { withCredentials: true });
     const listener = (event: MessageEvent<string>) => {
       try {
         const payload = JSON.parse(event.data) as {
@@ -101,16 +101,7 @@ export function TrashList({ documents, enableLiveUpdates = false }: { documents:
         // Ignore malformed stream payloads.
       }
     };
-    source.addEventListener("document.deleted", listener);
-    source.addEventListener("document.restored", listener);
-    source.onerror = () => {
-      source.close();
-    };
-    return () => {
-      source.removeEventListener("document.deleted", listener);
-      source.removeEventListener("document.restored", listener);
-      source.close();
-    };
+    return subscribeCloudDocEvents(["document.deleted", "document.restored"], listener);
   }, [enableLiveUpdates]);
 
   const handleRestore = (docId: string) => {
