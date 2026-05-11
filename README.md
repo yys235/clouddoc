@@ -79,6 +79,14 @@ CLOUDDOC_MCP_ACTOR_EMAIL=demo@clouddoc.local
 
 如果留空，则使用无权限访客 `guest@clouddoc.local`。
 
+如果需要手动初始化一个空 PostgreSQL 数据库，可以执行当前基线脚本：
+
+```bash
+psql "postgresql://user:password@localhost:5432/clouddoc" -f apps/api/sql/001_init.sql
+```
+
+正常启动后端时也会自动执行 SQLAlchemy 建表和运行态 schema 补丁；手动 SQL 主要用于部署前预初始化或排查新库缺表问题。
+
 ### 3. 启动后端 API
 
 ```bash
@@ -106,6 +114,37 @@ npm run dev -- --hostname 127.0.0.1 --port 3100
 ```text
 http://127.0.0.1:3100
 ```
+
+首次部署空库时会自动进入：
+
+```text
+http://127.0.0.1:3100/setup
+```
+
+按向导创建第一个系统管理员、默认组织和默认空间。生产环境建议先配置：
+
+```env
+CLOUDDOC_SETUP_TOKEN=replace-with-a-random-secret
+CLOUDDOC_AUTO_SEED_DEMO=false
+```
+
+如果是无人值守部署，也可以用 CLI 直接完成初始化：
+
+```bash
+cd apps/api
+uv run python -m app.cli init-system \
+  --admin-email admin@example.com \
+  --admin-name Admin \
+  --admin-password 'change-this-password' \
+  --organization-name 'CloudDoc Org' \
+  --space-name '产品空间' \
+  --space-visibility organization \
+  --allow-open-api true \
+  --allow-user-pat true \
+  --import-demo-data false
+```
+
+初始化完成后，超级管理员可在“个人配置”页面查看系统初始化摘要和最近系统审计。
 
 ### 5. 启动 MCP 服务
 
@@ -245,6 +284,7 @@ curl http://127.0.0.1:8000/health
 
 - MCP 设计：`已归档/clouddoc-mcp-design.md`
 - AI 开放平台 PRD：`已归档/ai-integration-open-platform-prd.md`
+- 首次部署初始化 PRD：`已归档/system-initialization-onboarding-prd.md`
 - 权限与分享 PRD：`已归档/document-permission-sharing-prd.md`
 - 画板 PRD：`已归档/basic-board-v1-prd.md`
 - 开发进度：`DEVELOPMENT_PROGRESS.md`

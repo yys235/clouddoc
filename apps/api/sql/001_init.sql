@@ -82,6 +82,35 @@ CREATE TABLE IF NOT EXISTS folders (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS tree_shortcuts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_user_id UUID NOT NULL REFERENCES users(id),
+    space_id UUID NOT NULL REFERENCES spaces(id),
+    parent_folder_id UUID REFERENCES folders(id),
+    target_type VARCHAR(32) NOT NULL,
+    target_id VARCHAR(128) NOT NULL,
+    title_override VARCHAR(255),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_tree_shortcut_target_type CHECK (target_type IN ('folder', 'document'))
+);
+
+CREATE TABLE IF NOT EXISTS user_tree_pins (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    space_id UUID NOT NULL REFERENCES spaces(id),
+    parent_folder_id UUID REFERENCES folders(id),
+    node_type VARCHAR(32) NOT NULL,
+    node_id VARCHAR(128) NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_user_tree_pin_node UNIQUE (user_id, node_type, node_id),
+    CONSTRAINT chk_user_tree_pin_node_type CHECK (node_type IN ('folder', 'document', 'shortcut'))
+);
+
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     space_id UUID NOT NULL REFERENCES spaces(id),
@@ -129,10 +158,19 @@ CREATE TABLE IF NOT EXISTS document_versions (
     CONSTRAINT uq_document_version UNIQUE (document_id, version_no)
 );
 
-ALTER TABLE documents
-    ADD CONSTRAINT fk_documents_current_version
-    FOREIGN KEY (current_version_id)
-    REFERENCES document_versions(id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_documents_current_version'
+    ) THEN
+        ALTER TABLE documents
+            ADD CONSTRAINT fk_documents_current_version
+            FOREIGN KEY (current_version_id)
+            REFERENCES document_versions(id);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS document_permissions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -191,6 +229,15 @@ CREATE TABLE IF NOT EXISTS document_favorites (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_document_favorite UNIQUE (user_id, document_id)
+);
+
+CREATE TABLE IF NOT EXISTS folder_favorites (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    folder_id UUID NOT NULL REFERENCES folders(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_folder_favorite UNIQUE (user_id, folder_id)
 );
 
 CREATE TABLE IF NOT EXISTS comment_threads (
@@ -282,6 +329,156 @@ CREATE TABLE IF NOT EXISTS templates (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS integrations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID REFERENCES organizations(id),
+    created_by UUID NOT NULL REFERENCES users(id),
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    icon_url VARCHAR(512),
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    client_id VARCHAR(128) NOT NULL UNIQUE,
+    oauth_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    redirect_uris JSONB NOT NULL DEFAULT '[]'::jsonb,
+    client_secret_prefix VARCHAR(32),
+    client_secret_hash VARCHAR(128),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS integration_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    integration_id UUID REFERENCES integrations(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    token_type VARCHAR(32) NOT NULL DEFAULT 'personal',
+    token_prefix VARCHAR(32) NOT NULL,
+    token_hash VARCHAR(128) NOT NULL UNIQUE,
+    name VARCHAR(255) NOT NULL,
+    scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+    expires_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS integration_resource_scopes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    integration_id UUID NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+    resource_type VARCHAR(32) NOT NULL,
+    resource_id VARCHAR(128),
+    include_children BOOLEAN NOT NULL DEFAULT FALSE,
+    permission_level VARCHAR(32) NOT NULL DEFAULT 'view',
+    created_by UUID NOT NULL REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS integration_audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    integration_id UUID REFERENCES integrations(id),
+    token_id UUID REFERENCES integration_tokens(id),
+    actor_id UUID REFERENCES users(id),
+    actor_type VARCHAR(32) NOT NULL DEFAULT 'user',
+    source VARCHAR(32) NOT NULL DEFAULT 'rest_open_api',
+    operation VARCHAR(128) NOT NULL,
+    target_type VARCHAR(64),
+    target_id VARCHAR(128),
+    request_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+    response_status VARCHAR(32) NOT NULL DEFAULT 'success',
+    error_message TEXT,
+    ip_address VARCHAR(64),
+    user_agent VARCHAR(512),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS integration_webhooks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    integration_id UUID NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+    url VARCHAR(1024) NOT NULL,
+    secret_hash VARCHAR(128) NOT NULL,
+    secret_value TEXT,
+    event_types JSONB NOT NULL DEFAULT '[]'::jsonb,
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS integration_webhook_deliveries (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    webhook_id UUID NOT NULL REFERENCES integration_webhooks(id) ON DELETE CASCADE,
+    event_type VARCHAR(64) NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    response_status VARCHAR(32),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TIMESTAMPTZ,
+    delivered_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    integration_id UUID NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_prefix VARCHAR(32) NOT NULL,
+    code_hash VARCHAR(128) NOT NULL UNIQUE,
+    redirect_uri VARCHAR(1024) NOT NULL,
+    scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    integration_id UUID NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_prefix VARCHAR(32) NOT NULL,
+    token_hash VARCHAR(128) NOT NULL UNIQUE,
+    scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+    expires_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    initialized BOOLEAN NOT NULL DEFAULT FALSE,
+    initialized_at TIMESTAMPTZ,
+    initialized_by UUID REFERENCES users(id),
+    product_name VARCHAR(120) NOT NULL DEFAULT 'CloudDoc',
+    allow_public_documents BOOLEAN NOT NULL DEFAULT TRUE,
+    allow_share_links BOOLEAN NOT NULL DEFAULT TRUE,
+    share_password_required_by_default BOOLEAN NOT NULL DEFAULT FALSE,
+    allow_guest_public_read BOOLEAN NOT NULL DEFAULT TRUE,
+    allow_user_pat BOOLEAN NOT NULL DEFAULT TRUE,
+    allow_open_api BOOLEAN NOT NULL DEFAULT TRUE,
+    allow_demo_data BOOLEAN NOT NULL DEFAULT FALSE,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS system_audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_type VARCHAR(32) NOT NULL DEFAULT 'system',
+    actor_id UUID REFERENCES users(id),
+    action VARCHAR(128) NOT NULL,
+    target_type VARCHAR(64),
+    target_id VARCHAR(128),
+    payload JSONB,
+    ip_address VARCHAR(64),
+    user_agent VARCHAR(512),
+    reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS mcp_audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_type VARCHAR(32) NOT NULL DEFAULT 'user',
@@ -313,22 +510,42 @@ CREATE TABLE IF NOT EXISTS event_logs (
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_user_preferences_user ON user_preferences(user_id);
+CREATE INDEX IF NOT EXISTS idx_organizations_owner ON organizations(owner_id);
 CREATE INDEX IF NOT EXISTS idx_org_members_org ON organization_members(organization_id);
 CREATE INDEX IF NOT EXISTS idx_org_members_user ON organization_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_org_invitations_org ON organization_invitations(organization_id);
 CREATE INDEX IF NOT EXISTS idx_org_invitations_email ON organization_invitations(email);
+CREATE INDEX IF NOT EXISTS idx_org_invitations_invited_by ON organization_invitations(invited_by);
+CREATE INDEX IF NOT EXISTS idx_org_invitations_expires ON organization_invitations(expires_at);
 CREATE INDEX IF NOT EXISTS idx_spaces_owner ON spaces(owner_id);
 CREATE INDEX IF NOT EXISTS idx_documents_space ON documents(space_id);
 CREATE INDEX IF NOT EXISTS idx_documents_parent ON documents(parent_id);
 CREATE INDEX IF NOT EXISTS idx_documents_folder ON documents(folder_id);
+CREATE INDEX IF NOT EXISTS idx_documents_creator ON documents(creator_id);
 CREATE INDEX IF NOT EXISTS idx_documents_sort_order ON documents(sort_order);
 CREATE INDEX IF NOT EXISTS idx_folders_space ON folders(space_id);
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_folder_id);
+CREATE INDEX IF NOT EXISTS idx_folders_creator ON folders(creator_id);
+CREATE INDEX IF NOT EXISTS idx_folders_owner ON folders(owner_id);
+CREATE INDEX IF NOT EXISTS idx_folders_visibility ON folders(visibility);
+CREATE INDEX IF NOT EXISTS idx_folders_deleted ON folders(is_deleted);
+CREATE INDEX IF NOT EXISTS idx_tree_shortcuts_owner ON tree_shortcuts(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_tree_shortcuts_space ON tree_shortcuts(space_id);
+CREATE INDEX IF NOT EXISTS idx_tree_shortcuts_parent ON tree_shortcuts(parent_folder_id);
+CREATE INDEX IF NOT EXISTS idx_tree_shortcuts_target ON tree_shortcuts(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_tree_shortcuts_deleted ON tree_shortcuts(is_deleted);
+CREATE INDEX IF NOT EXISTS idx_user_tree_pins_user ON user_tree_pins(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_tree_pins_space ON user_tree_pins(space_id);
+CREATE INDEX IF NOT EXISTS idx_user_tree_pins_parent ON user_tree_pins(parent_folder_id);
+CREATE INDEX IF NOT EXISTS idx_user_tree_pins_node ON user_tree_pins(node_type, node_id);
 CREATE INDEX IF NOT EXISTS idx_documents_owner ON documents(owner_id);
 CREATE INDEX IF NOT EXISTS idx_documents_visibility ON documents(visibility);
 CREATE INDEX IF NOT EXISTS idx_documents_deleted ON documents(is_deleted);
 CREATE INDEX IF NOT EXISTS idx_document_contents_document ON document_contents(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_contents_created_by ON document_contents(created_by);
 CREATE INDEX IF NOT EXISTS idx_document_versions_document ON document_versions(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_versions_content ON document_versions(content_id);
+CREATE INDEX IF NOT EXISTS idx_document_versions_created_by ON document_versions(created_by);
 CREATE INDEX IF NOT EXISTS idx_document_permissions_document ON document_permissions(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_permissions_subject ON document_permissions(subject_id);
 CREATE INDEX IF NOT EXISTS idx_document_permission_settings_document ON document_permission_settings(document_id);
@@ -337,19 +554,76 @@ CREATE INDEX IF NOT EXISTS idx_document_permission_audit_actor ON document_permi
 CREATE INDEX IF NOT EXISTS idx_document_permission_audit_action ON document_permission_audit_logs(action);
 CREATE INDEX IF NOT EXISTS idx_document_favorites_user ON document_favorites(user_id);
 CREATE INDEX IF NOT EXISTS idx_document_favorites_document ON document_favorites(document_id);
+CREATE INDEX IF NOT EXISTS idx_folder_favorites_user ON folder_favorites(user_id);
+CREATE INDEX IF NOT EXISTS idx_folder_favorites_folder ON folder_favorites(folder_id);
 CREATE INDEX IF NOT EXISTS idx_comment_threads_document ON comment_threads(document_id);
 CREATE INDEX IF NOT EXISTS idx_comment_threads_block ON comment_threads(anchor_block_id);
+CREATE INDEX IF NOT EXISTS idx_comment_threads_created_by ON comment_threads(created_by);
 CREATE INDEX IF NOT EXISTS idx_comments_thread ON comments(thread_id);
 CREATE INDEX IF NOT EXISTS idx_comments_document ON comments(document_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id);
+CREATE INDEX IF NOT EXISTS idx_comments_author ON comments(author_id);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_revoked ON user_sessions(revoked_at);
 CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_notifications_read ON user_notifications(is_read);
 CREATE INDEX IF NOT EXISTS idx_user_notifications_thread ON user_notifications(thread_id);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_actor ON user_notifications(actor_id);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_document ON user_notifications(document_id);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_comment ON user_notifications(comment_id);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_type ON user_notifications(notification_type);
 CREATE INDEX IF NOT EXISTS idx_share_links_document ON share_links(document_id);
+CREATE INDEX IF NOT EXISTS idx_share_links_token ON share_links(token);
+CREATE INDEX IF NOT EXISTS idx_share_links_created_by ON share_links(created_by);
 CREATE INDEX IF NOT EXISTS idx_templates_org ON templates(organization_id);
+CREATE INDEX IF NOT EXISTS idx_templates_created_by ON templates(created_by);
+CREATE INDEX IF NOT EXISTS idx_integrations_org ON integrations(organization_id);
+CREATE INDEX IF NOT EXISTS idx_integrations_created_by ON integrations(created_by);
+CREATE INDEX IF NOT EXISTS idx_integrations_client_id ON integrations(client_id);
+CREATE INDEX IF NOT EXISTS idx_integrations_status ON integrations(status);
+CREATE INDEX IF NOT EXISTS idx_integrations_client_secret_prefix ON integrations(client_secret_prefix);
+CREATE INDEX IF NOT EXISTS idx_integrations_client_secret_hash ON integrations(client_secret_hash);
+CREATE INDEX IF NOT EXISTS idx_integration_tokens_integration ON integration_tokens(integration_id);
+CREATE INDEX IF NOT EXISTS idx_integration_tokens_user ON integration_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_integration_tokens_type ON integration_tokens(token_type);
+CREATE INDEX IF NOT EXISTS idx_integration_tokens_prefix ON integration_tokens(token_prefix);
+CREATE INDEX IF NOT EXISTS idx_integration_tokens_hash ON integration_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_integration_tokens_expires ON integration_tokens(expires_at);
+CREATE INDEX IF NOT EXISTS idx_integration_tokens_revoked ON integration_tokens(revoked_at);
+CREATE INDEX IF NOT EXISTS idx_integration_scopes_integration ON integration_resource_scopes(integration_id);
+CREATE INDEX IF NOT EXISTS idx_integration_scopes_resource ON integration_resource_scopes(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_integration_scopes_created_by ON integration_resource_scopes(created_by);
+CREATE INDEX IF NOT EXISTS idx_integration_audit_integration ON integration_audit_logs(integration_id);
+CREATE INDEX IF NOT EXISTS idx_integration_audit_token ON integration_audit_logs(token_id);
+CREATE INDEX IF NOT EXISTS idx_integration_audit_actor ON integration_audit_logs(actor_id);
+CREATE INDEX IF NOT EXISTS idx_integration_audit_source ON integration_audit_logs(source);
+CREATE INDEX IF NOT EXISTS idx_integration_audit_operation ON integration_audit_logs(operation);
+CREATE INDEX IF NOT EXISTS idx_integration_audit_target ON integration_audit_logs(target_id);
+CREATE INDEX IF NOT EXISTS idx_integration_audit_response_status ON integration_audit_logs(response_status);
+CREATE INDEX IF NOT EXISTS idx_integration_webhooks_integration ON integration_webhooks(integration_id);
+CREATE INDEX IF NOT EXISTS idx_integration_webhooks_status ON integration_webhooks(status);
+CREATE INDEX IF NOT EXISTS idx_integration_webhook_deliveries_webhook ON integration_webhook_deliveries(webhook_id);
+CREATE INDEX IF NOT EXISTS idx_integration_webhook_deliveries_type ON integration_webhook_deliveries(event_type);
+CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_integration ON oauth_authorization_codes(integration_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_user ON oauth_authorization_codes(user_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_prefix ON oauth_authorization_codes(code_prefix);
+CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_hash ON oauth_authorization_codes(code_hash);
+CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_expires ON oauth_authorization_codes(expires_at);
+CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_consumed ON oauth_authorization_codes(consumed_at);
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_integration ON oauth_refresh_tokens(integration_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_user ON oauth_refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_prefix ON oauth_refresh_tokens(token_prefix);
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_hash ON oauth_refresh_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_expires ON oauth_refresh_tokens(expires_at);
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_revoked ON oauth_refresh_tokens(revoked_at);
+CREATE INDEX IF NOT EXISTS idx_system_settings_initialized ON system_settings(initialized);
+CREATE INDEX IF NOT EXISTS idx_system_settings_initialized_by ON system_settings(initialized_by);
+CREATE INDEX IF NOT EXISTS idx_system_audit_actor_type ON system_audit_logs(actor_type);
+CREATE INDEX IF NOT EXISTS idx_system_audit_actor ON system_audit_logs(actor_id);
+CREATE INDEX IF NOT EXISTS idx_system_audit_action ON system_audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_system_audit_target ON system_audit_logs(target_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_audit_actor ON mcp_audit_logs(actor_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_audit_tool ON mcp_audit_logs(tool_name);
 CREATE INDEX IF NOT EXISTS idx_mcp_audit_target ON mcp_audit_logs(target_id);

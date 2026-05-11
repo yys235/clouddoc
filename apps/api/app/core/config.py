@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     share_cookie_prefix: str = 'clouddoc_share'
     webhook_retry_interval_seconds: int = 15
     webhook_retry_attempt_limit: int = 4
+    setup_enabled: bool = True
+    setup_token: str = ''
+    auto_seed_demo: bool = False
 
     model_config = SettingsConfigDict(env_file=str(ENV_FILE), extra='ignore')
 

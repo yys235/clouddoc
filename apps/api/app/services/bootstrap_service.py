@@ -6,6 +6,7 @@ from app.models.organization import Organization, OrganizationMember
 from app.models.space import Space
 from app.models.template import Template
 from app.models.user import User
+from app.services.system_service import mark_system_initialized
 from app.services.auth_service import hash_password, is_password_hash_supported
 from app.services.document_service import build_default_content, extract_plain_text
 
@@ -17,9 +18,13 @@ def seed_demo_data(db: Session) -> None:
     ensure_mcp_guest_user(db)
     existing_user = db.scalar(select(User).where(User.email != MCP_GUEST_EMAIL).limit(1))
     if existing_user:
+        if existing_user.email == "demo@clouddoc.local" and not existing_user.is_super_admin:
+            existing_user.is_super_admin = True
         if existing_user.email == "demo@clouddoc.local" and not is_password_hash_supported(existing_user.password_hash):
             existing_user.password_hash = hash_password("demo123456")
             db.commit()
+        if existing_user.is_super_admin:
+            mark_system_initialized(db, initialized_by=existing_user.id, allow_demo_data=True)
         seed_templates_if_missing(db)
         return
 
@@ -27,6 +32,7 @@ def seed_demo_data(db: Session) -> None:
         name="Demo Owner",
         email="demo@clouddoc.local",
         password_hash=hash_password("demo123456"),
+        is_super_admin=True,
     )
     db.add(user)
     db.flush()
@@ -109,6 +115,7 @@ def seed_demo_data(db: Session) -> None:
     )
     db.add_all(templates)
     db.commit()
+    mark_system_initialized(db, initialized_by=user.id, allow_demo_data=True)
 
 
 def ensure_mcp_guest_user(db: Session) -> User:
@@ -725,5 +732,54 @@ def ensure_runtime_schema(db: Session) -> None:
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_integration ON oauth_refresh_tokens(integration_id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_user ON oauth_refresh_tokens(user_id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_expires ON oauth_refresh_tokens(expires_at)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS system_settings (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                initialized BOOLEAN NOT NULL DEFAULT FALSE,
+                initialized_at TIMESTAMPTZ,
+                initialized_by UUID REFERENCES users(id),
+                product_name VARCHAR(120) NOT NULL DEFAULT 'CloudDoc',
+                allow_public_documents BOOLEAN NOT NULL DEFAULT TRUE,
+                allow_share_links BOOLEAN NOT NULL DEFAULT TRUE,
+                share_password_required_by_default BOOLEAN NOT NULL DEFAULT FALSE,
+                allow_guest_public_read BOOLEAN NOT NULL DEFAULT TRUE,
+                allow_user_pat BOOLEAN NOT NULL DEFAULT TRUE,
+                allow_open_api BOOLEAN NOT NULL DEFAULT TRUE,
+                allow_demo_data BOOLEAN NOT NULL DEFAULT FALSE,
+                schema_version INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_system_settings_initialized ON system_settings(initialized)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_system_settings_initialized_by ON system_settings(initialized_by)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS system_audit_logs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                actor_type VARCHAR(32) NOT NULL DEFAULT 'system',
+                actor_id UUID REFERENCES users(id),
+                action VARCHAR(128) NOT NULL,
+                target_type VARCHAR(64),
+                target_id VARCHAR(128),
+                payload JSONB,
+                ip_address VARCHAR(64),
+                user_agent VARCHAR(512),
+                reason TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_system_audit_actor_type ON system_audit_logs(actor_type)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_system_audit_actor ON system_audit_logs(actor_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_system_audit_action ON system_audit_logs(action)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_system_audit_target ON system_audit_logs(target_id)"))
     db.commit()
     ensure_mcp_guest_user(db)

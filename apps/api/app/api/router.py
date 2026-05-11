@@ -15,6 +15,7 @@ from app.api.routes.preferences import router as preferences_router
 from app.api.routes.sessions import router as sessions_router
 from app.api.routes.share import router as share_router
 from app.api.routes.spaces import router as spaces_router
+from app.api.routes.system import router as system_router
 from app.api.routes.templates import router as templates_router
 
 api_router = APIRouter()
@@ -33,4 +34,5 @@ api_router.include_router(preferences_router, tags=["preferences"])
 api_router.include_router(sessions_router, tags=["sessions"])
 api_router.include_router(share_router, tags=["share"])
 api_router.include_router(spaces_router, prefix="/spaces", tags=["spaces"])
+api_router.include_router(system_router, tags=["system"])
 api_router.include_router(templates_router, prefix="/templates", tags=["templates"])

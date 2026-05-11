@@ -27,6 +27,7 @@ from app.models.preference import UserPreference
 from app.models.session import UserSession
 from app.models.share import ShareLink
 from app.models.space import Space
+from app.models.system import SystemAuditLog, SystemSettings
 from app.models.template import Template
 from app.models.user import User
 
@@ -62,6 +63,8 @@ __all__ = [
     "UserSession",
     "ShareLink",
     "Space",
+    "SystemAuditLog",
+    "SystemSettings",
     "Template",
     "User",
 ]

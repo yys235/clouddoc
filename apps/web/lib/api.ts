@@ -309,6 +309,83 @@ export type UserPreference = {
   updatedAt: string;
 };
 
+export type BootstrapCheck = {
+  key: string;
+  status: string;
+  message: string;
+};
+
+export type BootstrapStatus = {
+  initialized: boolean;
+  needsSetup: boolean;
+  hasSuperAdmin: boolean;
+  databaseOk: boolean;
+  schemaOk: boolean;
+  uploadsOk: boolean;
+  setupAllowed: boolean;
+  appEnv: string;
+  apiVersion: string;
+  checks: BootstrapCheck[];
+};
+
+export type BootstrapInitializeInput = {
+  setupToken?: string;
+  adminName: string;
+  adminEmail: string;
+  adminPassword: string;
+  organizationName: string;
+  spaceName: string;
+  spaceVisibility: "private" | "organization";
+  allowPublicDocuments: boolean;
+  allowShareLinks: boolean;
+  sharePasswordRequiredByDefault: boolean;
+  allowGuestPublicRead: boolean;
+  allowUserPat: boolean;
+  allowOpenApi: boolean;
+  importDemoData: boolean;
+};
+
+export type BootstrapInitializeResult = {
+  initialized: boolean;
+  adminUserId: string;
+  organizationId: string;
+  spaceId: string;
+  nextUrl: string;
+  initializedAt: string;
+};
+
+export type SystemAuditLog = {
+  id: string;
+  actorType: string;
+  actorId?: string;
+  action: string;
+  targetType?: string;
+  targetId?: string;
+  payload?: Record<string, unknown>;
+  ipAddress?: string;
+  userAgent?: string;
+  createdAt: string;
+};
+
+export type SystemSettingsSummary = {
+  id: string;
+  productName: string;
+  initialized: boolean;
+  initializedAt?: string;
+  initializedBy?: string;
+  initializedByEmail?: string;
+  allowDemoData: boolean;
+  allowPublicDocuments: boolean;
+  allowShareLinks: boolean;
+  sharePasswordRequiredByDefault: boolean;
+  allowGuestPublicRead: boolean;
+  allowUserPat: boolean;
+  allowOpenApi: boolean;
+  setupEnabled: boolean;
+  appEnv: string;
+  recentAuditLogs: SystemAuditLog[];
+};
+
 export type IntegrationTokenSummary = {
   id: string;
   integrationId?: string;
@@ -783,6 +860,163 @@ function buildDocumentIntegrationAccess(item: {
     permissionLevel: item.permission_level,
     canWrite: Boolean(item.can_write),
     recentAccessAt: item.recent_access_at ?? undefined,
+  };
+}
+
+function buildBootstrapStatus(item: {
+  initialized: boolean;
+  needs_setup: boolean;
+  has_super_admin: boolean;
+  database_ok: boolean;
+  schema_ok: boolean;
+  uploads_ok: boolean;
+  setup_allowed: boolean;
+  app_env: string;
+  api_version: string;
+  checks: BootstrapCheck[];
+}): BootstrapStatus {
+  return {
+    initialized: Boolean(item.initialized),
+    needsSetup: Boolean(item.needs_setup),
+    hasSuperAdmin: Boolean(item.has_super_admin),
+    databaseOk: Boolean(item.database_ok),
+    schemaOk: Boolean(item.schema_ok),
+    uploadsOk: Boolean(item.uploads_ok),
+    setupAllowed: Boolean(item.setup_allowed),
+    appEnv: item.app_env,
+    apiVersion: item.api_version,
+    checks: item.checks ?? [],
+  };
+}
+
+function buildSystemSettingsSummary(item: {
+  id: string;
+  product_name: string;
+  initialized: boolean;
+  initialized_at?: string | null;
+  initialized_by?: string | null;
+  initialized_by_email?: string | null;
+  allow_demo_data: boolean;
+  allow_public_documents: boolean;
+  allow_share_links: boolean;
+  share_password_required_by_default: boolean;
+  allow_guest_public_read: boolean;
+  allow_user_pat: boolean;
+  allow_open_api: boolean;
+  setup_enabled: boolean;
+  app_env: string;
+  recent_audit_logs?: Array<{
+    id: string;
+    actor_type: string;
+    actor_id?: string | null;
+    action: string;
+    target_type?: string | null;
+    target_id?: string | null;
+    payload?: Record<string, unknown> | null;
+    ip_address?: string | null;
+    user_agent?: string | null;
+    created_at: string;
+  }>;
+}): SystemSettingsSummary {
+  return {
+    id: item.id,
+    productName: item.product_name,
+    initialized: Boolean(item.initialized),
+    initializedAt: item.initialized_at ?? undefined,
+    initializedBy: item.initialized_by ?? undefined,
+    initializedByEmail: item.initialized_by_email ?? undefined,
+    allowDemoData: Boolean(item.allow_demo_data),
+    allowPublicDocuments: Boolean(item.allow_public_documents),
+    allowShareLinks: Boolean(item.allow_share_links),
+    sharePasswordRequiredByDefault: Boolean(item.share_password_required_by_default),
+    allowGuestPublicRead: Boolean(item.allow_guest_public_read),
+    allowUserPat: Boolean(item.allow_user_pat),
+    allowOpenApi: Boolean(item.allow_open_api),
+    setupEnabled: Boolean(item.setup_enabled),
+    appEnv: item.app_env,
+    recentAuditLogs: (item.recent_audit_logs ?? []).map((log) => ({
+      id: log.id,
+      actorType: log.actor_type,
+      actorId: log.actor_id ?? undefined,
+      action: log.action,
+      targetType: log.target_type ?? undefined,
+      targetId: log.target_id ?? undefined,
+      payload: log.payload ?? undefined,
+      ipAddress: log.ip_address ?? undefined,
+      userAgent: log.user_agent ?? undefined,
+      createdAt: log.created_at,
+    })),
+  };
+}
+
+export async function fetchBootstrapStatus(): Promise<ApiItemResult<BootstrapStatus>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/system/bootstrap/status`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      return { data: null, unavailable: true };
+    }
+    return { data: buildBootstrapStatus(await response.json()), unavailable: false };
+  } catch {
+    return { data: null, unavailable: true };
+  }
+}
+
+export async function fetchSystemSettingsSummary(): Promise<ApiItemResult<SystemSettingsSummary>> {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/system/settings`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (response.status === 401 || response.status === 403) {
+      return { data: null, unavailable: false };
+    }
+    if (!response.ok) {
+      return { data: null, unavailable: true };
+    }
+    return { data: buildSystemSettingsSummary(await response.json()), unavailable: false };
+  } catch {
+    return { data: null, unavailable: true };
+  }
+}
+
+export async function initializeSystem(input: BootstrapInitializeInput): Promise<BootstrapInitializeResult> {
+  const response = await apiFetch(`${API_BASE_URL}/system/bootstrap/initialize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      setup_token: input.setupToken || null,
+      admin_name: input.adminName,
+      admin_email: input.adminEmail,
+      admin_password: input.adminPassword,
+      organization_name: input.organizationName,
+      space_name: input.spaceName,
+      space_visibility: input.spaceVisibility,
+      allow_public_documents: input.allowPublicDocuments,
+      allow_share_links: input.allowShareLinks,
+      share_password_required_by_default: input.sharePasswordRequiredByDefault,
+      allow_guest_public_read: input.allowGuestPublicRead,
+      allow_user_pat: input.allowUserPat,
+      allow_open_api: input.allowOpenApi,
+      import_demo_data: input.importDemoData,
+    }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const detail = typeof payload?.detail === "string" ? payload.detail : "Failed to initialize system";
+    throw new Error(detail);
+  }
+  const payload = await response.json();
+  return {
+    initialized: Boolean(payload.initialized),
+    adminUserId: payload.admin_user_id,
+    organizationId: payload.organization_id,
+    spaceId: payload.space_id,
+    nextUrl: payload.next_url,
+    initializedAt: payload.initialized_at,
   };
 }
 

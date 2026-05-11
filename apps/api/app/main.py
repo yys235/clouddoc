@@ -15,6 +15,7 @@ from app.services.document_service import ensure_supported_document_types
 from app.services.folder_service import ensure_default_newdoc_folders
 from app.services.integration_service import retry_due_webhook_deliveries
 from app.services.submission_guard_service import submission_guard
+from app.services.system_service import is_system_initialized
 
 
 @asynccontextmanager
@@ -24,7 +25,8 @@ async def lifespan(_: FastAPI):
     db = SessionLocal()
     try:
         ensure_supported_document_types(db)
-        seed_demo_data(db)
+        if settings.auto_seed_demo or settings.app_env == "development":
+            seed_demo_data(db)
         ensure_default_newdoc_folders(db)
     finally:
         db.close()
@@ -78,6 +80,34 @@ def create_application() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def require_initialized_system(request, call_next):
+        path = request.url.path
+        if (
+            request.method == "OPTIONS"
+            or not path.startswith(settings.api_prefix)
+            or path.startswith(f"{settings.api_prefix}/system/bootstrap")
+            or path.startswith(f"{settings.api_prefix}/share/")
+        ):
+            return await call_next(request)
+
+        db = SessionLocal()
+        try:
+            initialized = is_system_initialized(db)
+        finally:
+            db.close()
+        if not initialized:
+            return JSONResponse(
+                status_code=423,
+                content={
+                    "detail": {
+                        "code": "system_not_initialized",
+                        "message": "CloudDoc has not been initialized. Open /setup to complete first deployment setup.",
+                    }
+                },
+            )
+        return await call_next(request)
 
     @app.middleware("http")
     async def prevent_duplicate_submissions(request, call_next):
