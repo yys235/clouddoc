@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { AppShell } from "@/components/layout/app-shell";
-import { DocumentPage } from "@/components/editor/document-page";
+import { DocumentPage, OfflineDocumentDraftFallback } from "@/components/editor/document-page";
 import { fetchCurrentOrganization, fetchDocument, fetchDocumentAncestors, fetchOrganizationMembers, fetchSpaces } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +25,13 @@ export default async function DocumentDetailPage({
   const currentSpaceName = document ? spaces.find((space) => space.id === document.spaceId)?.name ?? "空间" : "空间";
 
   if (!document) {
+    if (unavailable) {
+      return (
+        <AppShell>
+          <OfflineDocumentDraftFallback docId={docId} />
+        </AppShell>
+      );
+    }
     return (
       <AppShell>
         <div className="mx-auto max-w-4xl p-5">

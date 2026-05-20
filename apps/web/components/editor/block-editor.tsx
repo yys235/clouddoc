@@ -42,6 +42,7 @@ import {
   threadIdAtOffset,
 } from "@/components/editor/text-block-selection-utils";
 import { CommentSelectionToolbar } from "@/components/editor/comment-selection-toolbar";
+import { createClientId } from "@/lib/client-id";
 
 export type LinkCardView = "link" | "title" | "card" | "preview";
 
@@ -227,7 +228,7 @@ function resizeTextarea(textarea: HTMLTextAreaElement | null) {
 
 function createBlock(type: EditableBlockType, text = "", options?: { headingLevel?: number; meta?: LinkCardMeta }) {
   return {
-    id: crypto.randomUUID(),
+    id: createClientId(),
     type,
     text,
     headingLevel: type === "heading" ? sanitizeHeadingLevel(options?.headingLevel ?? 1) : undefined,
@@ -296,6 +297,37 @@ function htmlNodeToText(node: Node): string {
     .join("");
 }
 
+const PASTE_BLOCK_TAGS = new Set([
+  "address",
+  "article",
+  "aside",
+  "blockquote",
+  "div",
+  "figcaption",
+  "figure",
+  "footer",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "hr",
+  "li",
+  "main",
+  "ol",
+  "p",
+  "pre",
+  "section",
+  "table",
+  "ul",
+]);
+
+function hasNestedPasteBlock(element: HTMLElement) {
+  return Array.from(element.children).some((child) => PASTE_BLOCK_TAGS.has(child.tagName.toLowerCase()));
+}
+
 function parsePastedHtmlToBlocks(html: string) {
   const parser = new DOMParser();
   const parsed = parser.parseFromString(html, "text/html");
@@ -309,28 +341,28 @@ function parsePastedHtmlToBlocks(html: string) {
     blocks.push(block);
   };
 
-  const elementToBlock = (element: HTMLElement): EditableBlock | null => {
+  const elementToBlocks = (element: HTMLElement): EditableBlock[] => {
     const tag = element.tagName.toLowerCase();
 
     if (/^h[1-6]$/.test(tag)) {
-      return createBlock("heading", htmlNodeToText(element).trim(), {
+      return [createBlock("heading", htmlNodeToText(element).trim(), {
         headingLevel: Number(tag.slice(1)),
-      });
+      })];
     }
 
     if (tag === "blockquote") {
-      return createBlock("quote", htmlNodeToText(element).trim());
+      return [createBlock("quote", htmlNodeToText(element).trim())];
     }
 
     if (tag === "hr") {
-      return createBlock("divider", "");
+      return [createBlock("divider", "")];
     }
 
     if (tag === "ol") {
       const lines = Array.from(element.querySelectorAll(":scope > li"))
         .map((item) => htmlNodeToText(item).trim())
         .filter((line) => line.length > 0);
-      return createBlock("ordered_list", lines.join("\n"));
+      return [createBlock("ordered_list", lines.join("\n"))];
     }
 
     if (tag === "ul") {
@@ -348,27 +380,39 @@ function parsePastedHtmlToBlocks(html: string) {
         .filter((line) => line.length > 0);
 
       if (lines.some((line) => /^\[(x|X| )\]\s/.test(line))) {
-        return createBlock("check_list", lines.join("\n"));
+        return [createBlock("check_list", lines.join("\n"))];
       }
 
-      return createBlock("bullet_list", lines.join("\n"));
+      return [createBlock("bullet_list", lines.join("\n"))];
     }
 
     if (tag === "pre") {
       const code = element.querySelector("code");
-      return createBlock("code_block", (code?.textContent ?? element.textContent ?? "").replace(/\r\n/g, "\n"));
+      return [createBlock("code_block", (code?.textContent ?? element.textContent ?? "").replace(/\r\n/g, "\n"))];
     }
 
     if (tag === "p" || tag === "div") {
-      return createBlock("paragraph", htmlNodeToText(element).replace(/\u00a0/g, " "));
+      if (hasNestedPasteBlock(element)) {
+        return Array.from(element.children).flatMap((child) => elementToBlocks(child as HTMLElement));
+      }
+      const text = htmlNodeToText(element).replace(/\u00a0/g, " ");
+      if (text.includes("\n")) {
+        return parsePastedTextToBlocks(text);
+      }
+      return [createBlock("paragraph", text)];
     }
 
-    return null;
+    if (hasNestedPasteBlock(element)) {
+      return Array.from(element.children).flatMap((child) => elementToBlocks(child as HTMLElement));
+    }
+
+    const text = htmlNodeToText(element).replace(/\u00a0/g, " ").trim();
+    return text ? [createBlock("paragraph", text)] : [];
   };
 
   const topLevelElements = Array.from(body.children) as HTMLElement[];
   for (const element of topLevelElements) {
-    pushBlock(elementToBlock(element));
+    elementToBlocks(element).forEach(pushBlock);
   }
 
   if (blocks.length === 0) {
@@ -988,7 +1032,7 @@ export function BlockEditor({
   const insertBlock = (index: number, type: EditableBlockType = "paragraph") => {
     const nextBlocks = [...blocks];
     nextBlocks.splice(index, 0, {
-      id: crypto.randomUUID(),
+      id: createClientId(),
       type,
       text: defaultTextByType(type),
       headingLevel: type === "heading" ? 1 : undefined,
@@ -1002,7 +1046,7 @@ export function BlockEditor({
     onChange(
       nextBlocks.length > 0
         ? nextBlocks
-        : [{ id: crypto.randomUUID(), type: "paragraph", text: "" }],
+        : [{ id: createClientId(), type: "paragraph", text: "" }],
     );
   };
 
@@ -1040,7 +1084,7 @@ export function BlockEditor({
     const nextBlocks = [...blocks];
     nextBlocks.splice(index + 1, 0, {
       ...target,
-      id: crypto.randomUUID(),
+      id: createClientId(),
       meta: target.meta ? { ...target.meta } : undefined,
     });
     onChange(nextBlocks);
@@ -1071,7 +1115,7 @@ export function BlockEditor({
 
     const before = current.text.slice(0, selectionStart);
     const after = current.text.slice(selectionEnd);
-    const nextBlockId = crypto.randomUUID();
+    const nextBlockId = createClientId();
     const currentText = before || fallbackSplitText();
     const nextText = after || fallbackSplitText();
 

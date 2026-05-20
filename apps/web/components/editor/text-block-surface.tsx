@@ -141,6 +141,59 @@ export function TextBlockSurface({
   const showsCheckListDecorations = blockType === "check_list";
   const contentStyle = contentPaddingLeft ? { paddingLeft: `${contentPaddingLeft}px`, ...minHeightStyle } : minHeightStyle;
   const gutterStyle = contentPaddingLeft ? { width: `${Math.max(24, contentPaddingLeft - 4)}px` } : undefined;
+  const selectableSegments = commentRanges.length > 0
+    ? commentSegmentsForText(text, commentRanges)
+    : [{ text, highlighted: false, active: false }];
+
+  if (readOnly) {
+    return (
+      <div className="relative">
+        {showsListDecorations ? (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 left-0 flex flex-col text-right text-sm leading-8 text-slate-400"
+            style={gutterStyle}
+          >
+            {lines.map((_, index) => (
+              <span key={`${blockId}-marker-${index}`} className="block h-8">
+                {blockType === "ordered_list" ? `${index + 1}.` : "•"}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {showsCheckListDecorations ? (
+          <div aria-hidden="true" className="absolute inset-y-0 left-0 flex flex-col" style={gutterStyle}>
+            {(checkListLines ?? []).map((line, index) => (
+              <span key={`${blockId}-check-${index}`} className="flex h-8 items-center justify-center text-sm">
+                <span
+                  className={`flex h-4 w-4 items-center justify-center rounded border text-[11px] leading-none ${
+                    line.checked ? "border-sky-500 bg-sky-500 text-white" : "border-slate-300 bg-white text-transparent"
+                  }`}
+                >
+                  ✓
+                </span>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div
+          data-block-id={blockId}
+          aria-readonly="true"
+          className={`relative block w-full whitespace-pre-wrap break-words ${contentPaddingClassName} ${textClassName} cursor-text select-text`}
+          style={contentStyle}
+        >
+          {selectableSegments.map((segment, segmentIndex) => (
+            <span
+              key={`${blockId}-readonly-segment-${segmentIndex}`}
+              className={segment.highlighted ? (segment.active ? "rounded-sm bg-amber-200/80" : "rounded-sm bg-amber-100/80") : ""}
+            >
+              {segment.text || (segmentIndex === 0 ? " " : "")}
+            </span>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative">

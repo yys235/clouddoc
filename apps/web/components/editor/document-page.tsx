@@ -31,6 +31,12 @@ import {
   updateDocumentContent,
 } from "@/lib/api";
 import { subscribeCloudDocEvents } from "@/lib/event-stream";
+import { createClientId } from "@/lib/client-id";
+import {
+  clearOfflineDocumentDraft,
+  loadOfflineDocumentDraft,
+  saveOfflineDocumentDraft,
+} from "@/lib/offline-document-drafts";
 
 function EyeIcon({ active = false }: { active?: boolean }) {
   return (
@@ -195,7 +201,7 @@ function nodeText(nodes: { text?: string; content?: { text?: string }[] }[] | un
 }
 
 function blockId() {
-  return crypto.randomUUID();
+  return createClientId();
 }
 
 function blockHasMeaningfulContent(block: EditableBlock) {
@@ -741,6 +747,73 @@ export function DocumentPage(props: DocumentPageProps) {
   return <DocumentTextPage {...props} />;
 }
 
+export function OfflineDocumentDraftFallback({ docId }: { docId: string }) {
+  const [document, setDocument] = useState<DocumentViewModel | null>(null);
+
+  useEffect(() => {
+    const draft = loadOfflineDocumentDraft(docId);
+    if (!draft) {
+      setDocument(null);
+      return;
+    }
+    const content = Array.isArray(draft.contentJson.content)
+      ? draft.contentJson.content as DocumentViewModel["content"]
+      : [];
+    setDocument({
+      id: docId,
+      title: draft.title || "本地未同步草稿",
+      ownerId: "local",
+      documentType: draft.documentType,
+      visibility: "private",
+      updatedAt: new Intl.DateTimeFormat("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date(draft.updatedAt)),
+      saveStatus: "本地未同步",
+      isFavorited: false,
+      canEdit: true,
+      canManage: false,
+      canComment: false,
+      canShare: false,
+      canCopy: true,
+      canExport: false,
+      canDelete: false,
+      canTransferOwner: false,
+      effectiveRole: "owner",
+      isSharedView: false,
+      outline: [],
+      content,
+      contentJson: draft.contentJson,
+      summary: "后端暂不可用，当前显示本地未同步草稿。",
+    });
+  }, [docId]);
+
+  if (!document) {
+    return (
+      <div className="mx-auto max-w-4xl p-5">
+        <section className="bg-white p-6 shadow-panel">
+          <div className="text-sm font-medium text-accent">Offline Draft</div>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">后端暂不可用，且未找到本地草稿</h1>
+          <p className="mt-3 text-sm leading-6 text-slate-600">
+            当前浏览器没有这个文档的本地未同步版本。请检查 API 服务恢复后刷新页面。
+          </p>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <DocumentPage
+      document={document}
+      mentionCandidates={[]}
+      breadcrumbs={[]}
+      spaceName="本地草稿"
+    />
+  );
+}
+
 function DocumentTextPage({
   document,
   mentionCandidates,
@@ -761,6 +834,7 @@ function DocumentTextPage({
   const [modeLoadedForDocId, setModeLoadedForDocId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [saveRetryToken, setSaveRetryToken] = useState(0);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
@@ -807,11 +881,22 @@ function DocumentTextPage({
 
   useEffect(() => {
     setCurrentDocument(document);
-    setDraftTitle(document.title);
-    setDraftBlocks(blocksFromDocument(document));
+    const offlineDraft = document.documentType === "doc" && document.canEdit && !document.isSharedView
+      ? loadOfflineDocumentDraft(document.id)
+      : null;
+    const draftDocument = offlineDraft && offlineDraft.documentType === document.documentType
+      ? {
+          ...document,
+          title: offlineDraft.title,
+          contentJson: offlineDraft.contentJson,
+          content: Array.isArray(offlineDraft.contentJson.content) ? offlineDraft.contentJson.content as DocumentViewModel["content"] : [],
+        }
+      : document;
+    setDraftTitle(draftDocument.title);
+    setDraftBlocks(blocksFromDocument(draftDocument));
     setDraftHistory({ past: [], future: [] });
     setModeLoadedForDocId(null);
-    setNotice("");
+    setNotice(offlineDraft ? "已恢复本地未同步草稿，后端可用后会继续上传。" : "");
     setShowDeleteConfirm(false);
     setShowShareDialog(false);
     setIsModeMenuOpen(false);
@@ -1122,6 +1207,21 @@ function DocumentTextPage({
   );
   const isDirty = canEditDocument && draftSignature != savedSignature;
 
+  const draftContentJson = useMemo(
+    () => contentFromBlocks(draftTitle.trim(), draftBlocks),
+    [draftBlocks, draftTitle],
+  );
+  const draftPlainText = useMemo(
+    () =>
+      [
+        draftTitle,
+        ...draftBlocks.map((block) => block.text.trim()).filter(Boolean),
+      ]
+        .join("\n")
+        .trim(),
+    [draftBlocks, draftTitle],
+  );
+
   const latestRef = useRef({
     draftTitle,
     draftBlocks,
@@ -1136,6 +1236,31 @@ function DocumentTextPage({
     savedSignature,
     isDirty,
   };
+
+  useEffect(() => {
+    if (!canEditDocument || isPdfDocument || !isDirty) {
+      return;
+    }
+    saveOfflineDocumentDraft({
+      docId: currentDocument.id,
+      documentType: currentDocument.documentType,
+      title: draftTitle.trim() || "未命名文档",
+      contentJson: draftContentJson,
+      plainText: draftPlainText,
+      signature: draftSignature,
+      updatedAt: Date.now(),
+    });
+  }, [
+    canEditDocument,
+    currentDocument.documentType,
+    currentDocument.id,
+    draftContentJson,
+    draftPlainText,
+    draftSignature,
+    draftTitle,
+    isDirty,
+    isPdfDocument,
+  ]);
 
   const captureDraftSnapshot = () => ({
     title: latestRef.current.draftTitle,
@@ -1409,6 +1534,7 @@ function DocumentTextPage({
     const promise = (async () => {
       try {
         const contentJson = contentFromBlocks(snapshot.draftTitle.trim(), snapshot.draftBlocks);
+        const snapshotSignature = snapshot.draftSignature;
         const nextDocument = await updateDocumentContent({
           docId: currentDocument.id,
           contentJson,
@@ -1421,6 +1547,7 @@ function DocumentTextPage({
         });
 
         setCurrentDocument(nextDocument);
+        clearOfflineDocumentDraft(currentDocument.id, snapshotSignature);
 
         if (latestRef.current.draftSignature === snapshot.draftSignature) {
           // Keep the in-flight editor tree and stable block ids after autosave.
@@ -1432,7 +1559,8 @@ function DocumentTextPage({
         setNotice(source === "auto" ? "已自动保存" : "已保存到服务器");
         return true;
       } catch {
-        setNotice("保存失败");
+        setNotice("后端暂不可用，已先保存到本地，恢复后会继续上传。");
+        window.setTimeout(() => setSaveRetryToken((value) => value + 1), 5000);
         return false;
       } finally {
         savePromiseRef.current = null;
@@ -1454,7 +1582,7 @@ function DocumentTextPage({
     }, 1200);
 
     return () => window.clearTimeout(timer);
-  }, [canEditDocument, draftSignature, isDirty, isEditing, isPdfDocument]);
+  }, [canEditDocument, draftSignature, isDirty, isEditing, isPdfDocument, saveRetryToken]);
 
   const flushPendingChanges = async () => {
     while (true) {

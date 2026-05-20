@@ -2806,7 +2806,16 @@ export async function updateDocumentContent(input: {
   });
 
   if (!response.ok) {
-    throw new Error("Failed to save document");
+    let message = "Failed to save document";
+    try {
+      const payload = await response.json();
+      if (payload?.detail && typeof payload.detail === "string") {
+        message = payload.detail;
+      }
+    } catch {
+      // Keep the generic message when the backend did not return JSON.
+    }
+    throw new Error(message);
   }
 
   const data = await response.json();
