@@ -64,7 +64,13 @@ type BoardTableCell = {
     color?: string;
     fontSize?: number;
     fontWeight?: number;
+    fontStyle?: "normal" | "italic";
+    textDecoration?: "none" | "underline" | "line-through" | "underline line-through";
     textAlign?: "left" | "center" | "right";
+    verticalAlign?: "top" | "middle" | "bottom";
+    textRole?: "paragraph" | "ordered_list" | "bullet_list" | "quote";
+    linkUrl?: string;
+    textRotation?: number;
   };
 };
 type BoardTableColumn = {
@@ -116,6 +122,23 @@ type BoardIconName =
   | "more"
   | "share"
   | "edit";
+type TextStyleIconName =
+  | "paragraph"
+  | "orderedList"
+  | "bulletList"
+  | "quote"
+  | "bold"
+  | "strike"
+  | "underline"
+  | "italic"
+  | "link"
+  | "alignLeft"
+  | "alignCenter"
+  | "alignRight"
+  | "verticalTop"
+  | "verticalMiddle"
+  | "verticalBottom"
+  | "rotateText";
 
 type BoardNode = {
   id: string;
@@ -134,8 +157,14 @@ type BoardNode = {
     strokeDasharray?: string;
     fontSize: number;
     fontWeight?: number;
+    fontStyle?: "normal" | "italic";
+    textDecoration?: "none" | "underline" | "line-through" | "underline line-through";
     color: string;
     textAlign?: "left" | "center" | "right";
+    verticalAlign?: "top" | "middle" | "bottom";
+    textRole?: "paragraph" | "ordered_list" | "bullet_list" | "quote";
+    linkUrl?: string;
+    textRotation?: number;
   };
   zIndex: number;
 };
@@ -181,8 +210,14 @@ const DEFAULT_NODE_STYLE = {
   strokeDasharray: "",
   fontSize: 14,
   fontWeight: 400,
+  fontStyle: "normal" as const,
+  textDecoration: "none" as const,
   color: "#1f2937",
   textAlign: "center" as const,
+  verticalAlign: "middle" as const,
+  textRole: "paragraph" as const,
+  linkUrl: "",
+  textRotation: 0,
 };
 const DEFAULT_NODE_FILL_OPACITY = 0.74;
 const LEGACY_DEFAULT_NODE_FILL = "#e8f0ff";
@@ -361,6 +396,100 @@ function BoardIcon({ name, className = "h-[18px] w-[18px]" }: { name: BoardIconN
       {name === "more" ? <path {...common} d="M6 12h.01M12 12h.01M18 12h.01" /> : null}
       {name === "share" ? <path {...common} d="M8 12l8-5M8 12l8 5M7 14.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM17 9.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM17 19.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" /> : null}
       {name === "edit" ? <path {...common} d="M5 19h14M7 15l8.5-8.5a2.1 2.1 0 013 3L10 18H7v-3z" /> : null}
+    </svg>
+  );
+}
+
+function TextStyleIcon({ name, className = "h-[18px] w-[18px]" }: { name: TextStyleIconName; className?: string }) {
+  const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
+      {name === "paragraph" ? (
+        <>
+          <path d="M6 6h12" {...common} />
+          <path d="M12 6v12" {...common} />
+          <path d="M8 18h8" {...common} />
+        </>
+      ) : null}
+      {name === "orderedList" ? (
+        <>
+          <path d="M10 7h9M10 12h9M10 17h9" {...common} />
+          <path d="M5.5 6.2v2.7M4.8 15.3h2.1c.4 0 .7.3.7.7 0 .3-.1.5-.3.7l-2.4 2.1h2.7" {...common} />
+          <path d="M4.8 11.1c.2-.7.7-1.1 1.4-1.1.8 0 1.4.5 1.4 1.2 0 .5-.3.9-.8 1.2l-1.7 1h2.6" {...common} />
+        </>
+      ) : null}
+      {name === "bulletList" ? (
+        <>
+          <path d="M10 7h9M10 12h9M10 17h9" {...common} />
+          <circle cx="5.5" cy="7" r="1.1" fill="currentColor" />
+          <circle cx="5.5" cy="12" r="1.1" fill="currentColor" />
+          <circle cx="5.5" cy="17" r="1.1" fill="currentColor" />
+        </>
+      ) : null}
+      {name === "quote" ? (
+        <>
+          <path d="M8.5 8.5c-1.7 1.2-2.6 2.6-2.6 4.6v2.4h4.3v-4.2H8c.1-1 .6-1.8 1.7-2.6L8.5 8.5z" fill="currentColor" />
+          <path d="M16.1 8.5c-1.7 1.2-2.6 2.6-2.6 4.6v2.4h4.3v-4.2h-2.2c.1-1 .6-1.8 1.7-2.6l-1.2-.2z" fill="currentColor" />
+        </>
+      ) : null}
+      {name === "bold" ? (
+        <path d="M8 5.5h5.1c2 0 3.3 1.1 3.3 2.8 0 1.2-.7 2.1-1.8 2.5 1.4.3 2.3 1.4 2.3 2.8 0 1.9-1.5 3-3.7 3H8v-11zM10.4 10h2.4c.8 0 1.3-.4 1.3-1.1s-.5-1.1-1.3-1.1h-2.4V10zm0 4.6h2.7c.9 0 1.5-.4 1.5-1.2s-.6-1.2-1.5-1.2h-2.7v2.4z" fill="currentColor" />
+      ) : null}
+      {name === "strike" ? (
+        <>
+          <path d="M8.5 17c.9.6 2 .9 3.4.9 2.7 0 4.4-1.2 4.4-3.1 0-1.5-.9-2.3-3-2.8l-2.3-.5c-1.6-.4-2.4-1.1-2.4-2.5 0-1.9 1.6-3.1 4.1-3.1 1.3 0 2.5.3 3.4.9" {...common} />
+          <path d="M5 12h14" {...common} />
+        </>
+      ) : null}
+      {name === "underline" ? (
+        <>
+          <path d="M7.5 5.5v5.8c0 2.8 1.7 4.5 4.5 4.5s4.5-1.7 4.5-4.5V5.5" {...common} />
+          <path d="M6.5 19h11" {...common} />
+        </>
+      ) : null}
+      {name === "italic" ? (
+        <>
+          <path d="M11 6h6M7 18h6M14 6l-4 12" {...common} />
+        </>
+      ) : null}
+      {name === "link" ? (
+        <>
+          <path d="M9.9 14.1l4.2-4.2" {...common} />
+          <path d="M10.8 7.2l.9-.9a3.2 3.2 0 114.5 4.5l-1.4 1.4" {...common} />
+          <path d="M13.2 16.8l-.9.9a3.2 3.2 0 11-4.5-4.5l1.4-1.4" {...common} />
+        </>
+      ) : null}
+      {name === "alignLeft" ? (
+        <path d="M6 7h12M6 12h8M6 17h12" {...common} />
+      ) : null}
+      {name === "alignCenter" ? (
+        <path d="M6 7h12M8.5 12h7M6 17h12" {...common} />
+      ) : null}
+      {name === "alignRight" ? (
+        <path d="M6 7h12M10 12h8M6 17h12" {...common} />
+      ) : null}
+      {name === "verticalTop" ? (
+        <>
+          <path d="M6 6h12M12 9v9M9 12l3-3 3 3" {...common} />
+        </>
+      ) : null}
+      {name === "verticalMiddle" ? (
+        <>
+          <path d="M6 12h12M12 5v5M9.5 8l2.5 2 2.5-2M12 19v-5M9.5 16l2.5-2 2.5 2" {...common} />
+        </>
+      ) : null}
+      {name === "verticalBottom" ? (
+        <>
+          <path d="M6 18h12M12 6v9M9 12l3 3 3-3" {...common} />
+        </>
+      ) : null}
+      {name === "rotateText" ? (
+        <>
+          <path d="M8 8.5h8M12 8.5V16M9.5 16h5" {...common} />
+          <path d="M6.4 14.3A6.4 6.4 0 1113 18.4" {...common} />
+          <path d="M6.2 11.1l.2 3.2 3-.8" {...common} />
+        </>
+      ) : null}
     </svg>
   );
 }
@@ -553,7 +682,13 @@ function normalizeBoardTableCellStyle(raw: unknown): BoardTableCell["style"] | u
   if (typeof style.color === "string") normalized.color = style.color;
   if (typeof style.fontSize === "number" && Number.isFinite(style.fontSize)) normalized.fontSize = Math.max(10, Math.min(48, style.fontSize));
   if (typeof style.fontWeight === "number" && Number.isFinite(style.fontWeight)) normalized.fontWeight = style.fontWeight >= 600 ? 600 : 400;
+  if (["normal", "italic"].includes(String(style.fontStyle))) normalized.fontStyle = style.fontStyle as NonNullable<BoardTableCell["style"]>["fontStyle"];
+  if (["none", "underline", "line-through", "underline line-through"].includes(String(style.textDecoration))) normalized.textDecoration = style.textDecoration as NonNullable<BoardTableCell["style"]>["textDecoration"];
   if (["left", "center", "right"].includes(String(style.textAlign))) normalized.textAlign = style.textAlign as NonNullable<BoardTableCell["style"]>["textAlign"];
+  if (["top", "middle", "bottom"].includes(String(style.verticalAlign))) normalized.verticalAlign = style.verticalAlign as NonNullable<BoardTableCell["style"]>["verticalAlign"];
+  if (["paragraph", "ordered_list", "bullet_list", "quote"].includes(String(style.textRole))) normalized.textRole = style.textRole as NonNullable<BoardTableCell["style"]>["textRole"];
+  if (typeof style.linkUrl === "string") normalized.linkUrl = style.linkUrl;
+  if (typeof style.textRotation === "number" && Number.isFinite(style.textRotation)) normalized.textRotation = ((Math.round(style.textRotation / 90) * 90) % 360 + 360) % 360;
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
@@ -653,6 +788,37 @@ function fitNodeHeightToText(node: BoardNode, text = node.text) {
   return nextHeight === node.height && text === node.text ? node : { ...node, text, height: nextHeight };
 }
 
+function toggleTextDecorationValue(current: BoardNode["style"]["textDecoration"] | undefined, decoration: "underline" | "line-through") {
+  const values = new Set(String(current || "none").split(/\s+/).filter((value) => value && value !== "none"));
+  if (values.has(decoration)) {
+    values.delete(decoration);
+  } else {
+    values.add(decoration);
+  }
+  if (values.size === 0) return "none" as const;
+  const ordered = ["underline", "line-through"].filter((value) => values.has(value));
+  return ordered.join(" ") as NonNullable<BoardNode["style"]["textDecoration"]>;
+}
+
+function textDecorationHas(current: BoardNode["style"]["textDecoration"] | undefined, decoration: "underline" | "line-through") {
+  return String(current || "none").split(/\s+/).includes(decoration);
+}
+
+function normalizeLinkUrlInput(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
+function displayLinesForTextRole(text: string, role: BoardNode["style"]["textRole"] | undefined) {
+  const lines = text.split("\n");
+  if (role === "ordered_list") return lines.map((line, index) => `${index + 1}. ${line}`);
+  if (role === "bullet_list") return lines.map((line) => `• ${line}`);
+  if (role === "quote") return lines.map((line) => `“ ${line}`);
+  return lines;
+}
+
 function normalizeWaypoints(raw: unknown): BoardWaypoint[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((item) => {
@@ -701,8 +867,14 @@ function normalizeBoardState(raw: Record<string, unknown>): BoardState {
           strokeDasharray: String(style.strokeDasharray || ""),
           fontSize: Number(style.fontSize ?? DEFAULT_NODE_STYLE.fontSize) || DEFAULT_NODE_STYLE.fontSize,
           fontWeight: Number(style.fontWeight ?? DEFAULT_NODE_STYLE.fontWeight) || DEFAULT_NODE_STYLE.fontWeight,
+          fontStyle: ["normal", "italic"].includes(String(style.fontStyle)) ? style.fontStyle as BoardNode["style"]["fontStyle"] : DEFAULT_NODE_STYLE.fontStyle,
+          textDecoration: ["none", "underline", "line-through", "underline line-through"].includes(String(style.textDecoration)) ? style.textDecoration as BoardNode["style"]["textDecoration"] : DEFAULT_NODE_STYLE.textDecoration,
           color: String(style.color || DEFAULT_NODE_STYLE.color),
           textAlign: ["left", "center", "right"].includes(String(style.textAlign)) ? style.textAlign as BoardNode["style"]["textAlign"] : "center",
+          verticalAlign: ["top", "middle", "bottom"].includes(String(style.verticalAlign)) ? style.verticalAlign as BoardNode["style"]["verticalAlign"] : DEFAULT_NODE_STYLE.verticalAlign,
+          textRole: ["paragraph", "ordered_list", "bullet_list", "quote"].includes(String(style.textRole)) ? style.textRole as BoardNode["style"]["textRole"] : DEFAULT_NODE_STYLE.textRole,
+          linkUrl: typeof style.linkUrl === "string" ? style.linkUrl : "",
+          textRotation: typeof style.textRotation === "number" && Number.isFinite(style.textRotation) ? ((Math.round(style.textRotation / 90) * 90) % 360 + 360) % 360 : 0,
         },
         zIndex: Number(node.zIndex ?? 1) || 1,
       };
@@ -2601,6 +2773,20 @@ export function BoardDocumentPage({
     return selectedNode?.style.textAlign ?? "center";
   };
 
+  const selectedFontWeight = () => {
+    if (selectedNode?.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title") {
+      return selectedTableCellStyle()?.fontWeight ?? 400;
+    }
+    return selectedNode?.style.fontWeight ?? 400;
+  };
+
+  const selectedTextStyle = () => {
+    if (selectedNode?.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title") {
+      return selectedTableCellStyle() ?? {};
+    }
+    return selectedNode?.style ?? {};
+  };
+
   const updateSelectedTextAlign = (textAlign: "left" | "center" | "right") => {
     if (!selectedNode) return;
     if (selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title") {
@@ -2608,6 +2794,35 @@ export function BoardDocumentPage({
       return;
     }
     updateSelectedStyle({ textAlign });
+  };
+
+  const updateSelectedFontWeight = (fontWeight: number) => {
+    if (!selectedNode) return;
+    if (selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title") {
+      updateSelectedTableCellStyle({ fontWeight });
+      return;
+    }
+    updateSelectedStyle({ fontWeight });
+  };
+
+  const updateSelectedTextStyle = (patch: Partial<BoardNode["style"]>) => {
+    if (!selectedNode) return;
+    if (selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title") {
+      updateSelectedTableCellStyle(patch as NonNullable<BoardTableCell["style"]>);
+      return;
+    }
+    updateSelectedStyle(patch);
+  };
+
+  const toggleSelectedTextDecoration = (decoration: "underline" | "line-through") => {
+    updateSelectedTextStyle({ textDecoration: toggleTextDecorationValue(selectedTextStyle().textDecoration, decoration) });
+  };
+
+  const configureSelectedTextLink = () => {
+    const current = selectedTextStyle().linkUrl || "";
+    const next = window.prompt("输入链接地址，留空则取消链接", current);
+    if (next === null) return;
+    updateSelectedTextStyle({ linkUrl: normalizeLinkUrlInput(next) });
   };
 
   const selectedTableCellText = () => {
@@ -4287,14 +4502,25 @@ export function BoardDocumentPage({
   const toolbarPanelStyle = useMemo(() => {
     const gap = 6;
     const edgePadding = 12;
-    const minPanelHeight = 160;
-    const preferredPanelHeight = activePanel === "line" ? 340 : 240;
+    const minPanelHeight = 96;
+    const preferredPanelHeight =
+      activePanel === "line"
+        ? 340
+        : activePanel === "shape"
+          ? 184
+          : activePanel === "fill" || activePanel === "stroke" || activePanel === "text"
+            ? 136
+            : activePanel === "textStyle"
+              ? 204
+              : activePanel === "more"
+                ? selectedNode?.type === "table" ? 360 : 224
+                : 192;
     const panelWidth = activePanel === "shape"
       ? 224
       : activePanel === "fill" || activePanel === "stroke" || activePanel === "text"
         ? 232
         : activePanel === "textStyle"
-          ? 192
+          ? 178
           : activePanel === "line" || activePanel === "more"
             ? 224
             : 192;
@@ -4312,9 +4538,9 @@ export function BoardDocumentPage({
     const panelHeight = Math.min(preferredPanelHeight, availableSpace);
     const top = shouldOpenAbove
       ? Math.max(edgePadding, toolbarPanelAnchor.top - gap - panelHeight)
-      : Math.min(viewportHeight - edgePadding - minPanelHeight, toolbarPanelAnchor.bottom + gap);
+      : Math.min(viewportHeight - edgePadding - panelHeight, toolbarPanelAnchor.bottom + gap);
     return { position: "fixed" as const, left, top, width: panelWidth, maxHeight: availableSpace };
-  }, [activePanel, toolbarPanelAnchor]);
+  }, [activePanel, selectedNode?.type, toolbarPanelAnchor]);
 
   const renderTableNode = (node: BoardNode, selected: boolean) => {
     const table = node.table ?? createDefaultBoardTableData();
@@ -4487,6 +4713,14 @@ export function BoardDocumentPage({
                 const cellTextColor = cellStyle.color ?? "#1f2329";
                 const cellFontSize = cellStyle.fontSize ?? 13;
                 const cellFontWeight = cellStyle.fontWeight ?? 400;
+                const cellFontStyle = cellStyle.fontStyle ?? "normal";
+                const cellTextDecoration = cellStyle.textDecoration ?? "none";
+                const cellVerticalAlign = cellStyle.verticalAlign ?? "top";
+                const cellTextRole = cellStyle.textRole ?? "paragraph";
+                const cellLinkUrl = cellStyle.linkUrl ?? "";
+                const cellRotation = cellStyle.textRotation ?? 0;
+                const cellJustifyContent = cellVerticalAlign === "bottom" ? "flex-end" : cellVerticalAlign === "middle" ? "center" : "flex-start";
+                const renderedCellText = displayLinesForTextRole(cell.text, cellTextRole).join("\n");
                 return (
                   <g key={`${row.id}-${column.id}`}>
                     <rect
@@ -4528,13 +4762,15 @@ export function BoardDocumentPage({
                             event.stopPropagation();
                           }}
                           className="h-full w-full resize-none border-0 bg-transparent p-0 leading-5 outline-none"
-                          style={{ color: cellTextColor, fontSize: cellFontSize, fontWeight: cellFontWeight, textAlign: cellTextAlign }}
+                          style={{ color: cellLinkUrl ? "#1456f0" : cellTextColor, fontSize: cellFontSize, fontWeight: cellFontWeight, fontStyle: cellFontStyle, textAlign: cellTextAlign, textDecoration: cellLinkUrl ? "underline" : cellTextDecoration }}
                         />
                       </foreignObject>
                     ) : (
                       <foreignObject x={x + 8} y={y + 4} width={Math.max(20, column.width - 16)} height={Math.max(20, row.height - 8)} className="pointer-events-none">
-                        <div className="h-full overflow-hidden whitespace-pre-wrap break-words leading-5" style={{ color: cellTextColor, fontSize: cellFontSize, fontWeight: cellFontWeight, textAlign: cellTextAlign }}>
-                          {cell.text || " "}
+                        <div className="flex h-full overflow-hidden whitespace-pre-wrap break-words leading-5" style={{ alignItems: cellJustifyContent }}>
+                          <div style={{ color: cellLinkUrl ? "#1456f0" : cellTextColor, fontSize: cellFontSize, fontWeight: cellFontWeight, fontStyle: cellFontStyle, textAlign: cellTextAlign, textDecoration: cellLinkUrl ? "underline" : cellTextDecoration, transform: cellRotation ? `rotate(${cellRotation}deg)` : undefined, transformOrigin: "center" }}>
+                            {renderedCellText || " "}
+                          </div>
                         </div>
                       </foreignObject>
                     )}
@@ -4725,9 +4961,11 @@ export function BoardDocumentPage({
             style={{
               fontSize: node.style.fontSize,
               lineHeight: `${lineHeight}px`,
-              color: node.style.color,
+              color: node.style.linkUrl ? "#1456f0" : node.style.color,
               textAlign: node.style.textAlign ?? "center",
               fontWeight: node.style.fontWeight ?? 400,
+              fontStyle: node.style.fontStyle ?? "normal",
+              textDecoration: node.style.linkUrl ? "underline" : node.style.textDecoration ?? "none",
               overflow: "auto",
             }}
           />
@@ -4736,10 +4974,15 @@ export function BoardDocumentPage({
     }
     const actualText = editableNodeText(node.text);
     const isPlaceholder = actualText.trim().length === 0;
-    const displayText = isPlaceholder ? NODE_TEXT_PLACEHOLDER : actualText;
-    const displayColor = isPlaceholder ? "#8a95a6" : node.style.color;
+    const displayText = isPlaceholder ? NODE_TEXT_PLACEHOLDER : displayLinesForTextRole(actualText, node.style.textRole).join("\n");
+    const displayColor = isPlaceholder ? "#8a95a6" : node.style.linkUrl ? "#1456f0" : node.style.color;
     const lines = boardNodeTextLines(node, displayText);
     const textOverflows = requiredNodeHeightForText(node) > node.height + 1;
+    const textDecoration = node.style.linkUrl ? "underline" : node.style.textDecoration ?? "none";
+    const fontStyle = node.style.textRole === "quote" ? "italic" : node.style.fontStyle ?? "normal";
+    const verticalAlign = node.style.verticalAlign ?? "middle";
+    const textRotation = node.style.textRotation ?? 0;
+    const alignItems = verticalAlign === "bottom" ? "flex-end" : verticalAlign === "top" ? "flex-start" : "center";
     if (textOverflows) {
       return (
         <foreignObject
@@ -4750,7 +4993,7 @@ export function BoardDocumentPage({
           data-board-node-text-overflow="true"
         >
           <div
-            className="h-full w-full overflow-auto whitespace-pre-wrap break-words"
+            className="flex h-full w-full overflow-auto whitespace-pre-wrap break-words"
             onClick={(event) => {
               event.stopPropagation();
               handleNodeClick(node);
@@ -4761,29 +5004,47 @@ export function BoardDocumentPage({
             }}
             onPointerDown={(event) => handleNodePointerDown(event as unknown as ReactPointerEvent<SVGElement>, node)}
             style={{
-              color: displayColor,
-              fontSize: node.style.fontSize,
-              fontWeight: node.style.fontWeight,
-              lineHeight: `${lineHeight}px`,
-              textAlign: node.style.textAlign ?? "center",
+              alignItems,
             }}
           >
-            {displayText || " "}
+            <div
+              className="w-full"
+              style={{
+                color: displayColor,
+                fontSize: node.style.fontSize,
+                fontWeight: node.style.fontWeight,
+                fontStyle,
+                lineHeight: `${lineHeight}px`,
+                textAlign: node.style.textAlign ?? "center",
+                textDecoration,
+                transform: textRotation ? `rotate(${textRotation}deg)` : undefined,
+                transformOrigin: "center",
+              }}
+            >
+              {displayText || " "}
+            </div>
           </div>
         </foreignObject>
       );
     }
-    const startY = node.y + node.height / 2 - ((lines.length - 1) * lineHeight) / 2;
+    const textBlockHeight = Math.max(lineHeight, lines.length * lineHeight);
+    const startY = verticalAlign === "top"
+      ? node.y + 12 + lineHeight / 2
+      : verticalAlign === "bottom"
+        ? node.y + node.height - 12 - textBlockHeight + lineHeight / 2
+        : node.y + node.height / 2 - ((lines.length - 1) * lineHeight) / 2;
     const textAnchor = node.style.textAlign === "left" ? "start" : node.style.textAlign === "right" ? "end" : "middle";
     const x = node.style.textAlign === "left" ? node.x + 10 : node.style.textAlign === "right" ? node.x + node.width - 10 : node.x + node.width / 2;
     return (
-      <text x={x} y={startY} dominantBaseline="middle" textAnchor={textAnchor} fill={displayColor} fontSize={node.style.fontSize} fontWeight={node.style.fontWeight} className="pointer-events-none select-none">
-        {lines.map((line, index) => (
-          <tspan key={`${node.id}-${index}`} x={x} dy={index === 0 ? 0 : lineHeight}>
-            {line || " "}
-          </tspan>
-        ))}
-      </text>
+      <g transform={textRotation ? `rotate(${textRotation} ${node.x + node.width / 2} ${node.y + node.height / 2})` : undefined}>
+        <text x={x} y={startY} dominantBaseline="middle" textAnchor={textAnchor} fill={displayColor} fontSize={node.style.fontSize} fontWeight={node.style.fontWeight} fontStyle={fontStyle} textDecoration={textDecoration} className="pointer-events-none select-none">
+          {lines.map((line, index) => (
+            <tspan key={`${node.id}-${index}`} x={x} dy={index === 0 ? 0 : lineHeight}>
+              {line || " "}
+            </tspan>
+          ))}
+        </text>
+      </g>
     );
   };
 
@@ -5467,7 +5728,7 @@ export function BoardDocumentPage({
                       </button>
                     ))}
                   </div>
-                  <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] text-[13px] font-medium hover:bg-[#f5f7fb]" onMouseEnter={(event) => openToolbarPanel("textStyle", event.currentTarget)} onClick={(event) => toggleToolbarPanel("textStyle", event.currentTarget)} title="文本样式">A≡</button>
+                  <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] text-[#1f2329] hover:bg-[#f5f7fb]" onMouseEnter={(event) => openToolbarPanel("textStyle", event.currentTarget)} onClick={(event) => toggleToolbarPanel("textStyle", event.currentTarget)} title="文本样式"><TextStyleIcon name="alignLeft" className="h-[18px] w-[18px]" /></button>
                   <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] hover:bg-[#f5f7fb]" onClick={() => setNotice("评论能力本轮仅保留占位，暂未接入画板对象评论")} title="评论"><BoardIcon name="comment" className="h-4 w-4" /></button>
                   <button type="button" className="grid h-10 w-10 place-items-center hover:bg-[#f5f7fb]" onMouseEnter={(event) => openToolbarPanel("more", event.currentTarget)} onClick={(event) => toggleToolbarPanel("more", event.currentTarget)} title="更多"><BoardIcon name="more" className="h-4 w-4" /></button>
                 </>
@@ -5482,7 +5743,7 @@ export function BoardDocumentPage({
                 </>
               ) : null}
               {activePanel ? (
-                <div className="absolute left-0 z-50 min-w-48 overflow-y-auto rounded-[12px] border border-[#e3e7ef] bg-white p-3 text-xs shadow-[0_10px_28px_rgba(31,35,41,0.16)]" style={toolbarPanelStyle} onMouseEnter={() => {
+                <div className="absolute left-0 z-50 overflow-y-auto rounded-[12px] border border-[#e3e7ef] bg-white p-3 text-xs shadow-[0_10px_28px_rgba(31,35,41,0.16)]" style={toolbarPanelStyle} onMouseEnter={() => {
                   if (panelHoverTimerRef.current) window.clearTimeout(panelHoverTimerRef.current);
                 }} onMouseLeave={scheduleCloseToolbarPanel}>
                   {activePanel === "multiFilter" ? (
@@ -5536,19 +5797,73 @@ export function BoardDocumentPage({
                     </div>
                   ) : null}
                   {activePanel === "textStyle" && selectedNode ? (
-                    <div className="w-44 space-y-1">
-                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => {
-                        if (selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title") {
-                          updateSelectedTableCellStyle({ fontWeight: selectedTableCellStyle()?.fontWeight === 600 ? 400 : 600 });
-                          return;
-                        }
-                        updateSelectedStyle({ fontWeight: selectedNode.style.fontWeight === 600 ? 400 : 600 });
-                      }}>
-                        {selectedNode.style.fontWeight === 600 ? "取消加粗" : "加粗"}
-                      </button>
-                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title" ? updateSelectedTableCellStyle({ textAlign: "left" }) : updateSelectedStyle({ textAlign: "left" })}>左对齐</button>
-                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title" ? updateSelectedTableCellStyle({ textAlign: "center" }) : updateSelectedStyle({ textAlign: "center" })}>居中</button>
-                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title" ? updateSelectedTableCellStyle({ textAlign: "right" }) : updateSelectedStyle({ textAlign: "right" })}>右对齐</button>
+                    <div className="w-[154px] space-y-1">
+                      <div className="grid grid-cols-4 gap-1">
+                        {[
+                          { title: "正文", icon: "paragraph", role: "paragraph" },
+                          { title: "编号列表", icon: "orderedList", role: "ordered_list" },
+                          { title: "项目列表", icon: "bulletList", role: "bullet_list" },
+                          { title: "引用", icon: "quote", role: "quote" },
+                        ].map((item) => (
+                          <button
+                            key={item.title}
+                            type="button"
+                            title={item.title}
+                            className={`grid h-8 place-items-center rounded-[6px] hover:bg-[#eef3ff] hover:text-[#1456f0] ${(selectedTextStyle().textRole ?? "paragraph") === item.role ? "bg-[#eef3ff] text-[#1456f0]" : "text-[#1f2329]"}`}
+                            onClick={() => updateSelectedTextStyle({ textRole: item.role as BoardNode["style"]["textRole"] })}
+                          >
+                            <TextStyleIcon name={item.icon as TextStyleIconName} className="h-[18px] w-[18px]" />
+                          </button>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-5 gap-1">
+                        <button type="button" title="加粗" className={`grid h-8 place-items-center rounded-[6px] hover:bg-[#eef3ff] hover:text-[#1456f0] ${selectedFontWeight() >= 600 ? "bg-[#eef3ff] text-[#1456f0]" : "text-[#1f2329]"}`} onClick={() => updateSelectedFontWeight(selectedFontWeight() >= 600 ? 400 : 600)}><TextStyleIcon name="bold" className="h-[18px] w-[18px]" /></button>
+                        {[
+                          { title: "删除线", icon: "strike", active: textDecorationHas(selectedTextStyle().textDecoration, "line-through"), action: () => toggleSelectedTextDecoration("line-through") },
+                          { title: "下划线", icon: "underline", active: textDecorationHas(selectedTextStyle().textDecoration, "underline"), action: () => toggleSelectedTextDecoration("underline") },
+                          { title: "斜体", icon: "italic", active: (selectedTextStyle().fontStyle ?? "normal") === "italic", action: () => updateSelectedTextStyle({ fontStyle: (selectedTextStyle().fontStyle ?? "normal") === "italic" ? "normal" : "italic" }) },
+                          { title: "链接", icon: "link", active: Boolean(selectedTextStyle().linkUrl), action: configureSelectedTextLink },
+                        ].map((item) => (
+                          <button key={item.title} type="button" title={item.title} className={`grid h-8 place-items-center rounded-[6px] hover:bg-[#eef3ff] hover:text-[#1456f0] ${item.active ? "bg-[#eef3ff] text-[#1456f0]" : "text-[#1f2329]"}`} onClick={item.action}>
+                            <TextStyleIcon name={item.icon as TextStyleIconName} className="h-[18px] w-[18px]" />
+                          </button>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        {[
+                          { value: "left", title: "左对齐", icon: "alignLeft" },
+                          { value: "center", title: "居中", icon: "alignCenter" },
+                          { value: "right", title: "右对齐", icon: "alignRight" },
+                        ].map((item) => (
+                          <button
+                            key={item.value}
+                            type="button"
+                            title={item.title}
+                            className={`grid h-8 place-items-center rounded-[6px] hover:bg-[#eef3ff] hover:text-[#1456f0] ${selectedTextAlign() === item.value ? "bg-[#eef3ff] text-[#1456f0]" : "text-[#1f2329]"}`}
+                            onClick={() => updateSelectedTextAlign(item.value as "left" | "center" | "right")}
+                          >
+                            <TextStyleIcon name={item.icon as TextStyleIconName} className="h-[18px] w-[18px]" />
+                          </button>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        {[
+                          { title: "顶部对齐", icon: "verticalTop", value: "top" },
+                          { title: "垂直居中", icon: "verticalMiddle", value: "middle" },
+                          { title: "底部对齐", icon: "verticalBottom", value: "bottom" },
+                        ].map((item) => (
+                          <button
+                            key={item.title}
+                            type="button"
+                            title={item.title}
+                            className={`grid h-8 place-items-center rounded-[6px] hover:bg-[#eef3ff] hover:text-[#1456f0] ${(selectedTextStyle().verticalAlign ?? "middle") === item.value ? "bg-[#eef3ff] text-[#1456f0]" : "text-[#1f2329]"}`}
+                            onClick={() => updateSelectedTextStyle({ verticalAlign: item.value as BoardNode["style"]["verticalAlign"] })}
+                          >
+                            <TextStyleIcon name={item.icon as TextStyleIconName} className="h-[18px] w-[18px]" />
+                          </button>
+                        ))}
+                      </div>
+                      <button type="button" title="旋转文本" className={`flex h-8 w-full items-center justify-center gap-1 rounded-[6px] text-xs hover:bg-[#eef3ff] hover:text-[#1456f0] ${(selectedTextStyle().textRotation ?? 0) !== 0 ? "bg-[#eef3ff] text-[#1456f0]" : "bg-[#f5f6f8] text-[#1f2329]"}`} onClick={() => updateSelectedTextStyle({ textRotation: ((selectedTextStyle().textRotation ?? 0) + 90) % 360 })}><TextStyleIcon name="rotateText" className="h-4 w-4" />旋转文本</button>
                     </div>
                   ) : null}
                   {activePanel === "stroke" && selectedConnector ? (
