@@ -5711,23 +5711,6 @@ export function BoardDocumentPage({
                   }} className="h-10 border-0 border-r border-[#eef1f6] bg-white px-2 text-[#1f2329] outline-none">
                     {[12, 14, 16, 18, 20, 24, 28].map((size) => <option key={size} value={size}>{size}</option>)}
                   </select>
-                  <div className="flex h-10 items-center border-r border-[#eef1f6]">
-                    {[
-                      { value: "left", label: "文本左对齐", icon: "≡" },
-                      { value: "center", label: "文本居中", icon: "≣" },
-                      { value: "right", label: "文本右对齐", icon: "≡" },
-                    ].map((item) => (
-                      <button
-                        key={item.value}
-                        type="button"
-                        title={item.label}
-                        className={`grid h-10 w-8 place-items-center text-[13px] font-medium hover:bg-[#f5f7fb] ${selectedTextAlign() === item.value ? "bg-[#eef3ff] text-[#1456f0]" : "text-[#1f2329]"}`}
-                        onClick={() => updateSelectedTextAlign(item.value as "left" | "center" | "right")}
-                      >
-                        <span className={item.value === "right" ? "scale-x-[-1]" : ""}>{item.icon}</span>
-                      </button>
-                    ))}
-                  </div>
                   <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] text-[#1f2329] hover:bg-[#f5f7fb]" onMouseEnter={(event) => openToolbarPanel("textStyle", event.currentTarget)} onClick={(event) => toggleToolbarPanel("textStyle", event.currentTarget)} title="文本样式"><TextStyleIcon name="alignLeft" className="h-[18px] w-[18px]" /></button>
                   <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] hover:bg-[#f5f7fb]" onClick={() => setNotice("评论能力本轮仅保留占位，暂未接入画板对象评论")} title="评论"><BoardIcon name="comment" className="h-4 w-4" /></button>
                   <button type="button" className="grid h-10 w-10 place-items-center hover:bg-[#f5f7fb]" onMouseEnter={(event) => openToolbarPanel("more", event.currentTarget)} onClick={(event) => toggleToolbarPanel("more", event.currentTarget)} title="更多"><BoardIcon name="more" className="h-4 w-4" /></button>
