@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, useTransition, type ClipboardEven
 import { useRouter } from "next/navigation";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { DocumentShareDialog } from "@/components/editor/document-share-dialog";
 import { type AncestorItem, softDeleteDocument, updateDocumentContent } from "@/lib/api";
 import { createClientId } from "@/lib/client-id";
 import {
@@ -817,6 +818,13 @@ function displayLinesForTextRole(text: string, role: BoardNode["style"]["textRol
   if (role === "bullet_list") return lines.map((line) => `• ${line}`);
   if (role === "quote") return lines.map((line) => `“ ${line}`);
   return lines;
+}
+
+function textRoleMarker(role: BoardNode["style"]["textRole"] | undefined, index: number) {
+  if (role === "ordered_list") return `${index + 1}.`;
+  if (role === "bullet_list") return "•";
+  if (role === "quote") return "“";
+  return "";
 }
 
 function normalizeWaypoints(raw: unknown): BoardWaypoint[] {
@@ -2210,11 +2218,13 @@ export function BoardDocumentPage({
   const [saveRetryToken, setSaveRetryToken] = useState(0);
   const [isTransientToolbarHidden, setIsTransientToolbarHidden] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showShareDialog, setShowShareDialog] = useState(false);
   const [tableDeleteConfirm, setTableDeleteConfirm] = useState<BoardTableSelection | null>(null);
   const [tableClearConfirm, setTableClearConfirm] = useState<BoardTableSelection | null>(null);
   const [history, setHistory] = useState<{ past: BoardSnapshot[]; future: BoardSnapshot[] }>({ past: [], future: [] });
   const [isMutating, startTransition] = useTransition();
   const boardRootRef = useRef<HTMLDivElement | null>(null);
+  const boardRef = useRef(board);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const tableEditRef = useRef<HTMLTextAreaElement | null>(null);
@@ -2233,6 +2243,7 @@ export function BoardDocumentPage({
   const toolRef = useRef<BoardTool>("select");
   const canEdit = currentDocument.canEdit && !currentDocument.isSharedView;
   const canDelete = currentDocument.canDelete && !currentDocument.isSharedView;
+  const canOpenShareDialog = currentDocument.canManage && currentDocument.canShare && !currentDocument.isSharedView;
   const selectedNode = selectedNodeId ? board.nodes.find((node) => node.id === selectedNodeId) ?? null : null;
   const selectedConnector = selectedConnectorId ? board.connectors.find((connector) => connector.id === selectedConnectorId) ?? null : null;
   const multiSelectedNodes = useMemo(() => board.nodes.filter((node) => selectedNodeIds.includes(node.id)), [board.nodes, selectedNodeIds]);
@@ -2317,6 +2328,10 @@ export function BoardDocumentPage({
   }, [document]);
 
   useEffect(() => {
+    boardRef.current = board;
+  }, [board]);
+
+  useEffect(() => {
     if (!editingNodeId) return;
     window.setTimeout(() => textAreaRef.current?.focus(), 0);
   }, [editingNodeId]);
@@ -2397,18 +2412,25 @@ export function BoardDocumentPage({
     if (!canEdit) return true;
     setIsSaving(true);
     try {
-      const boardToSave = normalizeBoardAutoConnectors(board);
+      const boardToSave = normalizeBoardAutoConnectors(boardRef.current);
       const snapshotSignature = JSON.stringify(boardToSave);
       const nextDocument = await updateDocumentContent({
         docId: currentDocument.id,
         contentJson: { ...boardToSave, version: 2 },
         plainText: currentDocument.title,
       });
-      setBoard(boardToSave);
       setCurrentDocument(nextDocument);
-      setIsDirty(false);
       clearOfflineDocumentDraft(currentDocument.id, snapshotSignature);
-      setNotice("已保存");
+      const liveBoard = normalizeBoardAutoConnectors(boardRef.current);
+      const hasNewLocalChanges = JSON.stringify(liveBoard) !== snapshotSignature;
+      if (!hasNewLocalChanges) {
+        setBoard(boardToSave);
+        boardRef.current = boardToSave;
+        setIsDirty(false);
+        setNotice("已保存");
+      } else {
+        setIsDirty(true);
+      }
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
@@ -4942,47 +4964,130 @@ export function BoardDocumentPage({
     if (node.type === "table") return null;
     const lineHeight = node.style.fontSize * 1.25;
     if (editingNodeId === node.id) {
+      const editingRole = node.style.textRole ?? "paragraph";
+      const editingMarkers = editingRole === "paragraph" ? [] : editingText.split("\n").map((_, index) => textRoleMarker(editingRole, index));
+      const editingNeedsMarkerGutter = editingMarkers.some(Boolean);
       return (
         <foreignObject x={node.x + 6} y={node.y + 6} width={Math.max(20, node.width - 12)} height={Math.max(20, node.height - 12)}>
-          <textarea
-            ref={textAreaRef}
-            value={editingText}
-            placeholder={NODE_TEXT_PLACEHOLDER}
-            onChange={(event) => setEditingText(event.target.value)}
-            onBlur={finishTextEditing}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                finishTextEditing();
-              }
-              event.stopPropagation();
-            }}
-            className="h-full w-full resize-none border-0 bg-transparent p-1 text-center text-slate-800 outline-none"
+          <div
+            className="relative h-full w-full"
             style={{
-              fontSize: node.style.fontSize,
-              lineHeight: `${lineHeight}px`,
-              color: node.style.linkUrl ? "#1456f0" : node.style.color,
-              textAlign: node.style.textAlign ?? "center",
-              fontWeight: node.style.fontWeight ?? 400,
-              fontStyle: node.style.fontStyle ?? "normal",
-              textDecoration: node.style.linkUrl ? "underline" : node.style.textDecoration ?? "none",
-              overflow: "auto",
+              borderLeft: editingRole === "quote" ? "3px solid #d8e2f3" : undefined,
+              paddingLeft: editingRole === "quote" ? 8 : undefined,
             }}
-          />
+          >
+            {editingNeedsMarkerGutter ? (
+              <div
+                className="pointer-events-none absolute left-0 top-1 select-none text-right"
+                style={{
+                  width: editingRole === "ordered_list" ? 28 : 18,
+                  color: node.style.linkUrl ? "#1456f0" : node.style.color,
+                  fontSize: node.style.fontSize,
+                  fontWeight: node.style.fontWeight ?? 400,
+                  fontStyle: editingRole === "quote" ? "italic" : node.style.fontStyle ?? "normal",
+                  lineHeight: `${lineHeight}px`,
+                }}
+              >
+                {editingMarkers.map((marker, index) => (
+                  <div key={`${node.id}-editing-marker-${index}`}>{marker}</div>
+                ))}
+              </div>
+            ) : null}
+            <textarea
+              ref={textAreaRef}
+              value={editingText}
+              placeholder={NODE_TEXT_PLACEHOLDER}
+              onChange={(event) => setEditingText(event.target.value)}
+              onBlur={finishTextEditing}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  finishTextEditing();
+                }
+                event.stopPropagation();
+              }}
+              className="h-full w-full resize-none border-0 bg-transparent p-1 text-slate-800 outline-none"
+              style={{
+                paddingLeft: editingNeedsMarkerGutter ? editingRole === "ordered_list" ? 34 : 24 : undefined,
+                fontSize: node.style.fontSize,
+                lineHeight: `${lineHeight}px`,
+                color: node.style.linkUrl ? "#1456f0" : node.style.color,
+                textAlign: editingNeedsMarkerGutter ? "left" : node.style.textAlign ?? "center",
+                fontWeight: node.style.fontWeight ?? 400,
+                fontStyle: editingRole === "quote" ? "italic" : node.style.fontStyle ?? "normal",
+                textDecoration: node.style.linkUrl ? "underline" : node.style.textDecoration ?? "none",
+                overflow: "auto",
+              }}
+            />
+          </div>
         </foreignObject>
       );
     }
     const actualText = editableNodeText(node.text);
     const isPlaceholder = actualText.trim().length === 0;
-    const displayText = isPlaceholder ? NODE_TEXT_PLACEHOLDER : displayLinesForTextRole(actualText, node.style.textRole).join("\n");
+    const textRole = node.style.textRole ?? "paragraph";
+    const displayText = isPlaceholder ? NODE_TEXT_PLACEHOLDER : displayLinesForTextRole(actualText, textRole).join("\n");
     const displayColor = isPlaceholder ? "#8a95a6" : node.style.linkUrl ? "#1456f0" : node.style.color;
     const lines = boardNodeTextLines(node, displayText);
     const textOverflows = requiredNodeHeightForText(node) > node.height + 1;
     const textDecoration = node.style.linkUrl ? "underline" : node.style.textDecoration ?? "none";
-    const fontStyle = node.style.textRole === "quote" ? "italic" : node.style.fontStyle ?? "normal";
+    const fontStyle = textRole === "quote" ? "italic" : node.style.fontStyle ?? "normal";
     const verticalAlign = node.style.verticalAlign ?? "middle";
     const textRotation = node.style.textRotation ?? 0;
     const alignItems = verticalAlign === "bottom" ? "flex-end" : verticalAlign === "top" ? "flex-start" : "center";
+    if (!isPlaceholder && textRole !== "paragraph") {
+      const roleRows = actualText.split("\n");
+      return (
+        <foreignObject
+          x={node.x + 10}
+          y={node.y + 8}
+          width={Math.max(20, node.width - 20)}
+          height={Math.max(20, node.height - 16)}
+        >
+          <div
+            className="flex h-full w-full overflow-auto"
+            onClick={(event) => {
+              event.stopPropagation();
+              handleNodeClick(node);
+            }}
+            onDoubleClick={(event) => {
+              event.stopPropagation();
+              startTextEditing(node);
+            }}
+            onPointerDown={(event) => handleNodePointerDown(event as unknown as ReactPointerEvent<SVGElement>, node)}
+            style={{
+              alignItems: textOverflows ? "flex-start" : alignItems,
+              color: displayColor,
+              fontSize: node.style.fontSize,
+              fontWeight: node.style.fontWeight,
+              fontStyle,
+              lineHeight: `${lineHeight}px`,
+              textDecoration,
+            }}
+          >
+            <div
+              className="w-full whitespace-pre-wrap break-words"
+              style={{
+                borderLeft: textRole === "quote" ? "3px solid #d8e2f3" : undefined,
+                paddingLeft: textRole === "quote" ? 8 : undefined,
+                transform: textRotation ? `rotate(${textRotation}deg)` : undefined,
+                transformOrigin: "center",
+              }}
+            >
+              {roleRows.map((line, index) => {
+                const marker = line.trim() ? textRoleMarker(textRole, index) : "";
+                return (
+                  <div key={`${node.id}-role-row-${index}`} className="flex min-h-[1em] items-baseline gap-2">
+                    <span className="shrink-0 text-right text-[#667085]" style={{ width: textRole === "ordered_list" ? 28 : 14 }}>{marker}</span>
+                    <span className="min-w-0 flex-1 text-left">{line || " "}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </foreignObject>
+      );
+    }
     if (textOverflows) {
       return (
         <foreignObject
@@ -5004,7 +5109,7 @@ export function BoardDocumentPage({
             }}
             onPointerDown={(event) => handleNodePointerDown(event as unknown as ReactPointerEvent<SVGElement>, node)}
             style={{
-              alignItems,
+              alignItems: "flex-start",
             }}
           >
             <div
@@ -5060,7 +5165,9 @@ export function BoardDocumentPage({
 
       <div className="absolute right-4 top-4 z-40 flex h-9 items-center overflow-hidden border border-[#dee3ee] bg-white/95 text-[13px] shadow-[0_2px_10px_rgba(31,35,41,0.08)]">
         <span className="border-r border-[#eef1f6] px-2.5 text-xs text-[#646a73]">{isSaving ? "保存中" : isDirty ? "未保存" : "已保存"}</span>
-        <button type="button" className="flex h-9 items-center gap-1.5 border-r border-[#eef1f6] px-3 text-[#1456f0] hover:bg-[#f5f8ff]"><BoardIcon name="share" className="h-3.5 w-3.5" />分享</button>
+        {canOpenShareDialog ? (
+          <button type="button" className="flex h-9 items-center gap-1.5 border-r border-[#eef1f6] px-3 text-[#1456f0] hover:bg-[#f5f8ff]" onClick={() => setShowShareDialog(true)}><BoardIcon name="share" className="h-3.5 w-3.5" />分享</button>
+        ) : null}
         <span className="flex h-9 items-center gap-1.5 border-r border-[#eef1f6] px-3 text-[#1f2329]"><BoardIcon name="edit" className="h-3.5 w-3.5" />{canEdit ? "编辑" : "只读"}⌄</span>
         <button type="button" onClick={undo} disabled={!canEdit || history.past.length === 0} className="grid h-9 w-9 place-items-center border-r border-[#eef1f6] text-[#1f2329] hover:bg-[#f5f7fb] disabled:text-[#a8aeb8]"><BoardIcon name="undo" className="h-4 w-4" /></button>
         <button type="button" onClick={redo} disabled={!canEdit || history.future.length === 0} className="grid h-9 w-9 place-items-center border-r border-[#eef1f6] text-[#1f2329] hover:bg-[#f5f7fb] disabled:text-[#a8aeb8]"><BoardIcon name="redo" className="h-4 w-4" /></button>
@@ -5981,6 +6088,20 @@ export function BoardDocumentPage({
         onCancel={() => setShowDeleteConfirm(false)}
         onConfirm={handleDeleteDocument}
       />
+      {canOpenShareDialog ? (
+        <DocumentShareDialog
+          open={showShareDialog}
+          documentId={currentDocument.id}
+          currentVisibility={currentDocument.visibility === "public" ? "public" : "private"}
+          canTransferOwner={currentDocument.canTransferOwner}
+          mentionCandidates={[]}
+          initialTab="share"
+          onClose={() => setShowShareDialog(false)}
+          onSaved={({ visibility }) => {
+            setCurrentDocument((value) => ({ ...value, visibility }));
+          }}
+        />
+      ) : null}
       <ConfirmDialog
         open={Boolean(tableDeleteConfirm)}
         title={tableDeleteConfirm?.kind === "column" ? "确认删除表格列" : "确认删除表格行"}
