@@ -2219,6 +2219,10 @@ export function BoardDocumentPage({
   const [isTransientToolbarHidden, setIsTransientToolbarHidden] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
+  const [boardMode, setBoardMode] = useState<"edit" | "read">(() =>
+    document.canEdit && !document.isSharedView ? "edit" : "read",
+  );
+  const [boardModeMenuOpen, setBoardModeMenuOpen] = useState(false);
   const [tableDeleteConfirm, setTableDeleteConfirm] = useState<BoardTableSelection | null>(null);
   const [tableClearConfirm, setTableClearConfirm] = useState<BoardTableSelection | null>(null);
   const [history, setHistory] = useState<{ past: BoardSnapshot[]; future: BoardSnapshot[] }>({ past: [], future: [] });
@@ -2241,7 +2245,8 @@ export function BoardDocumentPage({
   const interactionStartSnapshotRef = useRef<BoardSnapshot | null>(null);
   const suppressCanvasClickRef = useRef(false);
   const toolRef = useRef<BoardTool>("select");
-  const canEdit = currentDocument.canEdit && !currentDocument.isSharedView;
+  const canUseEditMode = currentDocument.canEdit && !currentDocument.isSharedView;
+  const canEdit = canUseEditMode && boardMode === "edit";
   const canDelete = currentDocument.canDelete && !currentDocument.isSharedView;
   const canOpenShareDialog = currentDocument.canManage && currentDocument.canShare && !currentDocument.isSharedView;
   const selectedNode = selectedNodeId ? board.nodes.find((node) => node.id === selectedNodeId) ?? null : null;
@@ -2295,6 +2300,8 @@ export function BoardDocumentPage({
 
   useEffect(() => {
     setCurrentDocument(document);
+    setBoardMode(document.canEdit && !document.isSharedView ? "edit" : "read");
+    setBoardModeMenuOpen(false);
     const offlineDraft = document.canEdit && !document.isSharedView && document.documentType === "board"
       ? loadOfflineDocumentDraft(document.id)
       : null;
@@ -3918,7 +3925,9 @@ export function BoardDocumentPage({
           y: panState.viewportY + event.clientY - panState.startY,
         },
       }));
-      setIsDirty(true);
+      if (canEdit) {
+        setIsDirty(true);
+      }
       return;
     }
     if (selectionRect) {
@@ -4228,10 +4237,11 @@ export function BoardDocumentPage({
   };
 
   const startCanvasPan = (event: Pick<ReactPointerEvent<SVGElement>, "clientX" | "clientY" | "preventDefault">) => {
-    if (!canEdit) return;
     event.preventDefault();
     setShapePlacementPreview(null);
-    beginContinuousInteraction();
+    if (canEdit) {
+      beginContinuousInteraction();
+    }
     setPanState({
       startX: event.clientX,
       startY: event.clientY,
@@ -4298,6 +4308,25 @@ export function BoardDocumentPage({
     setTool("select");
   };
 
+  const changeBoardMode = (mode: "edit" | "read") => {
+    if (mode === "edit" && !canUseEditMode) return;
+    if (mode === boardMode) {
+      setBoardModeMenuOpen(false);
+      return;
+    }
+    if (mode === "read") {
+      cancelCurrentOperation();
+      clearSelection();
+      setTool("pan");
+      toolRef.current = "pan";
+    } else {
+      setTool("select");
+      toolRef.current = "select";
+    }
+    setBoardMode(mode);
+    setBoardModeMenuOpen(false);
+  };
+
   useEffect(() => {
     const handleGlobalEscape = (event: globalThis.KeyboardEvent) => {
       if (!canEdit || event.key !== "Escape" || event.defaultPrevented) return;
@@ -4320,13 +4349,12 @@ export function BoardDocumentPage({
   ]);
 
   const handleCanvasPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
-    if (!canEdit) return;
     if (event.button === 1) {
       startCanvasPan(event);
       return;
     }
     if (event.button !== 0) return;
-    if (tool === "pan") {
+    if (tool === "pan" || !canEdit) {
       startCanvasPan(event);
       return;
     }
@@ -5168,7 +5196,39 @@ export function BoardDocumentPage({
         {canOpenShareDialog ? (
           <button type="button" className="flex h-9 items-center gap-1.5 border-r border-[#eef1f6] px-3 text-[#1456f0] hover:bg-[#f5f8ff]" onClick={() => setShowShareDialog(true)}><BoardIcon name="share" className="h-3.5 w-3.5" />分享</button>
         ) : null}
-        <span className="flex h-9 items-center gap-1.5 border-r border-[#eef1f6] px-3 text-[#1f2329]"><BoardIcon name="edit" className="h-3.5 w-3.5" />{canEdit ? "编辑" : "只读"}⌄</span>
+        <div className="relative border-r border-[#eef1f6]">
+          <button
+            type="button"
+            disabled={!canUseEditMode}
+            onClick={() => setBoardModeMenuOpen((value) => !value)}
+            className={`flex h-9 items-center gap-1.5 px-3 text-[#1f2329] hover:bg-[#f5f7fb] disabled:cursor-default disabled:text-[#646a73] disabled:hover:bg-transparent ${boardModeMenuOpen ? "bg-[#f5f7fb]" : ""}`}
+            title={canUseEditMode ? "切换编辑/只读" : "只读"}
+          >
+            <BoardIcon name={canEdit ? "edit" : "pan"} className="h-3.5 w-3.5" />
+            <span>{canEdit ? "编辑" : "只读"}</span>
+            {canUseEditMode ? <span className="text-[10px] text-[#8b95a5]">⌄</span> : null}
+          </button>
+          {boardModeMenuOpen && canUseEditMode ? (
+            <div className="absolute right-0 top-10 z-[90] w-32 border border-[#dee3ee] bg-white py-1 text-[13px] shadow-[0_8px_24px_rgba(31,35,41,0.14)]">
+              <button
+                type="button"
+                onClick={() => changeBoardMode("edit")}
+                className={`flex h-8 w-full items-center gap-2 px-3 text-left hover:bg-[#f5f7fb] ${boardMode === "edit" ? "text-[#1456f0]" : "text-[#1f2329]"}`}
+              >
+                <BoardIcon name="edit" className="h-3.5 w-3.5" />
+                <span>编辑模式</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => changeBoardMode("read")}
+                className={`flex h-8 w-full items-center gap-2 px-3 text-left hover:bg-[#f5f7fb] ${boardMode === "read" ? "text-[#1456f0]" : "text-[#1f2329]"}`}
+              >
+                <BoardIcon name="pan" className="h-3.5 w-3.5" />
+                <span>只读模式</span>
+              </button>
+            </div>
+          ) : null}
+        </div>
         <button type="button" onClick={undo} disabled={!canEdit || history.past.length === 0} className="grid h-9 w-9 place-items-center border-r border-[#eef1f6] text-[#1f2329] hover:bg-[#f5f7fb] disabled:text-[#a8aeb8]"><BoardIcon name="undo" className="h-4 w-4" /></button>
         <button type="button" onClick={redo} disabled={!canEdit || history.future.length === 0} className="grid h-9 w-9 place-items-center border-r border-[#eef1f6] text-[#1f2329] hover:bg-[#f5f7fb] disabled:text-[#a8aeb8]"><BoardIcon name="redo" className="h-4 w-4" /></button>
         <button type="button" onClick={() => void saveBoard()} disabled={!canEdit || isSaving} className="h-9 border-r border-[#eef1f6] px-3 text-[#1f2329] hover:bg-[#f5f7fb] disabled:opacity-40">保存</button>
@@ -5188,7 +5248,7 @@ export function BoardDocumentPage({
               <button
                 type="button"
                 title={label}
-                disabled={!(value === "select" || value === "shape" || value === "text" || value === "pan")}
+                disabled={!(value === "select" || value === "shape" || value === "text" || value === "pan") || (!canEdit && value !== "pan")}
                 onMouseEnter={() => {
                   if (value === "shape" && canEdit) {
                     openShapePalette();
@@ -5201,6 +5261,9 @@ export function BoardDocumentPage({
                 }}
                 onClick={() => {
                   if (!(value === "select" || value === "shape" || value === "text" || value === "pan")) {
+                    return;
+                  }
+                  if (!canEdit && value !== "pan") {
                     return;
                   }
                   const nextTool = value as BoardTool;
