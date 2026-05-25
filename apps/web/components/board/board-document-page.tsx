@@ -2222,7 +2222,6 @@ export function BoardDocumentPage({
   const [boardMode, setBoardMode] = useState<"edit" | "read">(() =>
     document.canEdit && !document.isSharedView ? "edit" : "read",
   );
-  const [boardModeMenuOpen, setBoardModeMenuOpen] = useState(false);
   const [tableDeleteConfirm, setTableDeleteConfirm] = useState<BoardTableSelection | null>(null);
   const [tableClearConfirm, setTableClearConfirm] = useState<BoardTableSelection | null>(null);
   const [history, setHistory] = useState<{ past: BoardSnapshot[]; future: BoardSnapshot[] }>({ past: [], future: [] });
@@ -2301,7 +2300,6 @@ export function BoardDocumentPage({
   useEffect(() => {
     setCurrentDocument(document);
     setBoardMode(document.canEdit && !document.isSharedView ? "edit" : "read");
-    setBoardModeMenuOpen(false);
     const offlineDraft = document.canEdit && !document.isSharedView && document.documentType === "board"
       ? loadOfflineDocumentDraft(document.id)
       : null;
@@ -4310,10 +4308,7 @@ export function BoardDocumentPage({
 
   const changeBoardMode = (mode: "edit" | "read") => {
     if (mode === "edit" && !canUseEditMode) return;
-    if (mode === boardMode) {
-      setBoardModeMenuOpen(false);
-      return;
-    }
+    if (mode === boardMode) return;
     if (mode === "read") {
       cancelCurrentOperation();
       clearSelection();
@@ -4324,7 +4319,6 @@ export function BoardDocumentPage({
       toolRef.current = "select";
     }
     setBoardMode(mode);
-    setBoardModeMenuOpen(false);
   };
 
   useEffect(() => {
@@ -5196,38 +5190,18 @@ export function BoardDocumentPage({
         {canOpenShareDialog ? (
           <button type="button" className="flex h-9 items-center gap-1.5 border-r border-[#eef1f6] px-3 text-[#1456f0] hover:bg-[#f5f8ff]" onClick={() => setShowShareDialog(true)}><BoardIcon name="share" className="h-3.5 w-3.5" />分享</button>
         ) : null}
-        <div className="relative border-r border-[#eef1f6]">
+        <div className="border-r border-[#eef1f6]">
           <button
             type="button"
             disabled={!canUseEditMode}
-            onClick={() => setBoardModeMenuOpen((value) => !value)}
-            className={`flex h-9 items-center gap-1.5 px-3 text-[#1f2329] hover:bg-[#f5f7fb] disabled:cursor-default disabled:text-[#646a73] disabled:hover:bg-transparent ${boardModeMenuOpen ? "bg-[#f5f7fb]" : ""}`}
+            onClick={() => changeBoardMode(boardMode === "edit" ? "read" : "edit")}
+            className="flex h-9 items-center gap-1.5 px-3 text-[#1f2329] hover:bg-[#f5f7fb] disabled:cursor-default disabled:text-[#646a73] disabled:hover:bg-transparent"
             title={canUseEditMode ? "切换编辑/只读" : "只读"}
           >
             <BoardIcon name={canEdit ? "edit" : "pan"} className="h-3.5 w-3.5" />
             <span>{canEdit ? "编辑" : "只读"}</span>
-            {canUseEditMode ? <span className="text-[10px] text-[#8b95a5]">⌄</span> : null}
+            {canUseEditMode ? <span className="text-[11px] text-[#8b95a5]">⇄</span> : null}
           </button>
-          {boardModeMenuOpen && canUseEditMode ? (
-            <div className="absolute right-0 top-10 z-[90] w-32 border border-[#dee3ee] bg-white py-1 text-[13px] shadow-[0_8px_24px_rgba(31,35,41,0.14)]">
-              <button
-                type="button"
-                onClick={() => changeBoardMode("edit")}
-                className={`flex h-8 w-full items-center gap-2 px-3 text-left hover:bg-[#f5f7fb] ${boardMode === "edit" ? "text-[#1456f0]" : "text-[#1f2329]"}`}
-              >
-                <BoardIcon name="edit" className="h-3.5 w-3.5" />
-                <span>编辑模式</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => changeBoardMode("read")}
-                className={`flex h-8 w-full items-center gap-2 px-3 text-left hover:bg-[#f5f7fb] ${boardMode === "read" ? "text-[#1456f0]" : "text-[#1f2329]"}`}
-              >
-                <BoardIcon name="pan" className="h-3.5 w-3.5" />
-                <span>只读模式</span>
-              </button>
-            </div>
-          ) : null}
         </div>
         <button type="button" onClick={undo} disabled={!canEdit || history.past.length === 0} className="grid h-9 w-9 place-items-center border-r border-[#eef1f6] text-[#1f2329] hover:bg-[#f5f7fb] disabled:text-[#a8aeb8]"><BoardIcon name="undo" className="h-4 w-4" /></button>
         <button type="button" onClick={redo} disabled={!canEdit || history.future.length === 0} className="grid h-9 w-9 place-items-center border-r border-[#eef1f6] text-[#1f2329] hover:bg-[#f5f7fb] disabled:text-[#a8aeb8]"><BoardIcon name="redo" className="h-4 w-4" /></button>
