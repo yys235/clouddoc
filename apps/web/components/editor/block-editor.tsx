@@ -1491,6 +1491,18 @@ export function BlockEditor({
     onChange(nextBlocks);
   };
 
+  const insertParagraphAfterBlock = (index: number) => {
+    const nextBlockId = createClientId();
+    const nextBlocks = [...blocks];
+    nextBlocks.splice(index + 1, 0, {
+      id: nextBlockId,
+      type: "paragraph",
+      text: "",
+    });
+    onChange(nextBlocks);
+    focusBlock(nextBlockId, 0);
+  };
+
   const removeBlock = (blockId: string) => {
     const nextBlocks = blocks.filter((block) => block.id !== blockId);
     onChange(
@@ -2434,6 +2446,23 @@ export function BlockEditor({
       }
     };
 
+  const handleNonTextBlockKeyDown =
+    (block: EditableBlock, index: number) =>
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (readOnly || event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+        return;
+      }
+      if (event.target !== event.currentTarget) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      insertParagraphAfterBlock(index);
+      setActiveBlockId(null);
+      setSelectedImageBlockId(null);
+    };
+
   return (
     <div className="space-y-1">
       {blocks.map((block, index) => {
@@ -2451,6 +2480,7 @@ export function BlockEditor({
         const displayText = displayTextForBlock(block);
         const orderedListStart =
           block.type === "ordered_list" ? orderedNumberForBlockIndex(index) : undefined;
+        const showsTextSurface = showsUnifiedTextSurface(block, readOnly);
         const blockCommentRanges = blockThreads.map((thread) => ({
           id: thread.id,
           start: displayOffsetFromBlockRawOffset(block, thread.anchorStartOffset),
@@ -2676,7 +2706,17 @@ export function BlockEditor({
                 </div>
               ) : null}
 
-              <div style={sanitizeIndent(block.indent) > 0 ? { paddingLeft: `${sanitizeIndent(block.indent) * 28}px` } : undefined}>
+              <div
+                tabIndex={!readOnly && !showsTextSurface ? 0 : undefined}
+                onFocus={() => {
+                  if (!readOnly && !showsTextSurface) {
+                    setActiveBlockId(block.id);
+                  }
+                }}
+                onKeyDown={handleNonTextBlockKeyDown(block, index)}
+                className={!readOnly && !showsTextSurface ? "rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-sky-300" : undefined}
+                style={sanitizeIndent(block.indent) > 0 ? { paddingLeft: `${sanitizeIndent(block.indent) * 28}px` } : undefined}
+              >
                 {block.type === "link" ? <LinkPreviewBlock block={block} readOnly={readOnly} /> : null}
 
                 {block.type === "image" ? (
@@ -2701,7 +2741,7 @@ export function BlockEditor({
                   </div>
                 ) : null}
 
-                {showsUnifiedTextSurface(block, readOnly) ? (
+                {showsTextSurface ? (
                   <TextBlockSurface
                     blockId={block.id}
                     blockType={block.type as UnifiedTextBlockType}

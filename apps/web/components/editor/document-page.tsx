@@ -1743,12 +1743,12 @@ function DocumentTextPage({
 
   return (
     <div
-      className={`grid min-h-screen grid-cols-1 ${
+      className={`grid h-screen min-h-0 grid-cols-1 overflow-hidden ${
         showCommentSidebar ? "xl:grid-cols-[260px_minmax(0,1fr)_340px]" : "xl:grid-cols-[260px_minmax(0,1fr)]"
       }`}
     >
-      <aside className="hidden border-r border-slate-300 bg-white px-4 py-4 xl:block">
-        <div className="sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto pr-1">
+      <aside className="hidden min-h-0 overflow-y-auto border-r border-slate-300 bg-white px-4 py-4 xl:block">
+        <div className="pr-1">
           <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">页面目录</div>
           <div className="mt-3 space-y-1">
             {currentDocument.outline.map((item) => (
@@ -1777,36 +1777,36 @@ function DocumentTextPage({
         </div>
       </aside>
 
-      <section className="min-w-0 bg-sand px-3 py-3 md:px-4">
-        <header className="mx-auto mb-3 max-w-[1320px]">
-          <div className="space-y-2.5">
-            <div className="flex items-start justify-between gap-3">
-              <nav className="flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-slate-400">
-                <Link href={`/documents${currentDocument.spaceId ? `?space=${currentDocument.spaceId}` : ""}`} className="transition hover:text-slate-700">
+      <section className="min-h-0 min-w-0 overflow-y-auto bg-sand">
+        <header className="sticky top-0 z-40 border-b border-slate-400 bg-[#e8edf3] px-3 py-1.5 shadow-[0_12px_28px_rgba(15,23,42,0.14),0_1px_0_rgba(255,255,255,0.85)_inset] md:px-4">
+          <div className="mx-auto max-w-[1320px] space-y-1.5">
+            <div className="flex items-center justify-between gap-3">
+              <nav className="flex min-w-0 items-center gap-2 overflow-hidden text-xs uppercase tracking-[0.14em] text-slate-500">
+                <Link href={`/documents${currentDocument.spaceId ? `?space=${currentDocument.spaceId}` : ""}`} className="shrink-0 transition hover:text-slate-800">
                   {spaceName ?? "空间"}
                 </Link>
                 {(breadcrumbs ?? []).map((item) => (
                   <div key={item.id} className="contents">
-                    <span>/</span>
-                    <Link href={`/folders/${item.id}`} className="transition hover:text-slate-700">
+                    <span className="shrink-0">/</span>
+                    <Link href={`/folders/${item.id}`} className="truncate transition hover:text-slate-800">
                       {item.title}
                     </Link>
                   </div>
                 ))}
-                <span>/</span>
-                <Link href={`/docs/${currentDocument.id}`} className="transition hover:text-slate-700">
+                <span className="shrink-0">/</span>
+                <Link href={`/docs/${currentDocument.id}`} className="truncate transition hover:text-slate-800">
                   {currentDocument.title}
                 </Link>
               </nav>
-              <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
                 {!currentDocument.isSharedView ? (
                   <button
                     type="button"
                     onClick={toggleFavorite}
-                    className={`border px-3 py-1.5 text-sm ${
+                    className={`border px-2.5 py-1 text-xs ${
                       currentDocument.isFavorited
                         ? "border-amber-200 bg-amber-50 text-amber-700"
-                        : "border-slate-200 bg-white/80 text-slate-600"
+                        : "border-slate-200 bg-white/90 text-slate-600"
                     }`}
                   >
                     {currentDocument.isFavorited ? "已收藏" : "收藏"}
@@ -1816,7 +1816,7 @@ function DocumentTextPage({
                   <button
                     type="button"
                     onClick={() => setShowShareDialog(true)}
-                    className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600"
+                    className="border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600"
                   >
                     权限/分享
                   </button>
@@ -1826,7 +1826,7 @@ function DocumentTextPage({
                     type="button"
                     disabled={isMutating || isSaving}
                     onClick={() => setShowDeleteConfirm(true)}
-                    className="border border-rose-200 bg-white px-3 py-1.5 text-sm text-rose-600 disabled:cursor-not-allowed disabled:opacity-70"
+                    className="border border-rose-200 bg-white px-2.5 py-1 text-xs text-rose-600 disabled:cursor-not-allowed disabled:opacity-70"
                   >
                     删除
                   </button>
@@ -1840,7 +1840,7 @@ function DocumentTextPage({
                         undoDraftChange();
                         setNotice("已撤销");
                       }}
-                      className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:opacity-45"
+                      className="border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 disabled:cursor-not-allowed disabled:opacity-45"
                       title="撤销（⌘Z / Ctrl+Z）"
                     >
                       撤销
@@ -1852,7 +1852,7 @@ function DocumentTextPage({
                         redoDraftChange();
                         setNotice("已重做");
                       }}
-                      className="border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:opacity-45"
+                      className="border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 disabled:cursor-not-allowed disabled:opacity-45"
                       title="重做（⌘⇧Z / Ctrl+Shift+Z / Ctrl+Y）"
                     >
                       重做
@@ -1878,7 +1878,7 @@ function DocumentTextPage({
                         keepModeMenuOpen();
                         setIsModeMenuOpen(true);
                       }}
-                      className="flex items-center gap-2 border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-800 shadow-[0_1px_0_rgba(15,23,42,0.03)] transition hover:border-slate-300 hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
+                      className="flex items-center gap-1.5 border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-800 shadow-[0_1px_0_rgba(15,23,42,0.03)] transition hover:border-slate-300 hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
                     >
                       <currentModeOption.icon active />
                       <span className="font-medium">{currentModeOption.label}</span>
@@ -1924,16 +1924,17 @@ function DocumentTextPage({
                     </div>
                   </div>
                 ) : isPdfDocument ? (
-                  <span className="border border-slate-200 bg-white px-2.5 py-1 text-sm text-slate-500">
+                  <span className="border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500">
                     PDF 暂不支持编辑
                   </span>
                 ) : (
-                  <span className="border border-slate-200 bg-white px-2.5 py-1 text-sm text-slate-500">
+                  <span className="border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500">
                     {currentDocument.isSharedView ? "分享只读视图" : "只读"}
                   </span>
                 )}
               </div>
             </div>
+
             <div className="min-w-0">
               {!isPdfDocument ? (
                 <textarea
@@ -1945,16 +1946,18 @@ function DocumentTextPage({
                   rows={1}
                   spellCheck={isEditing && canEditDocument}
                   aria-readonly={!isEditing || !canEditDocument}
-                  className={`block w-full resize-none overflow-hidden border-0 bg-transparent px-0 py-0 text-[2.1rem] font-semibold leading-tight tracking-tight text-slate-950 outline-none ring-0 placeholder:text-slate-300 ${
+                  className={`block w-full resize-none overflow-hidden truncate whitespace-nowrap border-0 bg-transparent px-0 py-0 text-[1.35rem] font-semibold leading-7 tracking-tight text-slate-950 outline-none ring-0 placeholder:text-slate-300 ${
                     !isEditing || !canEditDocument ? "cursor-text caret-transparent" : ""
                   }`}
                 />
               ) : (
-                <h1 id="intro" className="text-[2.1rem] font-semibold leading-tight tracking-tight text-slate-950">
+                <h1 id="intro" className="truncate text-[1.35rem] font-semibold leading-7 tracking-tight text-slate-950">
                   {currentDocument.title}
                 </h1>
               )}
-              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-slate-500">
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
                 <span>{currentDocument.updatedAt}</span>
                 <span>·</span>
                 <span>{isSaving ? "保存中..." : currentDocument.saveStatus}</span>
@@ -1964,38 +1967,24 @@ function DocumentTextPage({
                     <span>{notice}</span>
                   </>
                 ) : null}
-              </div>
+                <span className="border border-slate-200 bg-white/90 px-1.5 py-0.5">{currentDocument.documentType}</span>
+                <span className="border border-slate-200 bg-white/90 px-1.5 py-0.5" title={visibilityHint}>{visibilityLabel}</span>
+                <span className="border border-slate-200 bg-white/90 px-1.5 py-0.5">
+                  {currentDocument.isSharedView ? "分享只读" : canEditDocument ? "可编辑" : "只读"}
+                </span>
+                {currentShareSettings?.isEnabled ? (
+                  <span className="border border-slate-200 bg-white/90 px-1.5 py-0.5">已分享</span>
+                ) : null}
+                {summaryLabel ? (
+                  <span className="max-w-[420px] truncate border border-slate-200 bg-white/90 px-1.5 py-0.5">
+                    {summaryLabel}
+                  </span>
+                ) : null}
             </div>
-          </div>
-
-          <div className={`mt-2 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 ${isEditing ? "opacity-75" : ""}`}>
-            <span className="border border-slate-200 bg-white px-2 py-0.5">
-              {currentDocument.documentType}
-            </span>
-            <span className="border border-slate-200 bg-white px-2 py-0.5" title={visibilityHint}>
-              {visibilityLabel}
-            </span>
-            {currentDocument.isSharedView ? (
-              <span className="border border-slate-200 bg-white px-2 py-0.5">独立分享链接访问</span>
-            ) : (
-              <span className="border border-slate-200 bg-white px-2 py-0.5">
-                {canEditDocument ? "可编辑" : "只读"}
-              </span>
-            )}
-            {currentShareSettings?.isEnabled ? (
-              <span className="border border-slate-200 bg-white px-2 py-0.5">
-                已启用分享
-              </span>
-            ) : null}
-            {summaryLabel ? (
-              <span className="max-w-full truncate border border-slate-200 bg-white px-2 py-0.5">
-                {summaryLabel}
-              </span>
-            ) : null}
           </div>
         </header>
 
-        <article className="mx-auto max-w-[1320px] bg-transparent px-0 py-2">
+        <article className="mx-auto my-4 max-w-[1320px] bg-white px-5 py-6 shadow-[0_1px_0_rgba(15,23,42,0.06)] ring-1 ring-slate-200/80 md:px-8">
           {isPdfDocument ? (
             <PdfPreview
               fileUrl={currentDocument.fileUrl}
