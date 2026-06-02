@@ -3,6 +3,7 @@
 import type {
   ChangeEvent as ReactChangeEvent,
   ClipboardEvent as ReactClipboardEvent,
+  CSSProperties,
   FocusEvent as ReactFocusEvent,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
@@ -74,8 +75,12 @@ export type EditableBlock = {
   type: EditableBlockType;
   text: string;
   headingLevel?: number;
+  indent?: number;
+  orderedListStart?: number;
+  orderedListStartOverrides?: Record<number, number>;
   meta?: LinkCardMeta;
   imageAlign?: "left" | "center" | "right";
+  imageRotation?: number;
 };
 
 type UploadedImageAsset = {
@@ -91,6 +96,12 @@ const LINK_VIEW_OPTIONS: Array<{ value: LinkCardView; label: string }> = [
   { value: "card", label: "卡片视图" },
   { value: "preview", label: "预览视图" },
 ];
+
+type ImagePreviewData = {
+  blockId: string;
+  src: string;
+  alt: string;
+};
 
 function normalizeExternalHref(rawHref: string) {
   const href = rawHref.trim();
@@ -210,6 +221,46 @@ function defaultMetaByType(type: EditableBlockType): LinkCardMeta | undefined {
   return undefined;
 }
 
+function sanitizeIndent(indent: number | undefined) {
+  const value = Number(indent ?? 0);
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(6, Math.trunc(value)));
+}
+
+function sanitizeOrderedListStart(start: number | undefined) {
+  const value = Number(start ?? 1);
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.max(1, Math.min(9999, Math.trunc(value)));
+}
+
+function sanitizeOrderedListStartOverrides(overrides: Record<number, number> | undefined, lineCount?: number) {
+  const nextOverrides: Record<number, number> = {};
+  Object.entries(overrides ?? {}).forEach(([rawIndex, rawStart]) => {
+    const index = Number(rawIndex);
+    const start = sanitizeOrderedListStart(rawStart);
+    if (!Number.isInteger(index) || index <= 0) {
+      return;
+    }
+    if (lineCount !== undefined && index >= lineCount) {
+      return;
+    }
+    nextOverrides[index] = start;
+  });
+  return nextOverrides;
+}
+
+function sanitizeImageRotation(rotation: number | undefined) {
+  const value = Number(rotation ?? 0);
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return ((Math.trunc(value) % 360) + 360) % 360;
+}
+
 function fallbackSplitText() {
   return "";
 }
@@ -261,7 +312,11 @@ function parsePastedTextToBlocks(text: string) {
 
       const orderedMatch = trimmed.match(/^\d+[.)]\s+(.+)$/);
       if (orderedMatch) {
-        return createBlock("ordered_list", orderedMatch[1]);
+        const orderedStart = Number(trimmed.match(/^\d+/)?.[0] ?? 1);
+        return {
+          ...createBlock("ordered_list", orderedMatch[1]),
+          orderedListStart: sanitizeOrderedListStart(orderedStart),
+        };
       }
 
       const checkMatch = trimmed.match(/^(?:-\s*)?\[( |x|X)\]\s+(.+)$/);
@@ -581,15 +636,76 @@ function LinkPreviewBlock({ block, readOnly }: { block: EditableBlock; readOnly:
 function ImagePreviewBlock({
   block,
   readOnly,
+  selected,
+  onSelect,
+  onPreview,
+  onRotate,
   onAlign,
   onDelete,
 }: {
   block: EditableBlock;
   readOnly: boolean;
+  selected: boolean;
+  onSelect: () => void;
+  onPreview: () => void;
+  onRotate: () => void;
   onAlign: (align: "left" | "center" | "right") => void;
   onDelete: () => void;
 }) {
   const preview = imageBlockData(block);
+  const imageRotation = sanitizeImageRotation(block.imageRotation);
+  const isSideways = imageRotation === 90 || imageRotation === 270;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const [imageBox, setImageBox] = useState<{ width: number; height: number } | null>(null);
+
+  useEffect(() => {
+    const updateImageBox = () => {
+      const image = imageRef.current;
+      const container = containerRef.current;
+      if (!image) {
+        return;
+      }
+      const naturalWidth = image.naturalWidth || image.offsetWidth;
+      const naturalHeight = image.naturalHeight || image.offsetHeight;
+      const containerWidth = Math.max(1, Math.floor(container?.clientWidth ?? 0));
+      if (naturalWidth <= 0 || naturalHeight <= 0 || containerWidth <= 0) {
+        return;
+      }
+      const maxVisualHeight = 520;
+      const widthBound = isSideways ? naturalHeight : naturalWidth;
+      const heightBound = isSideways ? naturalWidth : naturalHeight;
+      const scale = Math.min(1, containerWidth / widthBound, maxVisualHeight / heightBound);
+      const nextBox = {
+        width: Math.max(1, Math.floor(naturalWidth * scale)),
+        height: Math.max(1, Math.floor(naturalHeight * scale)),
+      };
+      setImageBox((current) =>
+        current?.width === nextBox.width && current.height === nextBox.height ? current : nextBox,
+      );
+    };
+
+    updateImageBox();
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined" && containerRef.current
+        ? new ResizeObserver(updateImageBox)
+        : null;
+    if (containerRef.current) {
+      resizeObserver?.observe(containerRef.current);
+    }
+    window.addEventListener("resize", updateImageBox);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateImageBox);
+    };
+  }, [isSideways, preview.src]);
+
+  const figureStyle: CSSProperties | undefined = imageBox
+    ? {
+        width: `${isSideways ? imageBox.height : imageBox.width}px`,
+        height: `${isSideways ? imageBox.width : imageBox.height}px`,
+      }
+    : undefined;
 
   if (!preview.src) {
     return (
@@ -600,10 +716,19 @@ function ImagePreviewBlock({
   }
 
   return (
-    <div className={`mb-2 flex w-full ${imageAlignClassName(block.imageAlign)}`}>
-      <figure className="group/image relative overflow-hidden rounded-lg bg-transparent">
+    <div ref={containerRef} className={`mb-2 flex w-full min-w-0 ${imageAlignClassName(block.imageAlign)}`}>
+      <figure
+        className={`group/image relative overflow-visible rounded-lg bg-transparent ring-offset-2 ring-offset-white transition ${
+          selected ? "ring-2 ring-sky-400" : "ring-0"
+        }`}
+        style={figureStyle}
+      >
         {preview.src ? (
-          <div className="pointer-events-none absolute right-3 top-3 z-10 opacity-0 transition duration-150 group-hover/image:opacity-100">
+          <div
+            className={`pointer-events-none absolute right-3 top-3 z-10 transition duration-150 ${
+              selected ? "opacity-100" : "opacity-0 group-hover/image:opacity-100"
+            }`}
+          >
             <div className="pointer-events-auto flex items-center gap-1 rounded-md border border-slate-200 bg-white/95 p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)] backdrop-blur-sm">
               {!readOnly ? (
                 <>
@@ -633,15 +758,28 @@ function ImagePreviewBlock({
                   </button>
                 </>
               ) : null}
-              <a
-                href={preview.src}
-                target="_blank"
-                rel="noreferrer"
+              <button
+                type="button"
                 className="flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-50"
-                title="打开原图"
+                title="预览图片"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onPreview();
+                }}
               >
-                ↗
-              </a>
+                ⛶
+              </button>
+              <button
+                type="button"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-50"
+                title="旋转预览"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRotate();
+                }}
+              >
+                ↻
+              </button>
               <button
                 type="button"
                 className="flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-50"
@@ -666,8 +804,232 @@ function ImagePreviewBlock({
           </div>
         ) : null}
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={preview.src} alt={preview.alt} className="max-h-[520px] max-w-full rounded-lg object-contain bg-transparent" />
+        <img
+          ref={imageRef}
+          src={preview.src}
+          alt={preview.alt}
+          className={`cursor-zoom-in rounded-lg bg-transparent object-contain ${
+            imageBox ? "absolute left-1/2 top-1/2 max-w-none" : "max-h-[520px] max-w-full"
+          }`}
+          style={
+            imageBox
+              ? {
+                  width: `${imageBox.width}px`,
+                  height: `${imageBox.height}px`,
+                  transform: `translate(-50%, -50%) rotate(${imageRotation}deg)`,
+                }
+              : { transform: `rotate(${imageRotation}deg)` }
+          }
+          onLoad={() => {
+            const image = imageRef.current;
+            const container = containerRef.current;
+            if (!image) {
+              return;
+            }
+            const naturalWidth = image.naturalWidth || image.offsetWidth;
+            const naturalHeight = image.naturalHeight || image.offsetHeight;
+            const containerWidth = Math.max(1, Math.floor(container?.clientWidth ?? 0));
+            const widthBound = isSideways ? naturalHeight : naturalWidth;
+            const heightBound = isSideways ? naturalWidth : naturalHeight;
+            const scale = Math.min(1, containerWidth / widthBound, 520 / heightBound);
+            const nextBox = {
+              width: Math.max(1, Math.floor(naturalWidth * scale)),
+              height: Math.max(1, Math.floor(naturalHeight * scale)),
+            };
+            if (nextBox.width > 0 && nextBox.height > 0) {
+              setImageBox(nextBox);
+            }
+          }}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (selected) {
+              onPreview();
+              return;
+            }
+            onSelect();
+          }}
+        />
       </figure>
+    </div>
+  );
+}
+
+function ImageLightbox({
+  images,
+  index,
+  initialRotation = 0,
+  onIndexChange,
+  onClose,
+}: {
+  images: ImagePreviewData[];
+  index: number;
+  initialRotation?: number;
+  onIndexChange: (index: number) => void;
+  onClose: () => void;
+}) {
+  const [scale, setScale] = useState(1);
+  const [rotation, setRotation] = useState(initialRotation);
+  const image = images[index];
+  const canGoPrevious = index > 0;
+  const canGoNext = index < images.length - 1;
+
+  useEffect(() => {
+    setScale(1);
+    setRotation(initialRotation);
+  }, [index, initialRotation]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key === "ArrowLeft" && canGoPrevious) {
+        event.preventDefault();
+        onIndexChange(index - 1);
+        return;
+      }
+      if (event.key === "ArrowRight" && canGoNext) {
+        event.preventDefault();
+        onIndexChange(index + 1);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [canGoNext, canGoPrevious, index, onClose, onIndexChange]);
+
+  useEffect(() => {
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, []);
+
+  if (!image) {
+    return null;
+  }
+
+  const boundedScale = Math.round(scale * 100);
+
+  return (
+    <div
+      className="fixed inset-0 z-[160] overscroll-contain bg-[#030712]/94 text-white"
+      role="dialog"
+      aria-modal="true"
+      aria-label="图片预览"
+      onWheel={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      onTouchMove={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+      <button
+        type="button"
+        className="absolute inset-0 cursor-zoom-out"
+        aria-label="关闭图片预览"
+        onClick={onClose}
+      />
+      <button
+        type="button"
+        className="absolute right-5 top-5 z-20 flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-xl text-white backdrop-blur transition hover:bg-black/75"
+        onClick={onClose}
+        aria-label="关闭"
+      >
+        ×
+      </button>
+      {canGoPrevious ? (
+        <button
+          type="button"
+          className="absolute left-5 top-1/2 z-20 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-2xl text-white backdrop-blur transition hover:bg-black/75"
+          onClick={() => onIndexChange(index - 1)}
+          aria-label="上一张"
+        >
+          ‹
+        </button>
+      ) : null}
+      {canGoNext ? (
+        <button
+          type="button"
+          className="absolute right-5 top-1/2 z-20 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-2xl text-white backdrop-blur transition hover:bg-black/75"
+          onClick={() => onIndexChange(index + 1)}
+          aria-label="下一张"
+        >
+          ›
+        </button>
+      ) : null}
+      <div
+        className="relative z-10 flex h-full w-full cursor-zoom-out items-center justify-center px-5 py-20"
+        onClick={onClose}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={image.src}
+          alt={image.alt}
+          className="max-h-full max-w-full cursor-default rounded-lg object-contain shadow-[0_32px_110px_rgba(0,0,0,0.72)] transition-transform duration-150"
+          style={{ transform: `scale(${scale}) rotate(${rotation}deg)` }}
+          onClick={(event) => event.stopPropagation()}
+        />
+      </div>
+      <div
+        className="absolute bottom-6 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/20 bg-black/70 px-2 py-1 text-sm text-white shadow-[0_18px_55px_rgba(0,0,0,0.55)] backdrop-blur"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <span className="px-3 text-white/80">{index + 1}/{images.length}</span>
+        <button
+          type="button"
+          className="h-8 rounded-full px-3 text-white/85 transition hover:bg-white/12 hover:text-white"
+          onClick={() => setScale((value) => Math.max(0.25, Number((value - 0.25).toFixed(2))))}
+        >
+          -
+        </button>
+        <span className="min-w-14 text-center text-white/80">{boundedScale}%</span>
+        <button
+          type="button"
+          className="h-8 rounded-full px-3 text-white/85 transition hover:bg-white/12 hover:text-white"
+          onClick={() => setScale((value) => Math.min(3, Number((value + 0.25).toFixed(2))))}
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className="h-8 rounded-full px-3 text-white/85 transition hover:bg-white/12 hover:text-white"
+          onClick={() => setScale(1)}
+        >
+          适配
+        </button>
+        <button
+          type="button"
+          className="h-8 rounded-full px-3 text-white/85 transition hover:bg-white/12 hover:text-white"
+          onClick={() => setRotation((value) => (value + 90) % 360)}
+        >
+          旋转
+        </button>
+        <a
+          href={image.src}
+          target="_blank"
+          rel="noreferrer"
+          className="h-8 rounded-full px-3 leading-8 text-white/85 transition hover:bg-white/12 hover:text-white"
+        >
+          原图
+        </a>
+        <a
+          href={image.src}
+          download
+          className="h-8 rounded-full px-3 leading-8 text-white/85 transition hover:bg-white/12 hover:text-white"
+        >
+          下载
+        </a>
+      </div>
     </div>
   );
 }
@@ -716,6 +1078,15 @@ export function BlockEditor({
   const [pinnedCommandMenuBlockId, setPinnedCommandMenuBlockId] = useState<string | null>(null);
   const [commandMenuPosition, setCommandMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const [selectionToolbar, setSelectionToolbar] = useState<SelectionToolbarState | null>(null);
+  const [listMarkerToolbar, setListMarkerToolbar] = useState<{
+    blockId: string;
+    lineIndex: number;
+    left: number;
+    top: number;
+  } | null>(null);
+  const [selectedImageBlockId, setSelectedImageBlockId] = useState<string | null>(null);
+  const [lightboxImageIndex, setLightboxImageIndex] = useState<number | null>(null);
+  const [lightboxInitialRotation, setLightboxInitialRotation] = useState(0);
   const [pendingDeleteBlock, setPendingDeleteBlock] = useState<{
     blockId: string;
     kind: "block" | "image";
@@ -727,6 +1098,30 @@ export function BlockEditor({
   const commandMenuFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const commandMenuRef = useRef<HTMLDivElement | null>(null);
   const linkViewMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const imagePreviews = useMemo<ImagePreviewData[]>(() => {
+    return blocks
+      .filter((block) => block.type === "image")
+      .map((block) => {
+        const preview = imageBlockData(block);
+        return {
+          blockId: block.id,
+          src: preview.src,
+          alt: preview.alt,
+        };
+      })
+      .filter((image) => Boolean(image.src));
+  }, [blocks]);
+
+  const openImageLightbox = (blockId: string, initialRotation = 0) => {
+    const imageIndex = imagePreviews.findIndex((image) => image.blockId === blockId);
+    if (imageIndex < 0) {
+      return;
+    }
+    setSelectedImageBlockId(blockId);
+    setLightboxInitialRotation(initialRotation);
+    setLightboxImageIndex(imageIndex);
+  };
 
   useEffect(() => {
     return () => {
@@ -763,6 +1158,15 @@ export function BlockEditor({
       resizeTextarea(textarea);
     });
   }, [blocks, readOnly]);
+
+  useEffect(() => {
+    if (selectedImageBlockId && !imagePreviews.some((image) => image.blockId === selectedImageBlockId)) {
+      setSelectedImageBlockId(null);
+    }
+    if (lightboxImageIndex !== null && !imagePreviews[lightboxImageIndex]) {
+      setLightboxImageIndex(null);
+    }
+  }, [imagePreviews, lightboxImageIndex, selectedImageBlockId]);
 
   useEffect(() => {
     const dismissSelection = () => setSelectionToolbar(null);
@@ -851,7 +1255,7 @@ export function BlockEditor({
   }, [commandMenu]);
 
   useEffect(() => {
-    if (!commandMenu && !linkViewMenuBlockId && !visibleToolbarBlockId && !selectionToolbar) {
+    if (!commandMenu && !linkViewMenuBlockId && !visibleToolbarBlockId && !selectionToolbar && !listMarkerToolbar) {
       return;
     }
 
@@ -884,12 +1288,15 @@ export function BlockEditor({
       if (selectionToolbar) {
         setSelectionToolbar(null);
       }
+      if (listMarkerToolbar) {
+        setListMarkerToolbar(null);
+      }
       setPinnedCommandMenuBlockId(null);
     };
 
     window.addEventListener("pointerdown", handlePointerDown);
     return () => window.removeEventListener("pointerdown", handlePointerDown);
-  }, [commandMenu, linkViewMenuBlockId, selectionToolbar, visibleToolbarBlockId]);
+  }, [commandMenu, linkViewMenuBlockId, listMarkerToolbar, selectionToolbar, visibleToolbarBlockId]);
 
   useEffect(() => {
     if (!commandMenu || commandMenu.mode !== "actions") {
@@ -942,6 +1349,36 @@ export function BlockEditor({
     onChange(blocks.map((block) => (block.id === blockId ? { ...block, ...patch } : block)));
   };
 
+  const updateOrderedListBlockAndResetFollowing = (index: number, patch: Partial<EditableBlock>) => {
+    const nextBlocks = blocks.map((block, blockIndex) => {
+      if (blockIndex === index) {
+        return { ...block, ...patch };
+      }
+      if (blockIndex > index && block.type === "ordered_list" && blocks[blockIndex - 1]?.type === "ordered_list") {
+        return {
+          ...block,
+          orderedListStart: undefined,
+          orderedListStartOverrides: undefined,
+        };
+      }
+      return block;
+    });
+    onChange(nextBlocks);
+  };
+
+  const changeBlockIndent = (blockId: string, direction: 1 | -1) => {
+    onChange(
+      blocks.map((block) =>
+        block.id === blockId
+          ? {
+              ...block,
+              indent: sanitizeIndent(sanitizeIndent(block.indent) + direction),
+            }
+          : block,
+      ),
+    );
+  };
+
   const updateLinkMeta = (blockId: string, patch: Partial<LinkCardMeta>) => {
     onChange(
       blocks.map((block) =>
@@ -960,6 +1397,19 @@ export function BlockEditor({
 
   const updateImageAlign = (blockId: string, align: "left" | "center" | "right") => {
     onChange(blocks.map((block) => (block.id === blockId ? { ...block, imageAlign: align } : block)));
+  };
+
+  const rotateImageBlock = (blockId: string) => {
+    onChange(
+      blocks.map((block) =>
+        block.id === blockId
+          ? {
+              ...block,
+              imageRotation: sanitizeImageRotation(sanitizeImageRotation(block.imageRotation) + 90),
+            }
+          : block,
+      ),
+    );
   };
 
   const showToolbar = (blockId: string) => {
@@ -1050,6 +1500,31 @@ export function BlockEditor({
     );
   };
 
+  const removeBlockAndFocusNeighbor = (index: number) => {
+    const current = blocks[index];
+    if (!current) {
+      return;
+    }
+
+    const previous = blocks[index - 1];
+    const next = blocks[index + 1];
+    if (!previous && !next) {
+      updateBlock(current.id, { text: "", type: "paragraph", indent: 0 });
+      focusBlock(current.id, 0);
+      return;
+    }
+
+    const nextBlocks = blocks.filter((block) => block.id !== current.id);
+    onChange(nextBlocks);
+    if (previous) {
+      focusBlock(previous.id, previous.text.length);
+      return;
+    }
+    if (next) {
+      focusBlock(next.id, 0);
+    }
+  };
+
   const requestDeleteBlock = (blockId: string, kind: "block" | "image" = "block") => {
     setPendingDeleteBlock({ blockId, kind });
   };
@@ -1107,6 +1582,28 @@ export function BlockEditor({
     onChange(nextBlocks);
   };
 
+  const orderedNumberForBlockIndex = (targetIndex: number) => {
+    let currentNumber = 1;
+    for (let index = 0; index <= targetIndex; index += 1) {
+      const item = blocks[index];
+      if (!item || item.type !== "ordered_list") {
+        currentNumber = 1;
+        continue;
+      }
+      currentNumber =
+        item.orderedListStart !== undefined
+          ? sanitizeOrderedListStart(item.orderedListStart)
+          : index > 0 && blocks[index - 1]?.type === "ordered_list"
+            ? currentNumber
+            : 1;
+      if (index === targetIndex) {
+        return currentNumber;
+      }
+      currentNumber += 1;
+    }
+    return 1;
+  };
+
   const splitBlock = (index: number, selectionStart: number, selectionEnd: number) => {
     const current = blocks[index];
     if (!current) {
@@ -1130,11 +1627,256 @@ export function BlockEditor({
       type: current.type,
       text: nextText,
       headingLevel: current.headingLevel,
+      orderedListStart: undefined,
       meta: current.type === "link" ? { ...(current.meta ?? {}), status: "idle" } : current.meta ? { ...current.meta } : undefined,
     });
 
     onChange(nextBlocks);
     focusBlock(nextBlockId, after ? 0 : nextText.length);
+  };
+
+  const listLineAtCaret = (value: string, caret: number) => {
+    const safeCaret = Math.max(0, Math.min(caret, value.length));
+    const lineStart = value.lastIndexOf("\n", Math.max(0, safeCaret - 1)) + 1;
+    const nextLineBreak = value.indexOf("\n", safeCaret);
+    const lineEnd = nextLineBreak === -1 ? value.length : nextLineBreak;
+    const linesBefore = value.slice(0, lineStart).split("\n").length - 1;
+    const totalLines = value.split("\n").length;
+    return {
+      lineStart,
+      lineEnd,
+      nextLineBreak,
+      line: value.slice(lineStart, lineEnd),
+      lineIndex: linesBefore,
+      totalLines,
+    };
+  };
+
+  const splitListAroundLine = (block: EditableBlock, value: string, lineStart: number, nextLineBreak: number) => {
+    return {
+      beforeText: value.slice(0, lineStart).replace(/\n$/, ""),
+      afterText: nextLineBreak === -1 ? "" : value.slice(nextLineBreak + 1),
+    };
+  };
+
+  const replaceListLineWithParagraph = (
+    block: EditableBlock,
+    index: number,
+    paragraphText: string,
+    beforeText: string,
+    afterText: string,
+    focusCaret: number,
+  ) => {
+    const paragraphId = createClientId();
+    const replacementBlocks: EditableBlock[] = [];
+
+    if (beforeText) {
+      replacementBlocks.push({
+        ...block,
+        text: beforeText,
+        meta: block.meta ? { ...block.meta } : undefined,
+      });
+    }
+
+    replacementBlocks.push({
+      id: paragraphId,
+      type: "paragraph",
+      text: paragraphText,
+      indent: block.indent,
+    });
+
+    if (afterText) {
+      replacementBlocks.push({
+        ...block,
+        id: createClientId(),
+        text: afterText,
+        meta: block.meta ? { ...block.meta } : undefined,
+      });
+    }
+
+    const nextBlocks = [...blocks];
+    nextBlocks.splice(index, 1, ...replacementBlocks);
+    onChange(nextBlocks);
+    focusBlock(paragraphId, focusCaret);
+  };
+
+  const exitEmptyListLine = (block: EditableBlock, index: number, value: string, caret: number) => {
+    if (block.type !== "ordered_list" && block.type !== "bullet_list") {
+      return false;
+    }
+
+    const lineInfo = listLineAtCaret(value, caret);
+    if (caret !== lineInfo.lineStart || lineInfo.line.trim()) {
+      return false;
+    }
+
+    const { beforeText, afterText } = splitListAroundLine(block, value, lineInfo.lineStart, lineInfo.nextLineBreak);
+    replaceListLineWithParagraph(block, index, "", beforeText, afterText, 0);
+    return true;
+  };
+
+  const deleteEmptyListLine = (block: EditableBlock, index: number, value: string, caret: number) => {
+    if (block.type !== "ordered_list" && block.type !== "bullet_list") {
+      return false;
+    }
+
+    const lineInfo = listLineAtCaret(value, caret);
+    if (caret !== lineInfo.lineStart || lineInfo.line.trim()) {
+      return false;
+    }
+
+    const { beforeText, afterText } = splitListAroundLine(block, value, lineInfo.lineStart, lineInfo.nextLineBreak);
+    const nextText = [beforeText, afterText].filter((part) => part.length > 0).join("\n");
+    if (!nextText) {
+      updateBlock(block.id, { type: "paragraph", text: "" });
+      focusBlock(block.id, 0);
+      return true;
+    }
+
+    updateBlock(block.id, { text: nextText });
+    focusBlock(block.id, beforeText.length);
+    return true;
+  };
+
+  const mergeListLineBackward = (block: EditableBlock, index: number, value: string, caret: number) => {
+    if (block.type !== "ordered_list" && block.type !== "bullet_list") {
+      return false;
+    }
+
+    const lineInfo = listLineAtCaret(value, caret);
+    if (caret !== lineInfo.lineStart || !lineInfo.line.trim()) {
+      return false;
+    }
+
+    if (lineInfo.lineIndex === 0) {
+      const { afterText } = splitListAroundLine(block, value, lineInfo.lineStart, lineInfo.nextLineBreak);
+      replaceListLineWithParagraph(block, index, lineInfo.line, "", afterText, 0);
+      return true;
+    }
+
+    const previousLineEnd = lineInfo.lineStart - 1;
+    const nextText = `${value.slice(0, previousLineEnd)}${lineInfo.line}${value.slice(lineInfo.lineEnd)}`;
+    updateBlock(block.id, { text: nextText });
+    focusBlock(block.id, previousLineEnd);
+    return true;
+  };
+
+  const caretStartForListLine = (value: string, lineIndex: number) => {
+    const lines = value.split("\n");
+    const boundedIndex = Math.max(0, Math.min(lineIndex, lines.length - 1));
+    return lines.slice(0, boundedIndex).join("\n").length + (boundedIndex > 0 ? 1 : 0);
+  };
+
+  const openListMarkerToolbar = (
+    block: EditableBlock,
+    lineIndex: number,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => {
+    if (readOnly || (block.type !== "ordered_list" && block.type !== "bullet_list")) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const toolbarWidth = 174;
+    const left = Math.min(
+      Math.max(8, rect.left - 6),
+      Math.max(8, window.innerWidth - toolbarWidth - 8),
+    );
+    const top = Math.min(
+      Math.max(8, rect.bottom + 6),
+      Math.max(8, window.innerHeight - 56),
+    );
+    setListMarkerToolbar({ blockId: block.id, lineIndex, left, top });
+    setActiveBlockId(block.id);
+    focusBlock(block.id, caretStartForListLine(block.text, lineIndex));
+  };
+
+  const startNewOrderedList = (block: EditableBlock, index: number, lineIndex: number) => {
+    if (block.type !== "ordered_list") {
+      return;
+    }
+
+    const lines = block.text.split("\n");
+    const boundedLineIndex = Math.max(0, Math.min(lineIndex, lines.length - 1));
+    const overrides = sanitizeOrderedListStartOverrides(block.orderedListStartOverrides, lines.length);
+    if (boundedLineIndex === 0) {
+      updateOrderedListBlockAndResetFollowing(index, {
+        orderedListStart: 1,
+        orderedListStartOverrides: sanitizeOrderedListStartOverrides(overrides, lines.length),
+      });
+    } else {
+      updateOrderedListBlockAndResetFollowing(index, {
+        orderedListStartOverrides: {
+          ...overrides,
+          [boundedLineIndex]: 1,
+        },
+      });
+    }
+    setListMarkerToolbar(null);
+    focusBlock(block.id, caretStartForListLine(block.text, boundedLineIndex));
+  };
+
+  const changeOrderedListValue = (block: EditableBlock, index: number, lineIndex: number) => {
+    if (!block || block.type !== "ordered_list") {
+      return;
+    }
+
+    const currentValue = orderedNumberForBlockIndex(index);
+    const nextValue = window.prompt("修改编号值", String(currentValue));
+    if (nextValue === null) {
+      return;
+    }
+
+    const parsedValue = Number(nextValue);
+    if (!Number.isFinite(parsedValue) || parsedValue < 1) {
+      return;
+    }
+
+    const nextStart = sanitizeOrderedListStart(parsedValue);
+    const lines = block.text.split("\n");
+    const boundedLineIndex = Math.max(0, Math.min(lineIndex, lines.length - 1));
+    const overrides = sanitizeOrderedListStartOverrides(block.orderedListStartOverrides, lines.length);
+    if (boundedLineIndex === 0) {
+      updateOrderedListBlockAndResetFollowing(index, {
+        orderedListStart: nextStart,
+        orderedListStartOverrides: sanitizeOrderedListStartOverrides(overrides, lines.length),
+      });
+      setListMarkerToolbar(null);
+      return;
+    }
+
+    updateOrderedListBlockAndResetFollowing(index, {
+      orderedListStartOverrides: {
+        ...overrides,
+        [boundedLineIndex]: nextStart,
+      },
+    });
+    setListMarkerToolbar(null);
+    focusBlock(block.id, caretStartForListLine(block.text, boundedLineIndex));
+  };
+
+  const continuePreviousOrderedList = (block: EditableBlock, index: number) => {
+    if (block.type !== "ordered_list") {
+      return;
+    }
+
+    const previousOrderedBlock = blocks[index - 1];
+    if (previousOrderedBlock?.type !== "ordered_list") {
+      return;
+    }
+    if (!previousOrderedBlock) {
+      return;
+    }
+
+    updateOrderedListBlockAndResetFollowing(index, {
+      orderedListStart: undefined,
+      orderedListStartOverrides: sanitizeOrderedListStartOverrides(
+        block.orderedListStartOverrides,
+        block.text.split("\n").length,
+      ),
+    });
+    setListMarkerToolbar(null);
+    focusBlock(block.id, 0);
   };
 
   const insertStructuredBlocksFromPaste = (
@@ -1259,6 +2001,7 @@ export function BlockEditor({
                 type === "heading"
                   ? sanitizeHeadingLevel(options?.headingLevel ?? block.headingLevel ?? 1)
                   : undefined,
+              orderedListStart: type === "ordered_list" ? sanitizeOrderedListStart(block.orderedListStart) : undefined,
               meta: type === "link" ? { ...(block.meta ?? {}), ...(defaultMetaByType(type) ?? {}) } : undefined,
             }
           : block,
@@ -1313,7 +2056,10 @@ export function BlockEditor({
       return;
     }
 
-    const value = event.target.value;
+    const value =
+      block.type === "ordered_list" || block.type === "bullet_list"
+        ? event.target.value.replace(/\r?\n/g, " ")
+        : event.target.value;
     if (block.type === "link") {
       const parsed = parseLinkSource(value);
       onChange(
@@ -1418,6 +2164,7 @@ export function BlockEditor({
     if (readOnly) {
       return;
     }
+    setSelectedImageBlockId(null);
     setActiveBlockId(block.id);
     const query = commandQuery(block.text);
     if (query !== null) {
@@ -1483,6 +2230,52 @@ export function BlockEditor({
       const selectionEnd = event.currentTarget.selectionEnd;
       const hasSelection = selectionStart !== selectionEnd;
       const currentLength = event.currentTarget.value.length;
+
+      if (
+        event.key === "Backspace" &&
+        !hasSelection &&
+        selectionStart === 0 &&
+        sanitizeIndent(block.indent) > 0
+      ) {
+        event.preventDefault();
+        changeBlockIndent(block.id, -1);
+        return;
+      }
+
+      if (
+        event.key === "Backspace" &&
+        !hasSelection &&
+        deleteEmptyListLine(block, index, event.currentTarget.value, selectionStart)
+      ) {
+        event.preventDefault();
+        return;
+      }
+
+      if (
+        event.key === "Backspace" &&
+        !hasSelection &&
+        mergeListLineBackward(block, index, event.currentTarget.value, selectionStart)
+      ) {
+        event.preventDefault();
+        return;
+      }
+
+      if (
+        event.key === "Backspace" &&
+        !hasSelection &&
+        selectionStart === 0 &&
+        !event.currentTarget.value.trim()
+      ) {
+        event.preventDefault();
+        removeBlockAndFocusNeighbor(index);
+        return;
+      }
+
+      if (event.key === "Tab") {
+        event.preventDefault();
+        changeBlockIndent(block.id, event.shiftKey ? -1 : 1);
+        return;
+      }
 
       const directQuery = commandQuery(event.currentTarget.value);
       if (event.key === "Enter" && !event.shiftKey && directQuery !== null) {
@@ -1621,6 +2414,21 @@ export function BlockEditor({
           return;
         }
       } else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+        if (block.type === "ordered_list" || block.type === "bullet_list" || block.type === "check_list") {
+          event.preventDefault();
+          if (!event.currentTarget.value.trim()) {
+            updateBlock(block.id, {
+              type: "paragraph",
+              text: "",
+              orderedListStart: undefined,
+              orderedListStartOverrides: undefined,
+            });
+            focusBlock(block.id, 0);
+            return;
+          }
+          splitBlock(index, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+          return;
+        }
         event.preventDefault();
         splitBlock(index, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
       }
@@ -1641,6 +2449,8 @@ export function BlockEditor({
         const hasActiveThread = blockThreads.some((thread) => thread.id === activeCommentThreadId);
         const hasHoveredThread = blockThreads.some((thread) => thread.id === hoveredCommentThreadId);
         const displayText = displayTextForBlock(block);
+        const orderedListStart =
+          block.type === "ordered_list" ? orderedNumberForBlockIndex(index) : undefined;
         const blockCommentRanges = blockThreads.map((thread) => ({
           id: thread.id,
           start: displayOffsetFromBlockRawOffset(block, thread.anchorStartOffset),
@@ -1866,50 +2676,70 @@ export function BlockEditor({
                 </div>
               ) : null}
 
-              {block.type === "link" ? <LinkPreviewBlock block={block} readOnly={readOnly} /> : null}
-              {block.type === "image" ? (
-                <ImagePreviewBlock
-                  block={block}
-                  readOnly={readOnly}
-                  onAlign={(align) => updateImageAlign(block.id, align)}
-                  onDelete={() => requestDeleteBlock(block.id, "image")}
-                />
-              ) : null}
+              <div style={sanitizeIndent(block.indent) > 0 ? { paddingLeft: `${sanitizeIndent(block.indent) * 28}px` } : undefined}>
+                {block.type === "link" ? <LinkPreviewBlock block={block} readOnly={readOnly} /> : null}
 
-              {block.type === "divider" ? (
-                <div className="py-3">
-                  <div className="border-t border-slate-200" />
-                </div>
-              ) : null}
+                {block.type === "image" ? (
+                  <ImagePreviewBlock
+                    block={block}
+                    readOnly={readOnly}
+                    selected={selectedImageBlockId === block.id}
+                    onSelect={() => {
+                      setSelectedImageBlockId(block.id);
+                      setActiveBlockId(null);
+                    }}
+                    onPreview={() => openImageLightbox(block.id, sanitizeImageRotation(block.imageRotation))}
+                    onRotate={() => rotateImageBlock(block.id)}
+                    onAlign={(align) => updateImageAlign(block.id, align)}
+                    onDelete={() => requestDeleteBlock(block.id, "image")}
+                  />
+                ) : null}
 
-              {showsUnifiedTextSurface(block, readOnly) ? (
-                <TextBlockSurface
-                  blockId={block.id}
-                  blockType={block.type as UnifiedTextBlockType}
-                  text={displayText}
-                  readOnly={readOnly}
-                  isActive={activeBlockId === block.id}
-                  commentRanges={blockCommentRanges}
-                  textClassName={textAreaClassName(block)}
-                  contentPaddingClassName={textSurfacePaddingClassName(block)}
-                  contentPaddingLeft={textSurfaceGutterWidth(block, displayText)}
-                  checkListLines={block.type === "check_list" ? parseCheckListRawText(block.text) : undefined}
-                  minHeightStyle={readOnlyMinHeightStyle(block, block.text)}
-                  rows={rowsByType(block.type, displayText)}
-                  textareaRef={(element) => {
-                    textareaRefs.current[block.id] = element;
-                    resizeTextarea(element);
-                  }}
-                  placeholder={placeholderByType(block)}
-                  onToggleCheckListLine={(lineIndex) => handleToggleCheckListLine(block, lineIndex)}
-                  onChange={handleTextSurfaceChange(block)}
-                  onPaste={handleTextSurfacePaste(block, index)}
-                  onFocus={handleTextSurfaceFocus(block)}
-                  onBlur={handleTextSurfaceBlur(block)}
-                  onMouseUp={handleTextSurfaceMouseUp(block, blockCommentRanges)}
-                  onKeyDown={handleTextSurfaceKeyDown(block, index)}
-                />
-              ) : null}
+                {block.type === "divider" ? (
+                  <div className="py-3">
+                    <div className="border-t border-slate-200" />
+                  </div>
+                ) : null}
+
+                {showsUnifiedTextSurface(block, readOnly) ? (
+                  <TextBlockSurface
+                    blockId={block.id}
+                    blockType={block.type as UnifiedTextBlockType}
+                    text={displayText}
+                    readOnly={readOnly}
+                    isActive={activeBlockId === block.id}
+                    commentRanges={blockCommentRanges}
+                    textClassName={textAreaClassName(block)}
+                    contentPaddingClassName={textSurfacePaddingClassName(block)}
+                    contentPaddingLeft={textSurfaceGutterWidth({ ...block, orderedListStart }, displayText)}
+                    orderedListStart={orderedListStart}
+                    orderedListStartOverrides={
+                      block.type === "ordered_list"
+                        ? sanitizeOrderedListStartOverrides(
+                            block.orderedListStartOverrides,
+                            displayText.split("\n").length,
+                          )
+                        : undefined
+                    }
+                    checkListLines={block.type === "check_list" ? parseCheckListRawText(block.text) : undefined}
+                    minHeightStyle={readOnlyMinHeightStyle(block, block.text)}
+                    rows={rowsByType(block.type, displayText)}
+                    textareaRef={(element) => {
+                      textareaRefs.current[block.id] = element;
+                      resizeTextarea(element);
+                    }}
+                    placeholder={placeholderByType(block)}
+                    onToggleCheckListLine={(lineIndex) => handleToggleCheckListLine(block, lineIndex)}
+                    onListMarkerClick={(lineIndex, event) => openListMarkerToolbar(block, lineIndex, event)}
+                    onChange={handleTextSurfaceChange(block)}
+                    onPaste={handleTextSurfacePaste(block, index)}
+                    onFocus={handleTextSurfaceFocus(block)}
+                    onBlur={handleTextSurfaceBlur(block)}
+                    onMouseUp={handleTextSurfaceMouseUp(block, blockCommentRanges)}
+                    onKeyDown={handleTextSurfaceKeyDown(block, index)}
+                  />
+                ) : null}
+              </div>
 
               {!readOnly && commandMenu?.blockId === block.id ? (
                 <div
@@ -2088,6 +2918,67 @@ export function BlockEditor({
           </div>
         );
       })}
+      {listMarkerToolbar ? (() => {
+        const toolbarBlockIndex = blocks.findIndex((block) => block.id === listMarkerToolbar.blockId);
+        const toolbarBlock = toolbarBlockIndex >= 0 ? blocks[toolbarBlockIndex] : null;
+        if (!toolbarBlock || (toolbarBlock.type !== "ordered_list" && toolbarBlock.type !== "bullet_list")) {
+          return null;
+        }
+        const canContinuePreviousNumber =
+          toolbarBlock.type === "ordered_list" &&
+          blocks[toolbarBlockIndex - 1]?.type === "ordered_list";
+
+        return (
+          <div
+            data-editor-floating-window="true"
+            className="fixed z-40 w-[174px] rounded-md border border-red-400 bg-white py-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
+            style={{ left: `${listMarkerToolbar.left}px`, top: `${listMarkerToolbar.top}px` }}
+          >
+            {[
+              {
+                label: "继续之前的编号",
+                icon: "1↩",
+                disabled: !canContinuePreviousNumber,
+                onClick: () => continuePreviousOrderedList(toolbarBlock, toolbarBlockIndex),
+              },
+              {
+                label: "开始新列表",
+                icon: "1↧",
+                disabled: toolbarBlock.type !== "ordered_list",
+                onClick: () => startNewOrderedList(toolbarBlock, toolbarBlockIndex, listMarkerToolbar.lineIndex),
+              },
+              {
+                label: "修改编号值",
+                icon: "1↙",
+                disabled: toolbarBlock.type !== "ordered_list",
+                onClick: () => changeOrderedListValue(toolbarBlock, toolbarBlockIndex, listMarkerToolbar.lineIndex),
+              },
+            ].map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                disabled={item.disabled}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  if (!item.disabled) {
+                    item.onClick();
+                  }
+                }}
+                className={`flex h-8 w-full items-center gap-2 px-3 text-left text-[13px] transition ${
+                  item.disabled
+                    ? "cursor-not-allowed text-slate-300"
+                    : "text-slate-700 hover:bg-slate-100 hover:text-slate-950"
+                }`}
+              >
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-[11px] font-medium text-slate-400">
+                  {item.icon}
+                </span>
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+        );
+      })() : null}
       <CommentSelectionToolbar
         selection={selectionToolbar}
         onCreate={(selection) => {
@@ -2096,6 +2987,15 @@ export function BlockEditor({
         }}
         onCancel={() => setSelectionToolbar(null)}
       />
+      {lightboxImageIndex !== null ? (
+        <ImageLightbox
+          images={imagePreviews}
+          index={lightboxImageIndex}
+          initialRotation={lightboxInitialRotation}
+          onIndexChange={setLightboxImageIndex}
+          onClose={() => setLightboxImageIndex(null)}
+        />
+      ) : null}
       <ConfirmDialog
         open={Boolean(pendingDeleteBlock)}
         title={pendingDeleteBlock?.kind === "image" ? "确认删除图片" : "确认删除文档块"}

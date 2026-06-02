@@ -91,6 +91,10 @@ function commentSegmentsForText(text: string, ranges: TextCommentRange[]) {
   return segments;
 }
 
+function showsSingleListMarker(blockType: UnifiedTextBlockType) {
+  return blockType === "bullet_list" || blockType === "ordered_list";
+}
+
 export function TextBlockSurface({
   blockId,
   blockType,
@@ -101,12 +105,15 @@ export function TextBlockSurface({
   textClassName,
   contentPaddingClassName,
   contentPaddingLeft,
+  orderedListStart = 1,
+  orderedListStartOverrides,
   checkListLines,
   minHeightStyle,
   rows,
   placeholder,
   textareaRef,
   onToggleCheckListLine,
+  onListMarkerClick,
   onChange,
   onPaste,
   onFocus,
@@ -123,12 +130,15 @@ export function TextBlockSurface({
   textClassName: string;
   contentPaddingClassName: string;
   contentPaddingLeft?: number;
+  orderedListStart?: number;
+  orderedListStartOverrides?: Record<number, number>;
   checkListLines?: CheckListLine[];
   minHeightStyle: CSSProperties;
   rows: number;
   placeholder: string;
   textareaRef: (element: HTMLTextAreaElement | null) => void;
   onToggleCheckListLine?: (lineIndex: number) => void;
+  onListMarkerClick?: (lineIndex: number, event: ReactMouseEvent<HTMLButtonElement>) => void;
   onChange: (event: ReactChangeEvent<HTMLTextAreaElement>) => void;
   onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void;
   onFocus: () => void;
@@ -136,14 +146,31 @@ export function TextBlockSurface({
   onMouseUp: (event: ReactMouseEvent<HTMLTextAreaElement>) => void;
   onKeyDown: (event: ReactKeyboardEvent<HTMLTextAreaElement>) => void;
 }) {
-  const lines = text.split("\n");
+  const lines = showsSingleListMarker(blockType) ? [text] : text.split("\n");
   const showsListDecorations = blockType === "bullet_list" || blockType === "ordered_list";
   const showsCheckListDecorations = blockType === "check_list";
   const contentStyle = contentPaddingLeft ? { paddingLeft: `${contentPaddingLeft}px`, ...minHeightStyle } : minHeightStyle;
   const gutterStyle = contentPaddingLeft ? { width: `${Math.max(24, contentPaddingLeft - 4)}px` } : undefined;
+  const listMarkerClassName =
+    blockType === "ordered_list"
+      ? "text-[#2563eb]"
+      : "text-slate-400";
   const selectableSegments = commentRanges.length > 0
     ? commentSegmentsForText(text, commentRanges)
     : [{ text, highlighted: false, active: false }];
+  const orderedNumberForLine = (lineIndex: number) => {
+    let current = orderedListStart;
+    for (let index = 0; index <= lineIndex; index += 1) {
+      if (orderedListStartOverrides?.[index] !== undefined) {
+        current = orderedListStartOverrides[index];
+      }
+      if (index === lineIndex) {
+        return current;
+      }
+      current += 1;
+    }
+    return current;
+  };
 
   if (readOnly) {
     return (
@@ -151,12 +178,12 @@ export function TextBlockSurface({
         {showsListDecorations ? (
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute inset-y-0 left-0 flex flex-col text-right text-sm leading-8 text-slate-400"
+            className={`pointer-events-none absolute inset-y-0 left-0 flex flex-col text-right text-sm font-medium leading-8 ${listMarkerClassName}`}
             style={gutterStyle}
           >
             {lines.map((_, index) => (
               <span key={`${blockId}-marker-${index}`} className="block h-8">
-                {blockType === "ordered_list" ? `${index + 1}.` : "•"}
+                {blockType === "ordered_list" ? `${orderedNumberForLine(index)}.` : "•"}
               </span>
             ))}
           </div>
@@ -199,14 +226,26 @@ export function TextBlockSurface({
     <div className="relative">
       {showsListDecorations ? (
         <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 left-0 flex flex-col text-right text-sm leading-8 text-slate-400"
+          className={`absolute inset-y-0 left-0 z-10 flex flex-col text-right text-sm font-medium leading-8 ${listMarkerClassName}`}
           style={gutterStyle}
         >
           {lines.map((_, index) => (
-            <span key={`${blockId}-marker-${index}`} className="block h-8">
-              {blockType === "ordered_list" ? `${index + 1}.` : "•"}
-            </span>
+            <button
+              key={`${blockId}-marker-${index}`}
+              type="button"
+              className="block h-8 cursor-pointer rounded-sm border-0 bg-transparent p-0 text-right leading-8 transition hover:bg-sky-100/70 hover:text-sky-700"
+              onMouseDown={(event) => {
+                event.preventDefault();
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onListMarkerClick?.(index, event);
+              }}
+              aria-label="设置编号"
+            >
+              {blockType === "ordered_list" ? `${orderedNumberForLine(index)}.` : "•"}
+            </button>
           ))}
         </div>
       ) : null}

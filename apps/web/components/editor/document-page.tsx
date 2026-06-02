@@ -249,6 +249,52 @@ function sanitizeHeadingLevel(level: number | undefined) {
   return Math.max(1, Math.min(6, Math.trunc(value)));
 }
 
+function sanitizeBlockIndent(indent: unknown) {
+  const value = Number(indent ?? 0);
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(6, Math.trunc(value)));
+}
+
+function sanitizeOrderedListStart(start: unknown) {
+  const value = Number(start ?? 1);
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.max(1, Math.min(9999, Math.trunc(value)));
+}
+
+function sanitizeOrderedListStartOverrides(overrides: unknown) {
+  if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) {
+    return undefined;
+  }
+
+  const nextOverrides: Record<number, number> = {};
+  Object.entries(overrides as Record<string, unknown>).forEach(([rawIndex, rawStart]) => {
+    const index = Number(rawIndex);
+    const start = sanitizeOrderedListStart(rawStart);
+    if (!Number.isInteger(index) || index <= 0) {
+      return;
+    }
+    nextOverrides[index] = start;
+  });
+  return Object.keys(nextOverrides).length > 0 ? nextOverrides : undefined;
+}
+
+function sanitizeImageRotation(rotation: unknown) {
+  const value = Number(rotation ?? 0);
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return ((Math.trunc(value) % 360) + 360) % 360;
+}
+
+function attrsWithBlockIndent(block: EditableBlock, attrs: Record<string, unknown>) {
+  const indent = sanitizeBlockIndent(block.indent);
+  return indent > 0 ? { ...attrs, indent } : attrs;
+}
+
 
 type LinkCardView = "link" | "title" | "card" | "preview";
 
@@ -313,87 +359,85 @@ function rawTextFromNode(node: { attrs?: Record<string, unknown>; content?: { te
 }
 
 function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
-  const blocks: EditableBlock[] = document.content.slice(1).map((node, index): EditableBlock => {
+  const blocks: EditableBlock[] = document.content.slice(1).flatMap((node, index): EditableBlock[] => {
     const persistedBlockId = String(node.attrs?.block_id ?? "");
+    const indent = sanitizeBlockIndent(node.attrs?.indent);
     const fallbackId = (suffix: string) => persistedBlockId || `${document.id}-${suffix}-${index}`;
     if (node.type === "heading") {
       const level = sanitizeHeadingLevel(Number(node.attrs?.level ?? 2));
-      return {
+      return [{
         id: fallbackId("heading"),
         type: "heading" as const,
         headingLevel: level,
+        indent,
         text: flattenText(node.content),
-      };
+      }];
     }
 
     if (node.type === "bullet_list") {
-      return {
-        id: fallbackId("list"),
+      const items = node.content?.length ? node.content : [{ content: emptyTextNode() }];
+      return items.map((item, itemIndex) => ({
+        id: `${fallbackId("list")}-${itemIndex}`,
         type: "bullet_list" as const,
-        text:
-          node.content
-            ?.map((item) => flattenText(item.content))
-            .filter(Boolean)
-            .join("\n") ?? "",
-      };
+        indent,
+        text: flattenText(item.content),
+      }));
     }
 
     if (node.type === "ordered_list") {
-      return {
-        id: fallbackId("ordered-list"),
+      const items = node.content?.length ? node.content : [{ content: emptyTextNode() }];
+      const start = sanitizeOrderedListStart(node.attrs?.start);
+      return items.map((item, itemIndex) => ({
+        id: `${fallbackId("ordered-list")}-${itemIndex}`,
         type: "ordered_list" as const,
-        text:
-          node.content
-            ?.map((item) => flattenText(item.content))
-            .filter(Boolean)
-            .join("\n") ?? "",
-      };
+        indent,
+        orderedListStart: itemIndex === 0 ? start : undefined,
+        text: flattenText(item.content),
+      }));
     }
 
     if (node.type === "check_list") {
-      return {
-        id: fallbackId("check"),
+      const items = node.content?.length ? node.content : [{ attrs: { checked: false }, content: emptyTextNode() }];
+      return items.map((item, itemIndex) => {
+        const checked = Boolean(item.attrs?.checked);
+        const value = flattenText(item.content);
+        return {
+        id: `${fallbackId("check")}-${itemIndex}`,
         type: "check_list" as const,
-        text:
-          node.content
-            ?.map((item) => {
-              const checked = Boolean(item.attrs?.checked);
-              const value = flattenText(item.content);
-              if (!value.trim()) {
-                return "";
-              }
-              return `${checked ? "[x]" : "[ ]"} ${value}`.trim();
-            })
-            .filter((line) => line !== undefined)
-            .join("\n") ?? "",
-      };
+        indent,
+        text: value.trim() ? `${checked ? "[x]" : "[ ]"} ${value}`.trim() : "",
+        };
+      });
     }
 
     if (node.type === "blockquote") {
-      return {
+      return [{
         id: fallbackId("quote"),
         type: "quote" as const,
+        indent,
         text: rawTextFromNode(node),
-      };
+      }];
     }
 
     if (node.type === "horizontal_rule") {
-      return {
+      return [{
         id: fallbackId("divider"),
         type: "divider" as const,
+        indent,
         text: "",
-      };
+      }];
     }
 
     if (node.type === "link_card") {
       const title = String(node.attrs?.title ?? "").trim();
       const href = String(node.attrs?.href ?? "").trim();
       if (!normalizeExternalHref(href)) {
-        return {
+        return [{
           id: fallbackId("paragraph"),
           type: "paragraph" as const,
+          indent,
           text: title,
-        };
+        }];
       }
       const description = String(node.attrs?.description ?? "").trim();
       const siteName = String(node.attrs?.site_name ?? "").trim();
@@ -411,12 +455,13 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
         view,
         status,
       };
-      return {
+      return [{
         id: fallbackId("link"),
         type: "link" as const,
+        indent,
         text: composeLinkSource(meta, title || href),
         meta,
-      };
+      }];
     }
 
     if (node.type === "image_block") {
@@ -424,27 +469,32 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
       const src = String(node.attrs?.src ?? "").trim();
       const align = String(node.attrs?.align ?? "center").trim();
       const imageAlign: EditableBlock["imageAlign"] = align === "left" || align === "right" ? align : "center";
-      return {
+      const imageRotation = sanitizeImageRotation(node.attrs?.rotation);
+      return [{
         id: fallbackId("image"),
         type: "image" as const,
+        indent,
         text: alt && src ? `${alt} | ${src}` : alt || src,
         imageAlign,
-      };
+        imageRotation,
+      }];
     }
 
     if (node.type === "code_block") {
-      return {
+      return [{
         id: fallbackId("code"),
         type: "code_block" as const,
+        indent,
         text: node.content?.[0]?.text ?? "",
-      };
+      }];
     }
 
-    return {
+    return [{
       id: fallbackId("paragraph"),
       type: "paragraph" as const,
+      indent,
       text: rawTextFromNode(node),
-    };
+    }];
   });
 
   return blocks.length > 0 ? blocks : [{ id: blockId(), type: "paragraph", text: "" }];
@@ -468,12 +518,12 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       if (!text) {
         contentNodes.push({
           type: "heading",
-          attrs: {
+          attrs: attrsWithBlockIndent(block, {
             level,
             anchor: `empty-heading-${block.id}`,
             block_id: block.id,
             preservedEmpty: true,
-          },
+          }),
           content: emptyTextNode(),
         });
         continue;
@@ -481,72 +531,73 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
       contentNodes.push({
         type: "heading",
-        attrs: {
+        attrs: attrsWithBlockIndent(block, {
           level,
           block_id: block.id,
           anchor: block.id,
-        },
+        }),
         content: [{ type: "text", text }],
       });
       continue;
     }
 
     if (block.type === "bullet_list") {
-      const lines = text
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean);
-      if (lines.length === 0) {
+      const line = rawText.replace(/\r?\n/g, " ").trim();
+      if (!line) {
         contentNodes.push({
           type: "bullet_list",
-          attrs: { preservedEmpty: true, block_id: block.id },
-          content: [
-            {
-              type: "list_item",
-              content: emptyTextNode(),
-            },
-          ],
+          attrs: attrsWithBlockIndent(block, { preservedEmpty: true, block_id: block.id }),
+          content: [{
+            type: "list_item",
+            content: emptyTextNode(),
+          }],
         });
         continue;
       }
 
       contentNodes.push({
         type: "bullet_list",
-        attrs: { block_id: block.id },
-        content: lines.map((line) => ({
+        attrs: attrsWithBlockIndent(block, { block_id: block.id }),
+        content: [{
           type: "list_item",
           content: [{ type: "text", text: line.replace(/^- /, "").trim() }],
-        })),
+        }],
       });
       continue;
     }
 
     if (block.type === "ordered_list") {
-      const lines = text
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean);
-      if (lines.length === 0) {
+      const line = rawText.replace(/\r?\n/g, " ").trim();
+      const orderedAttrs: Record<string, unknown> = { block_id: block.id };
+      if (block.orderedListStart !== undefined) {
+        orderedAttrs.start = sanitizeOrderedListStart(block.orderedListStart);
+      }
+      const startOverrides = sanitizeOrderedListStartOverrides(block.orderedListStartOverrides);
+      if (startOverrides) {
+        orderedAttrs.startOverrides = startOverrides;
+      }
+      if (!line) {
         contentNodes.push({
           type: "ordered_list",
-          attrs: { preservedEmpty: true, block_id: block.id },
-          content: [
-            {
-              type: "list_item",
-              content: emptyTextNode(),
-            },
-          ],
+          attrs: attrsWithBlockIndent(block, {
+            ...orderedAttrs,
+            preservedEmpty: true,
+          }),
+          content: [{
+            type: "list_item",
+            content: emptyTextNode(),
+          }],
         });
         continue;
       }
 
       contentNodes.push({
         type: "ordered_list",
-        attrs: { block_id: block.id },
-        content: lines.map((line) => ({
+        attrs: attrsWithBlockIndent(block, orderedAttrs),
+        content: [{
           type: "list_item",
           content: [{ type: "text", text: line.replace(/^\d+[.)]\s*/, "").trim() }],
-        })),
+        }],
       });
       continue;
     }
@@ -559,7 +610,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
       contentNodes.push({
         type: "check_list",
-        attrs: lines.length === 0 ? { preservedEmpty: true, block_id: block.id } : { block_id: block.id },
+        attrs: attrsWithBlockIndent(block, lines.length === 0 ? { preservedEmpty: true, block_id: block.id } : { block_id: block.id }),
         content:
           lines.length > 0
             ? lines.map((line) => {
@@ -590,7 +641,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       if (!text) {
         contentNodes.push({
           type: "blockquote",
-          attrs: { preservedEmpty: true, raw_text: rawText, block_id: block.id },
+          attrs: attrsWithBlockIndent(block, { preservedEmpty: true, raw_text: rawText, block_id: block.id }),
           content: emptyTextNode(),
         });
         continue;
@@ -598,7 +649,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
       contentNodes.push({
         type: "blockquote",
-        attrs: rawText.includes("\n") ? { raw_text: rawText, block_id: block.id } : { block_id: block.id },
+        attrs: attrsWithBlockIndent(block, rawText.includes("\n") ? { raw_text: rawText, block_id: block.id } : { block_id: block.id }),
         content: [{ type: "text", text: text.replace(/\n/g, " ") }],
       });
       continue;
@@ -607,7 +658,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
     if (block.type === "divider") {
       contentNodes.push({
         type: "horizontal_rule",
-        attrs: { block_id: block.id },
+        attrs: attrsWithBlockIndent(block, { block_id: block.id }),
       });
       continue;
     }
@@ -619,7 +670,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       const resolvedTitle = meta.title?.trim() || parsed.title || normalizedHref || "未命名链接";
       contentNodes.push({
         type: "link_card",
-        attrs: {
+        attrs: attrsWithBlockIndent(block, {
           block_id: block.id,
           title: resolvedTitle,
           href: normalizedHref,
@@ -630,7 +681,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
           view: meta.view || "link",
           status: meta.status || (normalizedHref ? "ready" : "idle"),
           preservedEmpty: !text && !normalizedHref,
-        },
+        }),
       });
       continue;
     }
@@ -639,13 +690,14 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       const [altPart, srcPart] = text.split("|").map((part) => part.trim());
       contentNodes.push({
         type: "image_block",
-        attrs: {
+        attrs: attrsWithBlockIndent(block, {
           block_id: block.id,
           alt: altPart || "图片",
           src: srcPart || altPart || "",
           align: block.imageAlign || "center",
+          rotation: sanitizeImageRotation(block.imageRotation),
           preservedEmpty: !text,
-        },
+        }),
       });
       continue;
     }
@@ -654,7 +706,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
       if (!text) {
         contentNodes.push({
           type: "code_block",
-          attrs: { language: "plain", preservedEmpty: true, block_id: block.id },
+          attrs: attrsWithBlockIndent(block, { language: "plain", preservedEmpty: true, block_id: block.id }),
           content: emptyTextNode(),
         });
         continue;
@@ -662,7 +714,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
       contentNodes.push({
         type: "code_block",
-        attrs: { language: "plain", block_id: block.id },
+        attrs: attrsWithBlockIndent(block, { language: "plain", block_id: block.id }),
         content: [{ type: "text", text }],
       });
       continue;
@@ -671,7 +723,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
     if (!text) {
       contentNodes.push({
         type: "paragraph",
-        attrs: { preservedEmpty: true, raw_text: rawText, block_id: block.id },
+        attrs: attrsWithBlockIndent(block, { preservedEmpty: true, raw_text: rawText, block_id: block.id }),
         content: emptyTextNode(),
       });
       continue;
@@ -679,7 +731,7 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
     contentNodes.push({
       type: "paragraph",
-      attrs: rawText.includes("\n") ? { raw_text: rawText, block_id: block.id } : { block_id: block.id },
+      attrs: attrsWithBlockIndent(block, rawText.includes("\n") ? { raw_text: rawText, block_id: block.id } : { block_id: block.id }),
       content: [{ type: "text", text: text.replace(/\n/g, " ") }],
     });
   }
@@ -725,7 +777,11 @@ function draftHistorySignature(snapshot: DraftHistorySnapshot) {
       type: block.type,
       text: block.text,
       headingLevel: block.headingLevel ?? null,
+      indent: block.indent ?? null,
+      orderedListStart: block.orderedListStart ?? null,
+      orderedListStartOverrides: block.orderedListStartOverrides ?? null,
       imageAlign: block.imageAlign ?? null,
+      imageRotation: block.imageRotation ?? null,
       meta: block.meta ?? null,
     })),
   });
@@ -1179,7 +1235,11 @@ function DocumentTextPage({
       draftBlocks.map((block) => ({
         type: block.type,
         headingLevel: block.headingLevel ?? null,
+        indent: block.indent ?? null,
+        orderedListStart: block.orderedListStart ?? null,
+        orderedListStartOverrides: block.orderedListStartOverrides ?? null,
         imageAlign: block.imageAlign ?? null,
+        imageRotation: block.imageRotation ?? null,
         text: block.text.trim(),
         meta: block.meta ?? null,
       })),
@@ -1190,7 +1250,11 @@ function DocumentTextPage({
       blocksFromDocument(currentDocument).map((block) => ({
         type: block.type,
         headingLevel: block.headingLevel ?? null,
+        indent: block.indent ?? null,
+        orderedListStart: block.orderedListStart ?? null,
+        orderedListStartOverrides: block.orderedListStartOverrides ?? null,
         imageAlign: block.imageAlign ?? null,
+        imageRotation: block.imageRotation ?? null,
         text: block.text.trim(),
         meta: block.meta ?? null,
       })),

@@ -298,8 +298,19 @@ export function textSurfaceGutterWidth(block: EditableBlock, displayText: string
 
   if (block.type === "ordered_list") {
     const lineCount = Math.max(1, displayText.split("\n").length);
-    const digits = String(lineCount).length;
-    return 18 + digits * 8;
+    const start = Number(block.orderedListStart ?? 1);
+    let currentNumber = Number.isFinite(start) ? Math.max(1, Math.trunc(start)) : 1;
+    let maxNumber = currentNumber;
+    for (let index = 0; index < lineCount; index += 1) {
+      const override = block.orderedListStartOverrides?.[index];
+      if (override !== undefined) {
+        currentNumber = Math.max(1, Math.trunc(override));
+      }
+      maxNumber = Math.max(maxNumber, currentNumber);
+      currentNumber += 1;
+    }
+    const digits = String(maxNumber).length;
+    return 24 + digits * 8;
   }
 
   return 0;
