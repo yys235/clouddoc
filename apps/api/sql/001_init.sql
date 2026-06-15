@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS documents (
     cover_url VARCHAR(512),
     summary TEXT,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    deleted_at TIMESTAMPTZ,
     current_version_id UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -157,6 +158,23 @@ CREATE TABLE IF NOT EXISTS document_versions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_document_version UNIQUE (document_id, version_no)
 );
+
+CREATE TABLE IF NOT EXISTS document_asset_refs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    content_id UUID NOT NULL REFERENCES document_contents(id) ON DELETE CASCADE,
+    asset_url TEXT NOT NULL,
+    ref_type VARCHAR(32) NOT NULL DEFAULT 'asset',
+    source_path VARCHAR(512) NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_document_asset_ref_content_url_path UNIQUE (content_id, asset_url, source_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_asset_refs_document ON document_asset_refs(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_asset_refs_content ON document_asset_refs(content_id);
+CREATE INDEX IF NOT EXISTS idx_document_asset_refs_url ON document_asset_refs(asset_url);
+CREATE INDEX IF NOT EXISTS idx_document_asset_refs_type ON document_asset_refs(ref_type);
 
 DO $$
 BEGIN
@@ -541,6 +559,7 @@ CREATE INDEX IF NOT EXISTS idx_user_tree_pins_node ON user_tree_pins(node_type, 
 CREATE INDEX IF NOT EXISTS idx_documents_owner ON documents(owner_id);
 CREATE INDEX IF NOT EXISTS idx_documents_visibility ON documents(visibility);
 CREATE INDEX IF NOT EXISTS idx_documents_deleted ON documents(is_deleted);
+CREATE INDEX IF NOT EXISTS idx_documents_deleted_at ON documents(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_document_contents_document ON document_contents(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_contents_created_by ON document_contents(created_by);
 CREATE INDEX IF NOT EXISTS idx_document_versions_document ON document_versions(document_id);

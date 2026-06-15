@@ -202,6 +202,11 @@ type BoardSnapshot = {
   connectors: BoardConnector[];
   viewport: BoardState["viewport"];
 };
+type BoardClipboard = {
+  nodes: BoardNode[];
+  connectors: BoardConnector[];
+  bounds: BoardRect;
+};
 
 const NODE_TEXT_PLACEHOLDER = "输入文本";
 const DEFAULT_NODE_STYLE = {
@@ -787,6 +792,15 @@ function fitNodeHeightToText(node: BoardNode, text = node.text) {
   const requiredHeight = requiredNodeHeightForText(node, text);
   const nextHeight = Math.max(minHeight, node.height, requiredHeight);
   return nextHeight === node.height && text === node.text ? node : { ...node, text, height: nextHeight };
+}
+
+function nodeTextLayout(node: BoardNode): BoardRect {
+  return {
+    x: node.x + 8,
+    y: node.y + 8,
+    width: Math.max(20, node.width - 16),
+    height: Math.max(20, node.height - 16),
+  };
 }
 
 function toggleTextDecorationValue(current: BoardNode["style"]["textDecoration"] | undefined, decoration: "underline" | "line-through") {
@@ -2211,6 +2225,7 @@ export function BoardDocumentPage({
   const [connectionDrag, setConnectionDrag] = useState<{ from: ConnectorEndpoint; pointer: { x: number; y: number } } | null>(null);
   const [hoveredAnchor, setHoveredAnchor] = useState<ConnectorEndpoint | null>(null);
   const [clipboardNode, setClipboardNode] = useState<BoardNode | null>(null);
+  const [internalClipboard, setInternalClipboard] = useState<BoardClipboard | null>(null);
   const [notice, setNotice] = useState("");
   const [noticeCountdown, setNoticeCountdown] = useState(NOTICE_AUTO_CLOSE_SECONDS);
   const [isSaving, setIsSaving] = useState(false);
@@ -2243,6 +2258,7 @@ export function BoardDocumentPage({
   const connectorSourceRef = useRef<ConnectorEndpoint | null>(null);
   const interactionStartSnapshotRef = useRef<BoardSnapshot | null>(null);
   const suppressCanvasClickRef = useRef(false);
+  const lastBoardPointerRef = useRef<BoardPoint | null>(null);
   const toolRef = useRef<BoardTool>("select");
   const canUseEditMode = currentDocument.canEdit && !currentDocument.isSharedView;
   const canEdit = canUseEditMode && boardMode === "edit";
@@ -2324,6 +2340,8 @@ export function BoardDocumentPage({
     setHoveredAnchor(null);
     setEditingConnectorLabel(null);
     setEditingConnectorLabelText("");
+    setEditingNodeId(null);
+    setEditingText("");
     setFloatingToolbarDomHidden(false);
     setIsTransientToolbarHidden(false);
     setIsDirty(Boolean(offlineDraft && offlineDraft.documentType === "board"));
@@ -2397,11 +2415,19 @@ export function BoardDocumentPage({
     }
   };
 
-  const boardSignature = useMemo(() => JSON.stringify(board), [board]);
+  const boardWithActiveTextEdit = (source: BoardState) => {
+    if (!editingNodeId) return source;
+    return {
+      ...source,
+      nodes: source.nodes.map((node) => node.id === editingNodeId ? { ...node, text: editingText } : node),
+    };
+  };
+
+  const boardSignature = useMemo(() => JSON.stringify(boardWithActiveTextEdit(board)), [board, editingNodeId, editingText]);
 
   useEffect(() => {
     if (!canEdit || !isDirty) return;
-    const boardToSave = normalizeBoardAutoConnectors(board);
+    const boardToSave = normalizeBoardAutoConnectors(boardWithActiveTextEdit(board));
     saveOfflineDocumentDraft({
       docId: currentDocument.id,
       documentType: currentDocument.documentType,
@@ -2411,13 +2437,13 @@ export function BoardDocumentPage({
       signature: JSON.stringify(boardToSave),
       updatedAt: Date.now(),
     });
-  }, [board, boardSignature, canEdit, currentDocument.documentType, currentDocument.id, currentDocument.title, isDirty]);
+  }, [board, boardSignature, canEdit, currentDocument.documentType, currentDocument.id, currentDocument.title, editingNodeId, editingText, isDirty]);
 
   const saveBoard = async () => {
     if (!canEdit) return true;
     setIsSaving(true);
     try {
-      const boardToSave = normalizeBoardAutoConnectors(boardRef.current);
+      const boardToSave = normalizeBoardAutoConnectors(boardWithActiveTextEdit(boardRef.current));
       const snapshotSignature = JSON.stringify(boardToSave);
       const nextDocument = await updateDocumentContent({
         docId: currentDocument.id,
@@ -2472,6 +2498,15 @@ export function BoardDocumentPage({
     return {
       x: (rect?.left ?? 0) + board.viewport.x + point.x * board.viewport.zoom,
       y: (rect?.top ?? 0) + board.viewport.y + point.y * board.viewport.zoom,
+    };
+  };
+
+  const viewportCenterBoardPoint = () => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: (rect.width / 2 - board.viewport.x) / board.viewport.zoom,
+      y: (rect.height / 2 - board.viewport.y) / board.viewport.zoom,
     };
   };
 
@@ -2992,9 +3027,11 @@ export function BoardDocumentPage({
   };
 
   const handlePaste = (event: ReactClipboardEvent<HTMLDivElement>) => {
-    if (!canEdit || !selectedNode || selectedNode.type !== "table" || !tableSelection || tableSelection.nodeId !== selectedNode.id) return;
-    const target = event.target as HTMLElement;
-    if (target.tagName === "TEXTAREA" || target.tagName === "INPUT") return;
+    if (!canEdit || !selectedNode) return;
+    if (selectedNode.type !== "table") {
+      return;
+    }
+    if (!tableSelection || tableSelection.nodeId !== selectedNode.id) return;
     const html = event.clipboardData.getData("text/html");
     const htmlMatrix = parseClipboardHtmlTable(html);
     const text = event.clipboardData.getData("text/plain");
@@ -3617,6 +3654,86 @@ export function BoardDocumentPage({
     clearSelection();
   };
 
+  const selectedClipboardEntities = () => {
+    if (isMultiSelect) {
+      const nodes = multiSelectedNodes;
+      const nodeIds = new Set(nodes.map((node) => node.id));
+      const connectors = multiSelectedConnectors.filter((connector) => nodeIds.has(connector.from.nodeId) && nodeIds.has(connector.to.nodeId));
+      return { nodes, connectors };
+    }
+    if (selectedNode) {
+      return { nodes: [selectedNode], connectors: [] };
+    }
+    return { nodes: [], connectors: [] };
+  };
+
+  const copySelectedToInternalClipboard = () => {
+    const { nodes, connectors } = selectedClipboardEntities();
+    if (nodes.length === 0) return false;
+    const rects = nodes.map((node) => nodeRect(node));
+    connectors.forEach((connector) => {
+      const geometry = connectorGeometry(connector, board.nodes);
+      if (geometry) {
+        const bounds = connectorBounds(connector, board.nodes);
+        if (bounds) rects.push(bounds);
+      }
+    });
+    const bounds = combineBounds(rects) ?? rects[0];
+    setInternalClipboard({
+      nodes: structuredClone(nodes),
+      connectors: structuredClone(connectors),
+      bounds,
+    });
+    setClipboardNode(nodes.length === 1 && connectors.length === 0 ? structuredClone(nodes[0]) : null);
+    return true;
+  };
+
+  const pasteInternalClipboard = () => {
+    if (!internalClipboard || internalClipboard.nodes.length === 0) return false;
+    const targetPoint = lastBoardPointerRef.current ?? viewportCenterBoardPoint();
+    const offsetX = targetPoint.x - (internalClipboard.bounds.x + internalClipboard.bounds.width / 2);
+    const offsetY = targetPoint.y - (internalClipboard.bounds.y + internalClipboard.bounds.height / 2);
+    const createdNodeIds: string[] = [];
+    const createdConnectorIds: string[] = [];
+    commitBoard((current) => {
+      const idMap = new Map<string, string>();
+      const baseZIndex = Math.max(0, ...current.nodes.map((node) => node.zIndex));
+      const nextNodes = internalClipboard.nodes.map((node, index) => {
+        const newId = createClientId();
+        idMap.set(node.id, newId);
+        createdNodeIds.push(newId);
+        return {
+          ...structuredClone(node),
+          id: newId,
+          x: node.x + offsetX,
+          y: node.y + offsetY,
+          zIndex: baseZIndex + index + 1,
+        };
+      });
+      const nextConnectors = internalClipboard.connectors.flatMap((connector) => {
+        const fromNodeId = idMap.get(connector.from.nodeId);
+        const toNodeId = idMap.get(connector.to.nodeId);
+        if (!fromNodeId || !toNodeId) return [];
+        const newId = createClientId();
+        createdConnectorIds.push(newId);
+        return [{
+          ...structuredClone(connector),
+          id: newId,
+          from: { ...connector.from, nodeId: fromNodeId },
+          to: { ...connector.to, nodeId: toNodeId },
+          waypoints: connector.waypoints.map((point) => ({ x: point.x + offsetX, y: point.y + offsetY })),
+        }];
+      });
+      return {
+        ...current,
+        nodes: [...current.nodes, ...nextNodes],
+        connectors: [...current.connectors, ...nextConnectors],
+      };
+    });
+    applySelectionResult(createdNodeIds, createdConnectorIds);
+    return true;
+  };
+
   const duplicateSelected = () => {
     const sourceNodes = isMultiSelect ? activeMultiSelectedNodes : selectedNode ? [selectedNode] : [];
     if (sourceNodes.length === 0) return;
@@ -3747,6 +3864,9 @@ export function BoardDocumentPage({
   };
 
   const handleNodeClick = (node: BoardNode) => {
+    if (editingNodeId && editingNodeId !== node.id) {
+      finishTextEditing();
+    }
     if (isMultiSelect && activeMultiSelectedNodes.some((item) => item.id === node.id)) {
       return;
     }
@@ -3789,6 +3909,7 @@ export function BoardDocumentPage({
 
   const handleNodePointerDown = (event: ReactPointerEvent<SVGElement>, node: BoardNode) => {
     if (!canEdit || tool !== "select" || editingNodeId) return;
+    lastBoardPointerRef.current = screenToBoard(event);
     if (event.button === 1) {
       event.preventDefault();
       event.stopPropagation();
@@ -3913,6 +4034,7 @@ export function BoardDocumentPage({
   };
 
   const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    lastBoardPointerRef.current = screenToBoard(event);
     if (panState) {
       setShapePlacementPreview(null);
       setBoard((current) => ({
@@ -4343,6 +4465,7 @@ export function BoardDocumentPage({
   ]);
 
   const handleCanvasPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
+    lastBoardPointerRef.current = screenToBoard(event);
     if (event.button === 1) {
       startCanvasPan(event);
       return;
@@ -4369,7 +4492,10 @@ export function BoardDocumentPage({
       suppressCanvasClickRef.current = false;
       return;
     }
-    if (editingNodeId) return;
+    if (editingNodeId) {
+      finishTextEditing();
+      return;
+    }
     const activeTool = toolRef.current;
     if (canEdit && (activeTool === "shape" || activeTool === "text")) {
       const point = screenToBoard(event);
@@ -4459,20 +4585,26 @@ export function BoardDocumentPage({
     } else if (key === "z") {
       event.preventDefault();
       undo();
-    } else if (key === "c" && selectedNode) {
-      event.preventDefault();
-      if (selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id) {
+    } else if (key === "c") {
+      if (selectedNode?.type === "table" && tableSelection?.nodeId === selectedNode.id) {
+        event.preventDefault();
         void copySelectedTableSelectionToClipboard();
         return;
       }
-      setClipboardNode(structuredClone(selectedNode));
-    } else if (key === "x" && selectedNode) {
+      if (copySelectedToInternalClipboard()) {
+        event.preventDefault();
+      }
+    } else if (key === "x") {
+      if (!selectedNode && !isMultiSelect) return;
       event.preventDefault();
-      setClipboardNode(structuredClone(selectedNode));
+      copySelectedToInternalClipboard();
       deleteSelected();
     } else if (key === "v" && selectedNode?.type === "table" && tableSelection?.nodeId === selectedNode.id) {
       event.preventDefault();
       void pasteClipboardIntoTableSelection();
+    } else if (key === "v" && internalClipboard) {
+      event.preventDefault();
+      pasteInternalClipboard();
     } else if (key === "v" && clipboardNode) {
       event.preventDefault();
       let newId = "";
@@ -4984,13 +5116,14 @@ export function BoardDocumentPage({
 
   const renderNodeText = (node: BoardNode) => {
     if (node.type === "table") return null;
+    const textBounds = nodeTextLayout(node);
     const lineHeight = node.style.fontSize * 1.25;
     if (editingNodeId === node.id) {
       const editingRole = node.style.textRole ?? "paragraph";
       const editingMarkers = editingRole === "paragraph" ? [] : editingText.split("\n").map((_, index) => textRoleMarker(editingRole, index));
       const editingNeedsMarkerGutter = editingMarkers.some(Boolean);
       return (
-        <foreignObject x={node.x + 6} y={node.y + 6} width={Math.max(20, node.width - 12)} height={Math.max(20, node.height - 12)}>
+        <foreignObject x={textBounds.x} y={textBounds.y} width={textBounds.width} height={textBounds.height}>
           <div
             className="relative h-full w-full"
             style={{
@@ -5061,10 +5194,10 @@ export function BoardDocumentPage({
       const roleRows = actualText.split("\n");
       return (
         <foreignObject
-          x={node.x + 10}
-          y={node.y + 8}
-          width={Math.max(20, node.width - 20)}
-          height={Math.max(20, node.height - 16)}
+          x={textBounds.x}
+          y={textBounds.y}
+          width={textBounds.width}
+          height={textBounds.height}
         >
           <div
             className="flex h-full w-full overflow-auto"
@@ -5114,9 +5247,9 @@ export function BoardDocumentPage({
       return (
         <foreignObject
           x={node.x + 8}
-          y={node.y + 8}
-          width={Math.max(20, node.width - 16)}
-          height={Math.max(20, node.height - 16)}
+          y={textBounds.y}
+          width={textBounds.width}
+          height={textBounds.height}
           data-board-node-text-overflow="true"
         >
           <div
@@ -5156,12 +5289,12 @@ export function BoardDocumentPage({
     }
     const textBlockHeight = Math.max(lineHeight, lines.length * lineHeight);
     const startY = verticalAlign === "top"
-      ? node.y + 12 + lineHeight / 2
+      ? textBounds.y + 4 + lineHeight / 2
       : verticalAlign === "bottom"
-        ? node.y + node.height - 12 - textBlockHeight + lineHeight / 2
-        : node.y + node.height / 2 - ((lines.length - 1) * lineHeight) / 2;
+        ? textBounds.y + textBounds.height - 4 - textBlockHeight + lineHeight / 2
+        : textBounds.y + textBounds.height / 2 - ((lines.length - 1) * lineHeight) / 2;
     const textAnchor = node.style.textAlign === "left" ? "start" : node.style.textAlign === "right" ? "end" : "middle";
-    const x = node.style.textAlign === "left" ? node.x + 10 : node.style.textAlign === "right" ? node.x + node.width - 10 : node.x + node.width / 2;
+    const x = node.style.textAlign === "left" ? textBounds.x + 2 : node.style.textAlign === "right" ? textBounds.x + textBounds.width - 2 : textBounds.x + textBounds.width / 2;
     return (
       <g transform={textRotation ? `rotate(${textRotation} ${node.x + node.width / 2} ${node.y + node.height / 2})` : undefined}>
         <text x={x} y={startY} dominantBaseline="middle" textAnchor={textAnchor} fill={displayColor} fontSize={node.style.fontSize} fontWeight={node.style.fontWeight} fontStyle={fontStyle} textDecoration={textDecoration} className="pointer-events-none select-none">
@@ -5484,7 +5617,7 @@ export function BoardDocumentPage({
                     <path d={connectorPath(points, previewConnector)} fill="none" stroke="#5b7fd8" strokeWidth="1.5" strokeDasharray="4 3" markerEnd="url(#board-arrow)" />
                     <g opacity="0.48">
                       {renderNodeShape(previewNode, false)}
-                      {renderNodeText(previewNode)}
+                    {renderNodeText(previewNode)}
                     </g>
                   </g>
                 );
@@ -6039,8 +6172,15 @@ export function BoardDocumentPage({
                           <div className="my-1 border-t border-[#eef1f6]" />
                         </>
                       ) : null}
-                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => setClipboardNode(structuredClone(selectedNode))}>复制</button>
-                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => { setClipboardNode(structuredClone(selectedNode)); deleteSelected(); }}>剪切</button>
+                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => {
+                        copySelectedToInternalClipboard();
+                        setActivePanel(null);
+                      }}>复制</button>
+                      <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => {
+                        copySelectedToInternalClipboard();
+                        deleteSelected();
+                        setActivePanel(null);
+                      }}>剪切</button>
                       <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={duplicateSelected}>创建副本</button>
                       <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => moveLayer("front")}>置于顶层</button>
                       <button type="button" className="block h-8 w-full px-2 text-left hover:bg-[#f5f7fb]" onClick={() => moveLayer("back")}>置于底层</button>

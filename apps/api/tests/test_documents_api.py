@@ -10,7 +10,7 @@ from sqlalchemy import delete, event, select
 from app.core.db import SessionLocal, engine
 from app.main import app
 from app.models.comment import Comment, CommentThread
-from app.models.document import Document, DocumentContent, DocumentFavorite, DocumentPermission, DocumentVersion
+from app.models.document import Document, DocumentAssetRef, DocumentContent, DocumentFavorite, DocumentPermission, DocumentVersion
 from app.models.event import EventLog
 from app.models.folder import Folder, FolderFavorite, TreeShortcut, UserTreePin
 from app.models.notification import UserNotification
@@ -19,6 +19,7 @@ from app.models.share import ShareLink
 from app.models.session import UserSession
 from app.models.space import Space
 from app.models.user import User
+from app.services.document_service import purge_expired_deleted_documents, purge_unreferenced_document_assets
 from app.services.event_stream_service import heartbeat_event, sse_encode
 from app.services.notification_service import create_user_notification, mark_all_notifications_read, mark_notification_read
 
@@ -63,6 +64,7 @@ def cleanup_document(document_id: str) -> None:
         db.execute(delete(DocumentFavorite).where(DocumentFavorite.document_id == document_id))
         db.execute(delete(DocumentPermission).where(DocumentPermission.document_id == document_id))
         db.execute(delete(ShareLink).where(ShareLink.document_id == document_id))
+        db.execute(delete(DocumentAssetRef).where(DocumentAssetRef.document_id == document_id))
         db.execute(delete(DocumentVersion).where(DocumentVersion.document_id == document_id))
         db.execute(delete(DocumentContent).where(DocumentContent.document_id == document_id))
         db.execute(delete(Document).where(Document.id == document_id))
@@ -184,6 +186,81 @@ def register_user_client(name: str, email: str, password: str) -> TestClient:
     authed_client = TestClient(app)
     authed_client.cookies = response.cookies
     return authed_client
+
+
+def test_space_owner_can_rename_space() -> None:
+    email = f"pytest-space-rename-owner-{uuid4()}@example.com"
+    owner_client = register_user_client("Pytest Space Rename Owner", email, "space-rename-password")
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == email))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).where(Space.space_type == "team").limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    try:
+        response = owner_client.patch(f"/api/spaces/{space_id}", json={"name": "pytest-renamed-team-space"})
+        assert response.status_code == 200
+        assert response.json()["name"] == "pytest-renamed-team-space"
+
+        db = SessionLocal()
+        try:
+            renamed_space = db.get(Space, space_id)
+            assert renamed_space is not None
+            assert renamed_space.name == "pytest-renamed-team-space"
+        finally:
+            db.close()
+    finally:
+        cleanup_user(email)
+
+
+def test_space_rename_rejects_blank_name() -> None:
+    email = f"pytest-space-rename-blank-{uuid4()}@example.com"
+    owner_client = register_user_client("Pytest Space Rename Blank", email, "space-rename-password")
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == email))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    try:
+        response = owner_client.patch(f"/api/spaces/{space_id}", json={"name": "   "})
+        assert response.status_code == 400
+    finally:
+        cleanup_user(email)
+
+
+def test_space_rename_requires_manage_permission() -> None:
+    owner_email = f"pytest-space-rename-owner-{uuid4()}@example.com"
+    other_email = f"pytest-space-rename-other-{uuid4()}@example.com"
+    register_user_client("Pytest Space Rename Owner", owner_email, "space-rename-password")
+    other_client = register_user_client("Pytest Space Rename Other", other_email, "space-rename-password")
+
+    db = SessionLocal()
+    try:
+        owner = db.scalar(select(User).where(User.email == owner_email))
+        assert owner is not None
+        space = db.scalar(select(Space).where(Space.owner_id == owner.id).where(Space.space_type == "team").limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    try:
+        response = other_client.patch(f"/api/spaces/{space_id}", json={"name": "pytest-should-not-rename"})
+        assert response.status_code == 403
+    finally:
+        cleanup_user(other_email)
+        cleanup_user(owner_email)
 
 
 def test_document_owner_can_rename_document() -> None:
@@ -870,6 +947,7 @@ def test_soft_delete_and_restore_document() -> None:
         delete_response = client.delete(f"/api/documents/{document_id}")
         assert delete_response.status_code == 200
         assert delete_response.json()["is_deleted"] is True
+        assert delete_response.json()["deleted_at"] is not None
 
         active_after_delete = client.get("/api/documents?state=active")
         assert all(item["id"] != document_id for item in active_after_delete.json())
@@ -881,9 +959,116 @@ def test_soft_delete_and_restore_document() -> None:
         restore_response = client.post(f"/api/documents/{document_id}/restore")
         assert restore_response.status_code == 200
         assert restore_response.json()["is_deleted"] is False
+        assert restore_response.json()["deleted_at"] is None
 
         active_after_restore = client.get("/api/documents?state=active")
         assert any(item["id"] == document_id for item in active_after_restore.json())
+    finally:
+        cleanup_document(document_id)
+
+
+def test_recently_deleted_document_is_not_purged_before_retention() -> None:
+    db = SessionLocal()
+    try:
+        space = db.scalar(select(Space).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    title = f"pytest-trash-retention-{uuid4()}"
+    create_response = client.post(
+        "/api/documents",
+        json={"title": title, "space_id": space_id, "document_type": "doc"},
+    )
+    assert create_response.status_code == 200
+    document_id = create_response.json()["id"]
+
+    try:
+        delete_response = client.delete(f"/api/documents/{document_id}")
+        assert delete_response.status_code == 200
+
+        db = SessionLocal()
+        try:
+            purged_count = purge_expired_deleted_documents(
+                db,
+                now=datetime.now(timezone.utc) + timedelta(days=29, hours=23),
+            )
+            assert purged_count == 0
+            assert db.get(Document, document_id) is not None
+        finally:
+            db.close()
+
+        restore_response = client.post(f"/api/documents/{document_id}/restore")
+        assert restore_response.status_code == 200
+        assert restore_response.json()["is_deleted"] is False
+    finally:
+        cleanup_document(document_id)
+
+
+def test_expired_deleted_document_is_purged_with_unreferenced_upload() -> None:
+    db = SessionLocal()
+    try:
+        space = db.scalar(select(Space).limit(1))
+        assert space is not None
+        space_id = space.id
+    finally:
+        db.close()
+
+    upload_response = client.post(
+        "/api/documents/upload-image",
+        files={"file": ("purge.png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", "image/png")},
+    )
+    assert upload_response.status_code == 200
+    image_url = upload_response.json()["file_url"]
+    upload_file_path = Path("uploads") / image_url.split("/uploads/", 1)[1]
+    assert upload_file_path.exists()
+
+    title = f"pytest-trash-purge-{uuid4()}"
+    create_response = client.post(
+        "/api/documents",
+        json={"title": title, "space_id": space_id, "document_type": "doc"},
+    )
+    assert create_response.status_code == 200
+    document_id = create_response.json()["id"]
+
+    try:
+        update_response = client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "schema_version": 1,
+                "content_json": {
+                    "type": "doc",
+                    "content": [
+                        {
+                            "type": "image_block",
+                            "attrs": {"block_id": str(uuid4()), "url": image_url, "file_name": "purge.png"},
+                            "content": [],
+                        }
+                    ],
+                },
+                "plain_text": "",
+            },
+        )
+        assert update_response.status_code == 200
+
+        delete_response = client.delete(f"/api/documents/{document_id}")
+        assert delete_response.status_code == 200
+
+        db = SessionLocal()
+        try:
+            document = db.get(Document, document_id)
+            assert document is not None
+            document.deleted_at = datetime.now(timezone.utc) - timedelta(days=31)
+            db.commit()
+
+            purged_count = purge_expired_deleted_documents(db)
+            assert purged_count == 1
+            assert db.get(Document, document_id) is None
+        finally:
+            db.close()
+
+        assert not upload_file_path.exists()
     finally:
         cleanup_document(document_id)
 

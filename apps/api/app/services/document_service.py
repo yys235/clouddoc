@@ -1,25 +1,32 @@
 import uuid
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.models.comment import Comment, CommentThread
 from app.models.document import (
     Document,
+    DocumentAssetRef,
     DocumentContent,
     DocumentFavorite,
     DocumentPermission,
+    DocumentPermissionAuditLog,
     DocumentPermissionSettings,
     DocumentVersion,
 )
+from app.models.event import EventLog
 from app.models.folder import Folder
+from app.models.folder import TreeShortcut, UserTreePin
+from app.models.notification import UserNotification
 from app.models.organization import OrganizationMember
+from app.models.share import ShareLink
 from app.models.space import Space
 from app.models.user import User
 from app.schemas.folder import AncestorItem
@@ -49,6 +56,7 @@ from app.services.permission_service import (
     role_at_least,
     setting_allows,
 )
+from app.services.storage_service import get_storage_provider
 from app.schemas.document import (
     DocumentContentPayload,
     DocumentContentUpdateRequest,
@@ -632,6 +640,7 @@ def build_document_detail_payload(
         folder_id=document.folder_id,
         sort_order=document.sort_order,
         is_deleted=document.is_deleted,
+        deleted_at=document.deleted_at,
         is_favorited=document.id in get_favorite_document_ids(db, user_id),
         can_edit=can_edit,
         can_manage=can_manage,
@@ -783,6 +792,7 @@ def list_documents(db: Session, state: str = "active", user_id: str | None = Non
                 folder_id=doc.folder_id,
                 sort_order=doc.sort_order,
                 is_deleted=doc.is_deleted,
+                deleted_at=doc.deleted_at,
                 is_favorited=doc.id in favorite_ids,
                 can_edit=can_edit,
                 can_manage=can_manage,
@@ -1074,6 +1084,7 @@ def create_document(db: Session, payload: DocumentCreateRequest, current_user_id
     )
     db.add(content)
     db.flush()
+    sync_document_asset_refs(db, document_id=document.id, content=content)
 
     version = DocumentVersion(
         document_id=document.id,
@@ -1152,6 +1163,7 @@ def create_pdf_document(
     )
     db.add(content)
     db.flush()
+    sync_document_asset_refs(db, document_id=document.id, content=content)
 
     version = DocumentVersion(
         document_id=document.id,
@@ -1223,6 +1235,7 @@ def create_docx_import_document(
     )
     db.add(content)
     db.flush()
+    sync_document_asset_refs(db, document_id=document.id, content=content)
 
     version = DocumentVersion(
         document_id=document.id,
@@ -1297,17 +1310,202 @@ def upload_image_asset(*, file_name: str, file_bytes: bytes, content_type: str) 
         extension = ".webp"
 
     file_id = f"{uuid.uuid4()}{extension or '.img'}"
-    upload_dir = Path(settings.upload_dir)
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    file_path = upload_dir / file_id
-    file_path.write_bytes(file_bytes)
+    normalized_mime_type = "image/jpeg" if mime_type == "image/jpg" else mime_type
+    stored_asset = get_storage_provider().save_bytes(
+        key=file_id,
+        content=file_bytes,
+        content_type=normalized_mime_type,
+    )
 
     return {
-        "file_url": f"{settings.upload_url_prefix}/{file_id}",
+        "file_url": stored_asset.url,
         "file_name": safe_name,
-        "mime_type": "image/jpeg" if mime_type == "image/jpg" else mime_type,
+        "mime_type": normalized_mime_type,
         "file_size": len(file_bytes),
     }
+
+
+def collect_asset_urls_from_content(content: object) -> set[str]:
+    return {ref["asset_url"] for ref in collect_asset_refs_from_content(content)}
+
+def collect_asset_refs_from_content(content: object) -> list[dict[str, str]]:
+    refs: dict[tuple[str, str], dict[str, str]] = {}
+
+    def ref_type_for_key(key: str | None) -> str:
+        normalized_key = (key or "").lower()
+        if normalized_key in {"src", "image"}:
+            return "image"
+        if normalized_key in {"url", "file_url", "href"}:
+            return "file"
+        return "asset"
+
+    def visit(value: object, key: str | None = None, path: str = "$") -> None:
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                visit(child_value, str(child_key), f"{path}.{child_key}")
+            return
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, key, f"{path}[{index}]")
+            return
+        if not isinstance(value, str):
+            return
+        raw = value.strip()
+        if not raw:
+            return
+        normalized_key = (key or "").lower()
+        if normalized_key in {"url", "src", "file_url", "image", "href"} and (
+            raw.startswith(settings.upload_url_prefix.rstrip("/") + "/")
+            or raw.startswith("http://")
+            or raw.startswith("https://")
+        ):
+            refs[(raw, path)] = {
+                "asset_url": raw,
+                "ref_type": ref_type_for_key(key),
+                "source_path": path,
+            }
+
+    visit(content)
+    return list(refs.values())
+
+
+def sync_document_asset_refs(db: Session, *, document_id: str, content: DocumentContent) -> None:
+    db.execute(delete(DocumentAssetRef).where(DocumentAssetRef.content_id == content.id))
+    for ref in collect_asset_refs_from_content(content.content_json):
+        db.add(
+            DocumentAssetRef(
+                document_id=document_id,
+                content_id=content.id,
+                asset_url=ref["asset_url"],
+                ref_type=ref["ref_type"],
+                source_path=ref["source_path"][:512],
+            )
+        )
+
+
+def purge_expired_deleted_documents(db: Session, *, retention_days: int = 30, now: datetime | None = None) -> int:
+    current_time = now or datetime.now(timezone.utc)
+    cutoff = current_time - timedelta(days=retention_days)
+    expired_document_ids = db.scalars(
+        select(Document.id).where(Document.is_deleted.is_(True), Document.deleted_at.is_not(None), Document.deleted_at <= cutoff)
+    ).all()
+    if not expired_document_ids:
+        return 0
+
+    expired_asset_urls: set[str] = set()
+    expired_asset_urls.update(
+        db.scalars(select(DocumentAssetRef.asset_url).where(DocumentAssetRef.document_id.in_(expired_document_ids))).all()
+    )
+    expired_contents = db.scalars(
+        select(DocumentContent.content_json).where(DocumentContent.document_id.in_(expired_document_ids))
+    ).all()
+    for content_json in expired_contents:
+        expired_asset_urls.update(collect_asset_urls_from_content(content_json))
+
+    still_referenced_urls: set[str] = set()
+    if expired_asset_urls:
+        other_contents = db.scalars(
+            select(DocumentContent.content_json).where(DocumentContent.document_id.not_in(expired_document_ids))
+        ).all()
+        for content_json in other_contents:
+            still_referenced_urls.update(collect_asset_urls_from_content(content_json) & expired_asset_urls)
+
+    removable_urls = expired_asset_urls - still_referenced_urls
+    storage = get_storage_provider()
+    for url in removable_urls:
+        try:
+            storage.delete_url(url)
+        except Exception:
+            # Asset cleanup must not block the database purge; failed deletions can be retried by ops.
+            pass
+
+    comment_ids = db.scalars(select(Comment.id).where(Comment.document_id.in_(expired_document_ids))).all()
+    thread_ids = db.scalars(select(CommentThread.id).where(CommentThread.document_id.in_(expired_document_ids))).all()
+    if comment_ids:
+        db.execute(delete(UserNotification).where(UserNotification.comment_id.in_(comment_ids)))
+    if thread_ids:
+        db.execute(delete(UserNotification).where(UserNotification.thread_id.in_(thread_ids)))
+    db.execute(delete(UserNotification).where(UserNotification.document_id.in_(expired_document_ids)))
+    db.execute(delete(EventLog).where(EventLog.document_id.in_(expired_document_ids)))
+    db.execute(delete(UserTreePin).where(UserTreePin.node_type == "document", UserTreePin.node_id.in_(expired_document_ids)))
+    db.execute(delete(TreeShortcut).where(TreeShortcut.target_type == "document", TreeShortcut.target_id.in_(expired_document_ids)))
+    db.execute(delete(Comment).where(Comment.document_id.in_(expired_document_ids)))
+    db.execute(delete(CommentThread).where(CommentThread.document_id.in_(expired_document_ids)))
+    db.execute(delete(DocumentFavorite).where(DocumentFavorite.document_id.in_(expired_document_ids)))
+    db.execute(delete(DocumentPermissionAuditLog).where(DocumentPermissionAuditLog.document_id.in_(expired_document_ids)))
+    db.execute(delete(DocumentPermissionSettings).where(DocumentPermissionSettings.document_id.in_(expired_document_ids)))
+    db.execute(delete(DocumentPermission).where(DocumentPermission.document_id.in_(expired_document_ids)))
+    db.execute(delete(ShareLink).where(ShareLink.document_id.in_(expired_document_ids)))
+    db.execute(delete(DocumentAssetRef).where(DocumentAssetRef.document_id.in_(expired_document_ids)))
+
+    documents = db.scalars(select(Document).where(Document.id.in_(expired_document_ids))).all()
+    for document in documents:
+        document.current_version_id = None
+    db.flush()
+
+    db.execute(delete(DocumentVersion).where(DocumentVersion.document_id.in_(expired_document_ids)))
+    db.execute(delete(DocumentContent).where(DocumentContent.document_id.in_(expired_document_ids)))
+    db.execute(delete(Document).where(Document.id.in_(expired_document_ids)))
+    db.commit()
+    return len(expired_document_ids)
+
+
+def purge_unreferenced_document_assets(db: Session, *, retention_days: int = 30, now: datetime | None = None) -> int:
+    current_time = now or datetime.now(timezone.utc)
+    cutoff = current_time - timedelta(days=retention_days)
+
+    current_content_ids = set(
+        db.scalars(
+            select(DocumentVersion.content_id)
+            .join(Document, Document.current_version_id == DocumentVersion.id)
+            .where(Document.is_deleted.is_(False))
+        ).all()
+    )
+    recently_deleted_document_ids = set(
+        db.scalars(
+            select(Document.id).where(
+                Document.is_deleted.is_(True),
+                or_(Document.deleted_at.is_(None), Document.deleted_at > cutoff),
+            )
+        ).all()
+    )
+    protected_urls = set(
+        db.scalars(
+            select(DocumentAssetRef.asset_url)
+            .join(DocumentContent, DocumentContent.id == DocumentAssetRef.content_id)
+            .where(
+                or_(
+                    DocumentAssetRef.content_id.in_(current_content_ids) if current_content_ids else False,
+                    DocumentContent.created_at > cutoff,
+                    DocumentAssetRef.document_id.in_(recently_deleted_document_ids) if recently_deleted_document_ids else False,
+                )
+            )
+        ).all()
+    )
+    candidate_urls = set(
+        db.scalars(
+            select(DocumentAssetRef.asset_url)
+            .join(DocumentContent, DocumentContent.id == DocumentAssetRef.content_id)
+            .where(
+                DocumentContent.created_at <= cutoff,
+                DocumentAssetRef.asset_url.not_in(protected_urls) if protected_urls else True,
+            )
+        ).all()
+    )
+    if not candidate_urls:
+        return 0
+
+    storage = get_storage_provider()
+    deleted_count = 0
+    for url in candidate_urls:
+        try:
+            if storage.delete_url(url):
+                deleted_count += 1
+        except Exception:
+            continue
+    db.execute(delete(DocumentAssetRef).where(DocumentAssetRef.asset_url.in_(candidate_urls)))
+    db.commit()
+    return deleted_count
 
 
 def update_document_content(
@@ -1343,6 +1541,7 @@ def update_document_content(
     )
     db.add(content)
     db.flush()
+    sync_document_asset_refs(db, document_id=doc_id, content=content)
 
     version = DocumentVersion(
         document_id=doc_id,
@@ -1436,6 +1635,7 @@ def duplicate_document(db: Session, doc_id: str, current_user_id: str) -> Docume
     )
     db.add(content)
     db.flush()
+    sync_document_asset_refs(db, document_id=document.id, content=content)
 
     version = DocumentVersion(
         document_id=document.id,
@@ -1464,6 +1664,7 @@ def soft_delete_document(db: Session, doc_id: str, user_id: str | None = None) -
         raise PermissionError("Not allowed to delete document")
 
     document.is_deleted = True
+    document.deleted_at = datetime.now(timezone.utc)
     document.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(document)
@@ -1480,6 +1681,7 @@ def restore_document(db: Session, doc_id: str, user_id: str | None = None) -> Do
         raise PermissionError("Not allowed to restore document")
 
     document.is_deleted = False
+    document.deleted_at = None
     document.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(document)

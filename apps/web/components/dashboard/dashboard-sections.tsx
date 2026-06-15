@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState, useTransition } from "react";
 
 import { ApiUnavailableNotice } from "@/components/common/api-unavailable-notice";
 import {
@@ -12,6 +13,7 @@ import {
   SpaceSummary,
   subscribeDocumentLibraryBrowserEvents,
   TreeNode,
+  updateSpace,
 } from "@/lib/api";
 import { subscribeCloudDocEvents } from "@/lib/event-stream";
 
@@ -231,6 +233,41 @@ export function FolderListSection({
 }
 
 export function SpacesSection({ spaces }: { spaces: SpaceSummary[] }) {
+  const router = useRouter();
+  const [editingSpaceId, setEditingSpaceId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
+  const [notice, setNotice] = useState("");
+  const [isPending, startTransition] = useTransition();
+
+  const startRename = (space: SpaceSummary) => {
+    setEditingSpaceId(space.id);
+    setEditingName(space.name);
+    setNotice("");
+  };
+
+  const cancelRename = () => {
+    setEditingSpaceId(null);
+    setEditingName("");
+  };
+
+  const submitRename = (space: SpaceSummary) => {
+    const nextName = editingName.trim();
+    if (!nextName || nextName === space.name) {
+      cancelRename();
+      return;
+    }
+    startTransition(async () => {
+      try {
+        await updateSpace(space.id, { name: nextName });
+        setNotice("空间名称已更新");
+        cancelRename();
+        router.refresh();
+      } catch {
+        setNotice("空间改名失败，请确认你有管理权限后重试。");
+      }
+    });
+  };
+
   return (
     <section className="border border-slate-200 bg-white px-4 py-3 shadow-panel">
       <h2 className="text-lg font-semibold">团队空间</h2>
@@ -241,14 +278,64 @@ export function SpacesSection({ spaces }: { spaces: SpaceSummary[] }) {
               key={space.id}
               className="flex items-center justify-between border border-slate-200 px-3 py-2"
             >
-              <div>
-                <div className="text-sm font-medium">{space.name}</div>
+              <div className="min-w-0 flex-1">
+                {editingSpaceId === space.id ? (
+                  <input
+                    value={editingName}
+                    autoFocus
+                    maxLength={120}
+                    onChange={(event) => setEditingName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        submitRename(space);
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        cancelRename();
+                      }
+                    }}
+                    className="w-full max-w-sm border border-accent bg-white px-2 py-1 text-sm font-medium outline-none"
+                  />
+                ) : (
+                  <div className="truncate text-sm font-medium">{space.name}</div>
+                )}
                 <div className="mt-0.5 text-xs text-slate-500">
                   {space.spaceType === "team" ? "团队空间" : "个人空间"} · {space.visibility}
                 </div>
               </div>
-              <div className="bg-mist px-2.5 py-0.5 text-xs font-medium text-slate-600">
-                {space.updatedAt}
+              <div className="ml-3 flex shrink-0 items-center gap-2">
+                {editingSpaceId === space.id ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      onClick={() => submitRename(space)}
+                      className="border border-accent px-2.5 py-1 text-xs font-medium text-accent disabled:opacity-60"
+                    >
+                      保存
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      onClick={cancelRename}
+                      className="border border-slate-200 px-2.5 py-1 text-xs text-slate-500 disabled:opacity-60"
+                    >
+                      取消
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => startRename(space)}
+                    className="border border-slate-200 px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                  >
+                    改名
+                  </button>
+                )}
+                <div className="bg-mist px-2.5 py-0.5 text-xs font-medium text-slate-600">
+                  {space.updatedAt}
+                </div>
               </div>
             </div>
           ))
@@ -256,6 +343,7 @@ export function SpacesSection({ spaces }: { spaces: SpaceSummary[] }) {
           <p className="text-sm leading-6 text-slate-600">当前还没有可用空间。</p>
         )}
       </div>
+      {notice ? <div className="mt-2 text-xs text-slate-500">{notice}</div> : null}
     </section>
   );
 }
@@ -305,7 +393,7 @@ export function SpacesDirectorySection({
       <div className="mt-3 grid gap-2.5 lg:grid-cols-2">
         {items.length > 0 ? (
           items.map((item) => (
-            <div key={item.space.id} className="border border-slate-200 p-3">
+            <div key={item.space.id} className="flex max-h-[420px] flex-col overflow-hidden border border-slate-200 p-3">
               <div className="mb-2 flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold text-slate-900">{item.space.name}</div>
@@ -320,7 +408,9 @@ export function SpacesDirectorySection({
                   进入
                 </Link>
               </div>
-              <SpaceTreeNodes nodes={item.tree} />
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                <SpaceTreeNodes nodes={item.tree} />
+              </div>
             </div>
           ))
         ) : (

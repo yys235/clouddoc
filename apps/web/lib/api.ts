@@ -2219,6 +2219,34 @@ export async function fetchSpaces(): Promise<ApiListResult<SpaceSummary>> {
   }
 }
 
+export async function updateSpace(spaceId: string, input: { name: string }): Promise<SpaceSummary> {
+  const response = await apiFetch(`${API_BASE_URL}/spaces/${spaceId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    credentials: "same-origin",
+    body: JSON.stringify({ name: input.name }),
+  });
+  if (!response.ok) {
+    throw new Error("Failed to update space");
+  }
+  const data = (await response.json()) as {
+    id: string;
+    name: string;
+    space_type: string;
+    visibility: string;
+    updated_at: string;
+  };
+  return {
+    id: data.id,
+    name: data.name,
+    spaceType: data.space_type,
+    visibility: data.visibility,
+    updatedAt: formatDateTime(data.updated_at),
+  };
+}
+
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",

@@ -11,3 +11,7 @@ class SpaceSummary(BaseModel):
     space_type: str
     visibility: str
     updated_at: datetime
+
+
+class SpaceUpdateRequest(BaseModel):
+    name: str

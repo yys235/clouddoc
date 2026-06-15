@@ -10,8 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.db import SessionLocal, init_db
-from app.services.bootstrap_service import seed_demo_data
-from app.services.document_service import ensure_supported_document_types
+from app.services.bootstrap_service import ensure_runtime_schema, seed_demo_data
+from app.services.document_service import ensure_supported_document_types, purge_expired_deleted_documents, purge_unreferenced_document_assets
 from app.services.folder_service import ensure_default_newdoc_folders
 from app.services.integration_service import retry_due_webhook_deliveries
 from app.services.submission_guard_service import submission_guard
@@ -24,6 +24,7 @@ async def lifespan(_: FastAPI):
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     db = SessionLocal()
     try:
+        ensure_runtime_schema(db)
         ensure_supported_document_types(db)
         if settings.auto_seed_demo or settings.app_env == "development":
             seed_demo_data(db)
@@ -44,22 +45,45 @@ async def lifespan(_: FastAPI):
             except asyncio.TimeoutError:
                 continue
 
+    async def deleted_document_purge_worker() -> None:
+        while not stop_event.is_set():
+            try:
+                await asyncio.to_thread(_run_deleted_document_purge_once)
+            except Exception:
+                # Purge failures should be visible in logs but must not crash API startup.
+                pass
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=3600)
+            except asyncio.TimeoutError:
+                continue
+
     worker_task = asyncio.create_task(webhook_retry_worker())
+    purge_worker_task = asyncio.create_task(deleted_document_purge_worker())
     try:
         yield
     finally:
         stop_event.set()
-        worker_task.cancel()
-        try:
-            await worker_task
-        except asyncio.CancelledError:
-            pass
+        for task in (worker_task, purge_worker_task):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 def _run_webhook_retries_once() -> None:
     db = SessionLocal()
     try:
         retry_due_webhook_deliveries(db)
+    finally:
+        db.close()
+
+
+def _run_deleted_document_purge_once() -> None:
+    db = SessionLocal()
+    try:
+        purge_expired_deleted_documents(db, retention_days=settings.deleted_document_retention_days)
+        purge_unreferenced_document_assets(db, retention_days=settings.deleted_document_retention_days)
     finally:
         db.close()
 

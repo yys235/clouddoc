@@ -276,6 +276,41 @@ curl http://127.0.0.1:8000/health
 
 检查 Nginx 是否代理了 `/uploads/`。
 
+## 图片与对象存储
+
+默认情况下，PDF 和图片上传会写入后端本地 `uploads/` 目录，并通过 `/uploads/...` 访问。
+
+如需把图片等上传资源存到公共对象存储，可启用 S3-compatible 存储。该模式适用于 MinIO、AWS S3，以及兼容 S3 协议的阿里 OSS/腾讯 COS 网关。
+
+```env
+STORAGE_PROVIDER=s3
+S3_ENDPOINT_URL=https://minio.example.com
+S3_REGION_NAME=us-east-1
+S3_BUCKET=clouddoc-assets
+S3_ACCESS_KEY_ID=your-access-key
+S3_SECRET_ACCESS_KEY=your-secret-key
+S3_KEY_PREFIX=uploads
+STORAGE_PUBLIC_BASE_URL=https://cdn.example.com/clouddoc-assets
+```
+
+说明：
+
+- `STORAGE_PROVIDER=local` 或不配置时保持本地 `uploads/` 行为。
+- `STORAGE_PUBLIC_BASE_URL` 建议配置为 CDN 或对象存储公开访问域名；不配置时会按 endpoint/bucket/key 推导 URL。
+- S3 模式依赖 `boto3`，启用前需要在后端运行环境安装该依赖。
+
+## 回收站与彻底删除
+
+删除文档时，CloudDoc 会先进入软删除状态，文档仍保留在回收站中，可在保留期内恢复。默认保留期为 30 天：
+
+```env
+DELETED_DOCUMENT_RETENTION_DAYS=30
+```
+
+API 启动后会定期清理超过保留期的已删除文档。彻底删除会移除文档记录、历史版本、评论、分享链接、权限、通知等关联数据，并尝试删除只被这些文档引用的上传资源；如果同一文件仍被其他文档版本引用，则不会删除物理文件。
+
+CloudDoc 会在每次保存文档、画板或 PDF 内容版本时写入资源引用索引。普通文档图片块、PDF 文件、画板形状中的 `image.src` 都会记录到 `document_asset_refs`。删除图片块或删除画板形状后，新版本不再记录该资源；后台资源 GC 会保留当前版本引用、30 天内历史版本引用、以及回收站保留期内文档的所有引用，超过窗口且没有保护引用的资源才会被删除。
+
 ### 数据通过 Nginx 代理后无法加载
 
 检查 Nginx 是否代理了 `/api/`。

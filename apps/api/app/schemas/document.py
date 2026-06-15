@@ -18,6 +18,7 @@ class DocumentSummary(BaseModel):
     folder_id: str | None = None
     sort_order: int = 0
     is_deleted: bool = False
+    deleted_at: datetime | None = None
     is_favorited: bool = False
     can_edit: bool = False
     can_manage: bool = False

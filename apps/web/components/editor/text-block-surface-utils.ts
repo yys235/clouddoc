@@ -146,7 +146,7 @@ export function displayTextForBlock(block: EditableBlock) {
 }
 
 export function showsUnifiedTextSurface(block: EditableBlock, readOnly: boolean) {
-  if (block.type === "image" || block.type === "divider") {
+  if (block.type === "image" || block.type === "divider" || block.type === "code_block") {
     return false;
   }
   if (block.type === "link") {

@@ -139,7 +139,7 @@ export function OrganizationManagementPanel({
             <div className="rounded-lg bg-mist px-3 py-1 text-xs font-medium text-slate-500">只读</div>
           ) : null}
         </div>
-        <div className="mt-3 space-y-2">
+        <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
           {members.length > 0 ? (
             members.map((member) => {
               const isOwner = member.role === "owner";
@@ -229,7 +229,7 @@ export function OrganizationManagementPanel({
 
       <div className="mt-5 rounded-lg border border-slate-100 p-4">
         <div className="text-sm font-medium text-slate-900">当前会话</div>
-        <div className="mt-3 space-y-2">
+        <div className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
           {sessions.length > 0 ? (
             sessions.map((session) => (
               <div

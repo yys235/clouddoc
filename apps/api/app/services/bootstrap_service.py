@@ -390,9 +390,32 @@ def ensure_runtime_schema(db: Session) -> None:
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_tree_shortcuts_target ON tree_shortcuts(target_type, target_id)"))
     db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0"))
     db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS folder_id UUID REFERENCES folders(id)"))
+    db.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_visibility ON documents(visibility)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_folder ON documents(folder_id)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_sort_order ON documents(sort_order)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_deleted_at ON documents(deleted_at)"))
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS document_asset_refs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                content_id UUID NOT NULL REFERENCES document_contents(id) ON DELETE CASCADE,
+                asset_url TEXT NOT NULL,
+                ref_type VARCHAR(32) NOT NULL DEFAULT 'asset',
+                source_path VARCHAR(512) NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT uq_document_asset_ref_content_url_path UNIQUE (content_id, asset_url, source_path)
+            )
+            """
+        )
+    )
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_document_asset_refs_document ON document_asset_refs(document_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_document_asset_refs_content ON document_asset_refs(content_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_document_asset_refs_url ON document_asset_refs(asset_url)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_document_asset_refs_type ON document_asset_refs(ref_type)"))
     db.execute(text("ALTER TABLE document_permissions ADD COLUMN IF NOT EXISTS invited_by UUID REFERENCES users(id)"))
     db.execute(text("ALTER TABLE document_permissions ADD COLUMN IF NOT EXISTS notify BOOLEAN NOT NULL DEFAULT FALSE"))
     db.execute(text("ALTER TABLE document_permissions ALTER COLUMN subject_id TYPE VARCHAR(128)"))

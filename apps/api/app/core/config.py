@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     cors_origins: str = 'http://localhost:3000,http://127.0.0.1:3000,http://127.0.0.1:3100'
     upload_dir: str = 'uploads'
     upload_url_prefix: str = '/uploads'
+    storage_provider: str = 'local'
+    storage_public_base_url: str = ''
+    s3_endpoint_url: str = ''
+    s3_region_name: str = 'us-east-1'
+    s3_bucket: str = ''
+    s3_access_key_id: str = ''
+    s3_secret_access_key: str = ''
+    s3_key_prefix: str = 'uploads'
+    deleted_document_retention_days: int = 30
     session_cookie_name: str = 'clouddoc_session'
     session_ttl_days: int = 14
     session_cookie_secure: bool = False

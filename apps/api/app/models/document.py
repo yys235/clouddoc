@@ -1,4 +1,6 @@
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,6 +25,7 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     cover_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     current_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_versions.id"),
         nullable=True,
@@ -50,6 +53,17 @@ class DocumentVersion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     version_no: Mapped[int] = mapped_column(Integer)
     message: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+
+
+class DocumentAssetRef(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "document_asset_refs"
+    __table_args__ = (UniqueConstraint("content_id", "asset_url", "source_path", name="uq_document_asset_ref_content_url_path"),)
+
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    content_id: Mapped[str] = mapped_column(ForeignKey("document_contents.id", ondelete="CASCADE"), index=True)
+    asset_url: Mapped[str] = mapped_column(Text, index=True)
+    ref_type: Mapped[str] = mapped_column(String(32), default="asset", index=True)
+    source_path: Mapped[str] = mapped_column(String(512), default="")
 
 
 class DocumentPermission(UUIDPrimaryKeyMixin, TimestampMixin, Base):

@@ -346,6 +346,43 @@
 说明：
 - 图片实际资源建议存对象存储
 - 文档内容中保存资源引用和展示属性
+- 当前实现提供统一上传接口，默认写入本地 `uploads/`；配置 S3-compatible 存储后，上传资源可写入 MinIO/AWS S3/兼容网关，并在内容 JSON 中保存公开 URL。
+
+## 5.9.1 board node image
+
+画板形状节点支持绑定图片内容，图片数据存储在节点级字段中，文字仍保留在同一个节点的 `text` 字段。
+
+示例：
+
+```json
+{
+  "id": "node_123",
+  "type": "rectangle",
+  "text": "图文说明",
+  "image": {
+    "src": "https://cdn.example.com/uploads/demo.png",
+    "fileName": "demo.png",
+    "mimeType": "image/png",
+    "objectFit": "cover"
+  }
+}
+```
+
+说明：
+- `image.src` 保存上传接口返回的可访问 URL。
+- `objectFit` 当前支持 `cover` 和 `contain`，默认 `cover`。
+- 表格节点暂不使用该字段，避免和单元格内容模型冲突。
+
+## 5.9.2 upload asset lifecycle
+
+上传资源生命周期与文档删除状态关联：
+
+- 删除文档时先进入软删除状态，保留 `deleted_at`。
+- 默认 30 天内允许恢复；恢复时清空 `deleted_at`。
+- 超过保留期后，后台清理任务会物理删除文档及关联数据。
+- 每个内容版本保存时，会同步 `document_asset_refs` 资源引用索引，记录 `document_id`、`content_id`、`asset_url`、`ref_type` 和 `source_path`。
+- 画板形状图片删除后，新版本不再包含对应 `node.image.src` 引用；旧版本引用仍按历史资源保留窗口保护。
+- 后台资源 GC 会保留当前版本引用、保留窗口内历史版本引用、以及回收站保留期内文档的所有引用；超过窗口且无保护引用时，才删除本地或对象存储中的物理文件。
 
 ## 5.10 table
 

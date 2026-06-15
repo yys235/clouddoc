@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { BoardDocumentPage } from "@/components/board/board-document-page";
 import { DocumentViewModel } from "@/lib/mock-document";
-import { BlockEditor, EditableBlock } from "@/components/editor/block-editor";
+import { BlockEditor, EditableBlock, sanitizeCodeHeight, sanitizeCodeLanguage } from "@/components/editor/block-editor";
 import { CommentSidebar } from "@/components/editor/comment-sidebar";
 import { DocumentShareDialog } from "@/components/editor/document-share-dialog";
 import {
@@ -485,7 +485,11 @@ function blocksFromDocument(document: DocumentViewModel): EditableBlock[] {
         id: fallbackId("code"),
         type: "code_block" as const,
         indent,
-        text: node.content?.[0]?.text ?? "",
+        text: rawTextFromNode(node),
+        codeLanguage: sanitizeCodeLanguage(String(node.attrs?.language ?? "plain_text")),
+        codeWrap: node.attrs?.wrap === undefined ? true : Boolean(node.attrs.wrap),
+        codeCollapsed: Boolean(node.attrs?.collapsed),
+        codeHeight: sanitizeCodeHeight(Number(node.attrs?.height ?? 240)),
       }];
     }
 
@@ -703,10 +707,18 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
     }
 
     if (block.type === "code_block") {
+      const codeAttrs = attrsWithBlockIndent(block, {
+        language: sanitizeCodeLanguage(block.codeLanguage),
+        wrap: block.codeWrap ?? true,
+        collapsed: block.codeCollapsed ?? false,
+        height: sanitizeCodeHeight(block.codeHeight),
+        raw_text: rawText,
+        block_id: block.id,
+      });
       if (!text) {
         contentNodes.push({
           type: "code_block",
-          attrs: attrsWithBlockIndent(block, { language: "plain", preservedEmpty: true, block_id: block.id }),
+          attrs: { ...codeAttrs, preservedEmpty: true },
           content: emptyTextNode(),
         });
         continue;
@@ -714,8 +726,8 @@ function contentFromBlocks(title: string, blocks: EditableBlock[]) {
 
       contentNodes.push({
         type: "code_block",
-        attrs: attrsWithBlockIndent(block, { language: "plain", block_id: block.id }),
-        content: [{ type: "text", text }],
+        attrs: codeAttrs,
+        content: [{ type: "text", text: rawText }],
       });
       continue;
     }
@@ -782,6 +794,10 @@ function draftHistorySignature(snapshot: DraftHistorySnapshot) {
       orderedListStartOverrides: block.orderedListStartOverrides ?? null,
       imageAlign: block.imageAlign ?? null,
       imageRotation: block.imageRotation ?? null,
+      codeLanguage: block.codeLanguage ?? null,
+      codeWrap: block.codeWrap ?? null,
+      codeCollapsed: block.codeCollapsed ?? null,
+      codeHeight: block.codeHeight ?? null,
       meta: block.meta ?? null,
     })),
   });
@@ -1240,6 +1256,10 @@ function DocumentTextPage({
         orderedListStartOverrides: block.orderedListStartOverrides ?? null,
         imageAlign: block.imageAlign ?? null,
         imageRotation: block.imageRotation ?? null,
+        codeLanguage: block.codeLanguage ?? null,
+        codeWrap: block.codeWrap ?? null,
+        codeCollapsed: block.codeCollapsed ?? null,
+        codeHeight: block.codeHeight ?? null,
         text: block.text.trim(),
         meta: block.meta ?? null,
       })),
@@ -1255,6 +1275,10 @@ function DocumentTextPage({
         orderedListStartOverrides: block.orderedListStartOverrides ?? null,
         imageAlign: block.imageAlign ?? null,
         imageRotation: block.imageRotation ?? null,
+        codeLanguage: block.codeLanguage ?? null,
+        codeWrap: block.codeWrap ?? null,
+        codeCollapsed: block.codeCollapsed ?? null,
+        codeHeight: block.codeHeight ?? null,
         text: block.text.trim(),
         meta: block.meta ?? null,
       })),
@@ -1747,7 +1771,7 @@ function DocumentTextPage({
         showCommentSidebar ? "xl:grid-cols-[260px_minmax(0,1fr)_340px]" : "xl:grid-cols-[260px_minmax(0,1fr)]"
       }`}
     >
-      <aside className="hidden min-h-0 overflow-y-auto border-r border-slate-300 bg-white px-4 py-4 xl:block">
+      <aside className="relative z-0 hidden min-h-0 overflow-y-auto border-r border-slate-300 bg-white px-4 py-4 xl:block">
         <div className="pr-1">
           <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-400">页面目录</div>
           <div className="mt-3 space-y-1">
@@ -1755,6 +1779,7 @@ function DocumentTextPage({
               <a
                 key={item.id}
                 href={`#${item.id}`}
+                title={item.title}
                 onClick={(event) => {
                   event.preventDefault();
                   scrollToOutlineTarget(item.id);
@@ -1762,7 +1787,7 @@ function DocumentTextPage({
                 style={{
                   paddingLeft: `${0.625 + Math.max(0, Math.min(5, item.level - 1)) * 0.75}rem`,
                 }}
-                className={`block rounded-lg py-1.5 pr-2.5 transition hover:bg-slate-100 hover:text-slate-800 ${
+                className={`block truncate whitespace-nowrap rounded-lg py-1.5 pr-2.5 transition hover:bg-slate-100 hover:text-slate-800 ${
                   item.level <= 1
                     ? "text-sm font-medium text-slate-600"
                     : item.level === 2
@@ -1777,7 +1802,7 @@ function DocumentTextPage({
         </div>
       </aside>
 
-      <section className="min-h-0 min-w-0 overflow-y-auto bg-sand">
+      <section className="relative z-10 min-h-0 min-w-0 overflow-y-auto bg-sand">
         <header className="sticky top-0 z-40 border-b border-slate-400 bg-[#e8edf3] px-3 py-1.5 shadow-[0_12px_28px_rgba(15,23,42,0.14),0_1px_0_rgba(255,255,255,0.85)_inset] md:px-4">
           <div className="mx-auto max-w-[1320px] space-y-1.5">
             <div className="flex items-center justify-between gap-3">
@@ -1788,13 +1813,13 @@ function DocumentTextPage({
                 {(breadcrumbs ?? []).map((item) => (
                   <div key={item.id} className="contents">
                     <span className="shrink-0">/</span>
-                    <Link href={`/folders/${item.id}`} className="truncate transition hover:text-slate-800">
+                    <Link href={`/folders/${item.id}`} title={item.title} className="truncate transition hover:text-slate-800">
                       {item.title}
                     </Link>
                   </div>
                 ))}
                 <span className="shrink-0">/</span>
-                <Link href={`/docs/${currentDocument.id}`} className="truncate transition hover:text-slate-800">
+                <Link href={`/docs/${currentDocument.id}`} title={currentDocument.title} className="truncate transition hover:text-slate-800">
                   {currentDocument.title}
                 </Link>
               </nav>
@@ -1976,7 +2001,7 @@ function DocumentTextPage({
                   <span className="border border-slate-200 bg-white/90 px-1.5 py-0.5">已分享</span>
                 ) : null}
                 {summaryLabel ? (
-                  <span className="max-w-[420px] truncate border border-slate-200 bg-white/90 px-1.5 py-0.5">
+                  <span className="max-w-[420px] truncate border border-slate-200 bg-white/90 px-1.5 py-0.5" title={summaryLabel}>
                     {summaryLabel}
                   </span>
                 ) : null}
@@ -1984,7 +2009,7 @@ function DocumentTextPage({
           </div>
         </header>
 
-        <article className="mx-auto my-4 max-w-[1320px] bg-white px-5 py-6 shadow-[0_1px_0_rgba(15,23,42,0.06)] ring-1 ring-slate-200/80 md:px-8">
+        <article className="mx-auto my-4 max-w-[1320px] bg-white px-5 py-6 shadow-[0_1px_0_rgba(15,23,42,0.06)] ring-1 ring-slate-200/80 md:px-8 xl:pl-14">
           {isPdfDocument ? (
             <PdfPreview
               fileUrl={currentDocument.fileUrl}

@@ -7,6 +7,7 @@ import type {
   FocusEvent as ReactFocusEvent,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
 } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -81,6 +82,10 @@ export type EditableBlock = {
   meta?: LinkCardMeta;
   imageAlign?: "left" | "center" | "right";
   imageRotation?: number;
+  codeLanguage?: string;
+  codeWrap?: boolean;
+  codeCollapsed?: boolean;
+  codeHeight?: number;
 };
 
 type UploadedImageAsset = {
@@ -96,6 +101,47 @@ const LINK_VIEW_OPTIONS: Array<{ value: LinkCardView; label: string }> = [
   { value: "card", label: "卡片视图" },
   { value: "preview", label: "预览视图" },
 ];
+
+const CODE_LANGUAGE_OPTIONS = [
+  { value: "plain_text", label: "Plain Text" },
+  { value: "http", label: "HTTP" },
+  { value: "javascript", label: "JavaScript" },
+  { value: "typescript", label: "TypeScript" },
+  { value: "python", label: "Python" },
+  { value: "java", label: "Java" },
+  { value: "go", label: "Go" },
+  { value: "rust", label: "Rust" },
+  { value: "c", label: "C" },
+  { value: "cpp", label: "C++" },
+  { value: "csharp", label: "C#" },
+  { value: "php", label: "PHP" },
+  { value: "ruby", label: "Ruby" },
+  { value: "swift", label: "Swift" },
+  { value: "kotlin", label: "Kotlin" },
+  { value: "dart", label: "Dart" },
+  { value: "scala", label: "Scala" },
+  { value: "shell", label: "Shell" },
+  { value: "powershell", label: "PowerShell" },
+  { value: "sql", label: "SQL" },
+  { value: "html", label: "HTML" },
+  { value: "css", label: "CSS" },
+  { value: "json", label: "JSON" },
+  { value: "yaml", label: "YAML" },
+  { value: "xml", label: "XML" },
+  { value: "markdown", label: "Markdown" },
+  { value: "toml", label: "TOML" },
+  { value: "csv", label: "CSV" },
+  { value: "graphql", label: "GraphQL" },
+  { value: "dockerfile", label: "Dockerfile" },
+  { value: "makefile", label: "Makefile" },
+  { value: "regex", label: "Regex" },
+  { value: "latex", label: "LaTeX" },
+  { value: "lua", label: "Lua" },
+  { value: "julia", label: "Julia" },
+  { value: "haskell", label: "Haskell" },
+  { value: "lisp", label: "Lisp" },
+  { value: "matlab", label: "MATLAB" },
+] as const;
 
 type ImagePreviewData = {
   blockId: string;
@@ -261,12 +307,33 @@ function sanitizeImageRotation(rotation: number | undefined) {
   return ((Math.trunc(value) % 360) + 360) % 360;
 }
 
+export function sanitizeCodeHeight(height: number | undefined) {
+  const value = Number(height ?? 240);
+  if (!Number.isFinite(value)) {
+    return 240;
+  }
+  return Math.max(120, Math.min(1200, Math.trunc(value)));
+}
+
+export function sanitizeCodeLanguage(language: string | undefined) {
+  const normalized = String(language ?? "plain_text").trim().toLowerCase().replace(/\s+/g, "_");
+  return CODE_LANGUAGE_OPTIONS.some((option) => option.value === normalized) ? normalized : "plain_text";
+}
+
+function codeLanguageLabel(language: string | undefined) {
+  const value = sanitizeCodeLanguage(language);
+  return CODE_LANGUAGE_OPTIONS.find((option) => option.value === value)?.label ?? "Plain Text";
+}
+
 function fallbackSplitText() {
   return "";
 }
 
 function resizeTextarea(textarea: HTMLTextAreaElement | null) {
   if (!textarea) {
+    return;
+  }
+  if (textarea.dataset.codeBlockTextarea === "true") {
     return;
   }
 
@@ -284,6 +351,10 @@ function createBlock(type: EditableBlockType, text = "", options?: { headingLeve
     text,
     headingLevel: type === "heading" ? sanitizeHeadingLevel(options?.headingLevel ?? 1) : undefined,
     meta: type === "link" ? { ...(defaultMetaByType(type) ?? {}), ...(options?.meta ?? {}) } : options?.meta,
+    codeLanguage: type === "code_block" ? "plain_text" : undefined,
+    codeWrap: type === "code_block" ? true : undefined,
+    codeCollapsed: type === "code_block" ? false : undefined,
+    codeHeight: type === "code_block" ? 240 : undefined,
   } satisfies EditableBlock;
 }
 
@@ -547,25 +618,30 @@ function LinkPreviewBlock({ block, readOnly }: { block: EditableBlock; readOnly:
     );
   }
 
-  const previewBody = (() => {
-    if (preview.status === "loading") {
-      return (
-        <div className="rounded-lg border border-sky-100 bg-sky-50/60 px-4 py-3 text-sm text-slate-500">
-          正在抓取链接信息...
-        </div>
-      );
-    }
-
-    if (preview.view === "link") {
-      return (
+  if (preview.view === "link") {
+    return (
+      <div className="inline-flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <a
           href={preview.href || undefined}
           target="_blank"
           rel="noreferrer"
           className="inline text-base leading-8 text-sky-600 underline underline-offset-2 transition hover:text-sky-700"
         >
-          {preview.title || preview.href}
+          {preview.href || preview.title}
         </a>
+        {preview.status === "error" ? (
+          <span className="text-xs leading-5 text-rose-500">链接信息抓取失败，可点击刷新重试。</span>
+        ) : null}
+      </div>
+    );
+  }
+
+  const previewBody = (() => {
+    if (preview.status === "loading") {
+      return (
+        <div className="rounded-lg border border-sky-100 bg-sky-50/60 px-4 py-3 text-sm text-slate-500">
+          正在抓取链接信息...
+        </div>
       );
     }
 
@@ -628,6 +704,225 @@ function LinkPreviewBlock({ block, readOnly }: { block: EditableBlock; readOnly:
       {previewBody}
       {preview.status === "error" ? (
         <div className="mt-2 text-xs text-rose-500">链接信息抓取失败，可点击刷新重试。</div>
+      ) : null}
+    </div>
+  );
+}
+
+function CodeBlockSurface({
+  block,
+  readOnly,
+  isActive,
+  textareaRef,
+  onChange,
+  onPaste,
+  onFocus,
+  onBlur,
+  onMouseUp,
+  onKeyDown,
+  onLanguageChange,
+  onWrapChange,
+  onCollapsedChange,
+  onHeightChange,
+}: {
+  block: EditableBlock;
+  readOnly: boolean;
+  isActive: boolean;
+  textareaRef: (element: HTMLTextAreaElement | null) => void;
+  onChange: (event: ReactChangeEvent<HTMLTextAreaElement>) => void;
+  onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void;
+  onFocus: () => void;
+  onBlur: (event: ReactFocusEvent<HTMLTextAreaElement>) => void;
+  onMouseUp: (event: ReactMouseEvent<HTMLTextAreaElement>) => void;
+  onKeyDown: (event: ReactKeyboardEvent<HTMLTextAreaElement>) => void;
+  onLanguageChange: (language: string) => void;
+  onWrapChange: (wrap: boolean) => void;
+  onCollapsedChange: (collapsed: boolean) => void;
+  onHeightChange: (height: number) => void;
+}) {
+  const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
+  const [languageQuery, setLanguageQuery] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [draggingHeight, setDraggingHeight] = useState(false);
+  const language = sanitizeCodeLanguage(block.codeLanguage);
+  const wrap = block.codeWrap ?? true;
+  const collapsed = block.codeCollapsed ?? false;
+  const codeHeight = sanitizeCodeHeight(block.codeHeight);
+  const lines = Math.max(1, block.text.split("\n").length);
+  const codeContentHeight = Math.max(codeHeight, lines * 24 + 16);
+  const filteredLanguages = CODE_LANGUAGE_OPTIONS.filter((option) => {
+    const query = languageQuery.trim().toLowerCase();
+    if (!query) {
+      return true;
+    }
+    return option.label.toLowerCase().includes(query) || option.value.includes(query);
+  });
+
+  const copyCode = () => {
+    if (!block.text) {
+      return;
+    }
+    void navigator.clipboard?.writeText(block.text).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    });
+  };
+
+  const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (readOnly) {
+      return;
+    }
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = codeHeight;
+    setDraggingHeight(true);
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      onHeightChange(sanitizeCodeHeight(startHeight + moveEvent.clientY - startY));
+    };
+    const handlePointerUp = () => {
+      setDraggingHeight(false);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  };
+
+  return (
+    <div
+      className={`overflow-visible rounded-lg border bg-slate-50/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition ${
+        isActive ? "border-sky-300 ring-2 ring-sky-100" : "border-slate-200"
+      }`}
+    >
+      <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 px-3 py-1.5">
+        <button
+          type="button"
+          className="flex items-center gap-2 text-sm font-medium text-slate-600 transition hover:text-slate-900"
+          onClick={() => onCollapsedChange(!collapsed)}
+        >
+          <span className={`text-xs text-slate-400 transition ${collapsed ? "-rotate-90" : ""}`}>▾</span>
+          <span>代码块</span>
+        </button>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+          <div className="relative">
+            <button
+              type="button"
+              className="flex h-7 min-w-[112px] items-center justify-between gap-2 rounded-md border border-transparent px-2 text-left text-xs text-slate-600 transition hover:border-slate-200 hover:bg-white"
+              onClick={() => setLanguageMenuOpen((current) => !current)}
+              disabled={readOnly}
+            >
+              <span className="truncate">{codeLanguageLabel(language)}</span>
+              <span className="text-[10px] text-slate-400">⌄</span>
+            </button>
+            {languageMenuOpen ? (
+              <div
+                data-editor-floating-window="true"
+                className="absolute right-0 top-[calc(100%+8px)] z-40 w-[214px] rounded-lg border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.14)]"
+              >
+                <div className="border-b border-slate-100 p-2">
+                  <label className="flex h-8 items-center gap-2 rounded-md border border-slate-200 px-2 text-slate-400">
+                    <span>⌕</span>
+                    <input
+                      value={languageQuery}
+                      onChange={(event) => setLanguageQuery(event.target.value)}
+                      className="min-w-0 flex-1 bg-transparent text-xs text-slate-700 outline-none placeholder:text-slate-400"
+                      placeholder="搜索"
+                    />
+                  </label>
+                </div>
+                <div className="max-h-[292px] overflow-y-auto p-1">
+                  {filteredLanguages.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      className={`flex w-full items-center rounded-md px-2.5 py-2 text-left text-xs transition ${
+                        option.value === language ? "bg-slate-100 text-slate-900" : "text-slate-700 hover:bg-slate-50"
+                      }`}
+                      onClick={() => {
+                        onLanguageChange(option.value);
+                        setLanguageMenuOpen(false);
+                        setLanguageQuery("");
+                      }}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <label className="flex h-7 items-center gap-1.5 rounded-md px-1.5 transition hover:bg-white">
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5 rounded border-slate-300 text-sky-600"
+              checked={wrap}
+              onChange={(event) => onWrapChange(event.target.checked)}
+              disabled={readOnly}
+            />
+            <span>自动换行</span>
+          </label>
+          <button
+            type="button"
+            className="flex h-7 items-center gap-1 rounded-md px-1.5 transition hover:bg-white hover:text-slate-800"
+            onClick={copyCode}
+          >
+            <span>□</span>
+            <span>{copied ? "已复制" : "复制"}</span>
+          </button>
+        </div>
+      </div>
+      {!collapsed ? (
+        <div className="relative">
+          <div
+            className={`grid grid-cols-[44px_minmax(0,1fr)] overflow-y-auto ${wrap ? "" : "overflow-x-auto"}`}
+            style={{ height: `${codeHeight}px` }}
+          >
+            <div
+              className="select-none border-r border-slate-200/80 bg-white/45 px-3 py-2 text-right font-mono text-xs leading-6 text-slate-400"
+              style={{ minHeight: `${codeContentHeight}px` }}
+            >
+              {Array.from({ length: lines }, (_, index) => (
+                <div key={index}>{index + 1}</div>
+              ))}
+            </div>
+            <textarea
+              ref={textareaRef}
+              value={block.text}
+              data-code-block-textarea="true"
+              readOnly={readOnly}
+              spellCheck={false}
+              rows={Math.max(lines, 3)}
+              wrap={wrap ? "soft" : "off"}
+              placeholder="在这里输入代码"
+              style={{ height: `${codeContentHeight}px` }}
+              className={`w-full resize-none border-0 bg-transparent px-3 py-2 font-mono text-sm leading-6 text-slate-800 outline-none placeholder:text-slate-400 ${
+                wrap ? "whitespace-pre-wrap break-words" : "min-w-[720px] whitespace-pre"
+              }`}
+              onChange={onChange}
+              onPaste={onPaste}
+              onFocus={onFocus}
+              onBlur={onBlur}
+              onMouseUp={onMouseUp}
+              onKeyDown={onKeyDown}
+            />
+          </div>
+          {!readOnly ? (
+            <button
+              type="button"
+              aria-label="调整代码块高度"
+              title="拖拽调整代码块高度"
+              onPointerDown={startResize}
+              className={`absolute bottom-[-7px] left-1/2 h-4 w-16 -translate-x-1/2 cursor-ns-resize rounded-full border border-slate-300 bg-white shadow-sm transition hover:border-sky-300 hover:bg-sky-50 ${
+                draggingHeight ? "border-sky-400 bg-sky-50" : ""
+              }`}
+            >
+              <span className="mx-auto block h-0.5 w-8 rounded-full bg-slate-300" />
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );
@@ -2063,7 +2358,9 @@ export function BlockEditor({
   };
 
   const handleTextSurfaceChange = (block: EditableBlock) => (event: ReactChangeEvent<HTMLTextAreaElement>) => {
-    resizeTextarea(event.currentTarget);
+    if (block.type !== "code_block") {
+      resizeTextarea(event.currentTarget);
+    }
     if (readOnly) {
       return;
     }
@@ -2102,6 +2399,13 @@ export function BlockEditor({
       updateBlock(block.id, { text: value });
     }
 
+    if (block.type === "code_block") {
+      if (commandMenu?.blockId === block.id) {
+        setCommandMenu(null);
+      }
+      return;
+    }
+
     const query = commandQuery(value);
     if (query !== null) {
       setCommandMenu({
@@ -2136,6 +2440,9 @@ export function BlockEditor({
       const rawPastedText = event.clipboardData.getData("text/plain");
       const pastedHtml = event.clipboardData.getData("text/html");
       const normalizedHref = normalizeExternalHref(pastedText);
+      if (block.type === "code_block") {
+        return;
+      }
       if (!normalizedHref || event.currentTarget.value.trim()) {
         const handled = insertStructuredBlocksFromPaste(
           index,
@@ -2178,6 +2485,10 @@ export function BlockEditor({
     }
     setSelectedImageBlockId(null);
     setActiveBlockId(block.id);
+    if (block.type === "code_block") {
+      setCommandMenu(null);
+      return;
+    }
     const query = commandQuery(block.text);
     if (query !== null) {
       setCommandMenu({
@@ -2242,6 +2553,19 @@ export function BlockEditor({
       const selectionEnd = event.currentTarget.selectionEnd;
       const hasSelection = selectionStart !== selectionEnd;
       const currentLength = event.currentTarget.value.length;
+
+      if (block.type === "code_block") {
+        if (event.key === "Tab") {
+          event.preventDefault();
+          const indent = "  ";
+          const value = event.currentTarget.value;
+          const nextValue = `${value.slice(0, selectionStart)}${indent}${value.slice(selectionEnd)}`;
+          updateBlock(block.id, { text: nextValue });
+          focusBlock(block.id, selectionStart + indent.length);
+          return;
+        }
+        return;
+      }
 
       if (
         event.key === "Backspace" &&
@@ -2481,6 +2805,8 @@ export function BlockEditor({
         const orderedListStart =
           block.type === "ordered_list" ? orderedNumberForBlockIndex(index) : undefined;
         const showsTextSurface = showsUnifiedTextSurface(block, readOnly);
+        const usesCodeSurface = block.type === "code_block";
+        const canFocusWrapper = !readOnly && !showsTextSurface && !usesCodeSurface;
         const blockCommentRanges = blockThreads.map((thread) => ({
           id: thread.id,
           start: displayOffsetFromBlockRawOffset(block, thread.anchorStartOffset),
@@ -2536,7 +2862,7 @@ export function BlockEditor({
             }}
           >
             {!readOnly ? (
-              <div className="pointer-events-none absolute left-[-42px] top-1/2 z-10 -translate-y-1/2">
+              <div className="pointer-events-none absolute left-[-54px] top-1 z-[320]">
                 <button
                   ref={(element) => {
                     handleButtonRefs.current[block.id] = element;
@@ -2707,14 +3033,14 @@ export function BlockEditor({
               ) : null}
 
               <div
-                tabIndex={!readOnly && !showsTextSurface ? 0 : undefined}
+                tabIndex={canFocusWrapper ? 0 : undefined}
                 onFocus={() => {
-                  if (!readOnly && !showsTextSurface) {
+                  if (canFocusWrapper) {
                     setActiveBlockId(block.id);
                   }
                 }}
                 onKeyDown={handleNonTextBlockKeyDown(block, index)}
-                className={!readOnly && !showsTextSurface ? "rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-sky-300" : undefined}
+                className={canFocusWrapper ? "rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-sky-300" : undefined}
                 style={sanitizeIndent(block.indent) > 0 ? { paddingLeft: `${sanitizeIndent(block.indent) * 28}px` } : undefined}
               >
                 {block.type === "link" ? <LinkPreviewBlock block={block} readOnly={readOnly} /> : null}
@@ -2739,6 +3065,27 @@ export function BlockEditor({
                   <div className="py-3">
                     <div className="border-t border-slate-200" />
                   </div>
+                ) : null}
+
+                {usesCodeSurface ? (
+                  <CodeBlockSurface
+                    block={block}
+                    readOnly={readOnly}
+                    isActive={activeBlockId === block.id}
+                    textareaRef={(element) => {
+                      textareaRefs.current[block.id] = element;
+                    }}
+                    onChange={handleTextSurfaceChange(block)}
+                    onPaste={handleTextSurfacePaste(block, index)}
+                    onFocus={handleTextSurfaceFocus(block)}
+                    onBlur={handleTextSurfaceBlur(block)}
+                    onMouseUp={handleTextSurfaceMouseUp(block, blockCommentRanges)}
+                    onKeyDown={handleTextSurfaceKeyDown(block, index)}
+                    onLanguageChange={(language) => updateBlock(block.id, { codeLanguage: language })}
+                    onWrapChange={(wrap) => updateBlock(block.id, { codeWrap: wrap })}
+                    onCollapsedChange={(collapsed) => updateBlock(block.id, { codeCollapsed: collapsed })}
+                    onHeightChange={(height) => updateBlock(block.id, { codeHeight: height })}
+                  />
                 ) : null}
 
                 {showsTextSurface ? (
@@ -2785,7 +3132,7 @@ export function BlockEditor({
                 <div
                   ref={commandMenuRef}
                   data-editor-floating-window="true"
-                  className={`fixed z-30 w-[228px] overflow-hidden rounded-lg border border-slate-200 bg-white p-0 shadow-[0_18px_45px_rgba(15,23,42,0.12)] transition duration-180 ease-out ${
+                  className={`fixed z-[300] w-[212px] rounded-lg border border-slate-200 bg-white p-0 shadow-[0_18px_45px_rgba(15,23,42,0.12)] transition duration-180 ease-out ${
                     closingCommandMenuBlockId === block.id
                       ? "pointer-events-none -translate-y-1 opacity-0"
                       : "translate-y-0 opacity-100"
@@ -2808,8 +3155,8 @@ export function BlockEditor({
                     hideCommandMenuWithDelay(block.id);
                   }}
                 >
-                  <div className="border-b border-slate-200 px-2 py-1">
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] leading-none">
+                  <div className="border-b border-slate-200 px-2 py-1.5">
+                    <div className="grid grid-cols-8 gap-1 text-[13px] leading-none">
                       {quickCommandsForBlock(block).map((command) => {
                         const isSelected =
                           command.kind === "heading"
@@ -2833,8 +3180,10 @@ export function BlockEditor({
                                 preserveContent: commandMenu.mode === "actions",
                               });
                             }}
-                            className={`flex h-6 items-center justify-center border-0 bg-transparent p-0 transition ${
-                              isSelected ? "text-sky-600" : "text-slate-700 hover:text-slate-900"
+                            className={`flex h-6 min-w-0 items-center justify-center rounded-md border-0 p-0 transition ${
+                              isSelected
+                                ? "bg-sky-50 text-sky-600"
+                                : "bg-transparent text-slate-700 hover:bg-slate-50 hover:text-slate-900"
                             }`}
                           >
                             <span className={command.kind === "heading" ? "font-medium" : "font-semibold"}>
