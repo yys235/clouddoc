@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { DocumentShareDialog } from "@/components/editor/document-share-dialog";
+import { CODE_LANGUAGE_OPTIONS, codeLanguageLabel, sanitizeCodeHeight, sanitizeCodeLanguage } from "@/components/editor/block-editor";
 import { type AncestorItem, softDeleteDocument, updateDocumentContent } from "@/lib/api";
 import { createClientId } from "@/lib/client-id";
 import {
@@ -34,6 +35,7 @@ type BoardNodeType =
   | "parallelogram"
   | "hexagon"
   | "plus"
+  | "code"
   | "table";
 type BoardTool = "select" | "pan" | "shape" | "text" | "connector";
 type BoardAnchor = "top" | "right" | "bottom" | "left";
@@ -150,6 +152,10 @@ type BoardNode = {
   height: number;
   text: string;
   table?: BoardTableData;
+  codeLanguage?: string;
+  codeWrap?: boolean;
+  codeCollapsed?: boolean;
+  codeHeight?: number;
   manualSize: boolean;
   style: {
     fill: string;
@@ -258,6 +264,7 @@ const SHAPE_ITEMS: Array<{ type: BoardNodeType; label: string; icon: string }> =
   { type: "star", label: "星形", icon: "☆" },
   { type: "cloud", label: "云朵", icon: "☁" },
   { type: "plus", label: "加号", icon: "✚" },
+  { type: "code", label: "代码块", icon: "</>" },
   { type: "table", label: "表格", icon: "▦" },
 ];
 const COLOR_SWATCHES = [
@@ -274,6 +281,8 @@ const NOTICE_STYLE_BY_TONE = {
 };
 const NOTICE_AUTO_CLOSE_SECONDS = 5;
 const TEXT_EDIT_PERIODIC_COMMIT_MS = 2000;
+const DEFAULT_CODE_NODE_HEIGHT = 280;
+const CODE_NODE_HEADER_HEIGHT = 42;
 const RESIZE_HANDLES: Array<{ id: ResizeHandle; cursor: string; x: number; y: number }> = [
   { id: "nw", cursor: "nwse-resize", x: 0, y: 0 },
   { id: "n", cursor: "ns-resize", x: 0.5, y: 0 },
@@ -527,6 +536,12 @@ function ShapeIcon({ type, className = "h-[18px] w-[18px]" }: { type: BoardNodeT
       {type === "triangle" ? <path {...common} d="M12 4l8 16H4L12 4z" /> : null}
       {type === "star" ? <path {...common} d="M12 4l2.2 5 5.3.5-4 3.5 1.2 5.2L12 15.5l-4.7 2.7L8.5 13l-4-3.5 5.3-.5L12 4z" /> : null}
       {type === "plus" ? <path {...common} d="M9 4h6v5h5v6h-5v5H9v-5H4V9h5V4z" /> : null}
+      {type === "code" ? (
+        <>
+          <rect {...common} x="4.5" y="5.5" width="15" height="13" rx="2" />
+          <path {...common} d="M9.2 9.2 6.9 12l2.3 2.8M14.8 9.2l2.3 2.8-2.3 2.8M12.8 8.8l-1.6 6.4" />
+        </>
+      ) : null}
       {type === "table" ? (
         <>
           <rect {...common} x="4.5" y="5" width="15" height="14" />
@@ -882,7 +897,11 @@ function normalizeBoardState(raw: Record<string, unknown>): BoardState {
         height: Math.max(32, Number(node.height ?? 64) || 64),
         text: String(node.text ?? ""),
         table: type === "table" ? normalizeBoardTableData(node.table, Math.max(48, Number(node.width ?? 360) || 360), Math.max(32, Number(node.height ?? 148) || 148)) : undefined,
-        manualSize: Boolean(node.manualSize ?? node.manual_size ?? false),
+        codeLanguage: type === "code" ? sanitizeCodeLanguage(String(node.codeLanguage ?? node.code_language ?? "plain_text")) : undefined,
+        codeWrap: type === "code" ? node.codeWrap === undefined && node.code_wrap === undefined ? true : Boolean(node.codeWrap ?? node.code_wrap) : undefined,
+        codeCollapsed: type === "code" ? Boolean(node.codeCollapsed ?? node.code_collapsed ?? false) : undefined,
+        codeHeight: type === "code" ? sanitizeCodeHeight(Number(node.codeHeight ?? node.code_height ?? Math.max(120, (Number(node.height ?? DEFAULT_CODE_NODE_HEIGHT) || DEFAULT_CODE_NODE_HEIGHT) - CODE_NODE_HEADER_HEIGHT))) : undefined,
+        manualSize: type === "code" || Boolean(node.manualSize ?? node.manual_size ?? false),
         style: {
           fill: normalizeDefaultNodeFill(type, style.fill),
           stroke: normalizeDefaultNodeStroke(style.stroke),
@@ -905,6 +924,11 @@ function normalizeBoardState(raw: Record<string, unknown>): BoardState {
         normalizedNode.width = Math.max(160, tableTotalWidth(normalizedNode.table));
         normalizedNode.height = Math.max(92, tableTotalHeight(normalizedNode.table));
         normalizedNode.text = normalizedNode.table.title;
+        normalizedNode.manualSize = true;
+      }
+      if (normalizedNode.type === "code") {
+        normalizedNode.width = Math.max(240, normalizedNode.width);
+        normalizedNode.height = Math.max(120, normalizedNode.height);
         normalizedNode.manualSize = true;
       }
       return [normalizedNode.manualSize ? normalizedNode : fitNodeHeightToText(normalizedNode)];
@@ -1050,6 +1074,7 @@ function cloudPath(node: BoardNode) {
 
 function defaultNodeSize(type: BoardNodeType) {
   if (type === "text") return { width: 180, height: 48 };
+  if (type === "code") return { width: 520, height: DEFAULT_CODE_NODE_HEIGHT };
   if (type === "table") return { width: 360, height: 180 };
   if (type === "triangle" || type === "star" || type === "plus" || type === "cloud") return { width: 110, height: 92 };
   if (type === "comment_bubble" || type === "document") return { width: 176, height: 92 };
@@ -1069,6 +1094,39 @@ function isLegacyPlaceholderText(text: string) {
 
 function editableNodeText(text: string) {
   return isLegacyPlaceholderText(text) ? "" : text;
+}
+
+function indentCodeText(textarea: HTMLTextAreaElement, backwards: boolean) {
+  const value = textarea.value;
+  const selectionStart = textarea.selectionStart;
+  const selectionEnd = textarea.selectionEnd;
+  const lineStart = value.lastIndexOf("\n", Math.max(0, selectionStart - 1)) + 1;
+  const selectedText = value.slice(lineStart, selectionEnd);
+  const lines = selectedText.split("\n");
+  let selectionDeltaStart = 0;
+  let selectionDeltaEnd = 0;
+  const nextLines = lines.map((line, index) => {
+    if (backwards) {
+      if (line.startsWith("  ")) {
+        if (index === 0) selectionDeltaStart = -Math.min(2, selectionStart - lineStart);
+        selectionDeltaEnd -= 2;
+        return line.slice(2);
+      }
+      if (line.startsWith("\t")) {
+        if (index === 0) selectionDeltaStart = selectionStart === lineStart ? -1 : 0;
+        selectionDeltaEnd -= 1;
+        return line.slice(1);
+      }
+      return line;
+    }
+    if (index === 0) selectionDeltaStart = 2;
+    selectionDeltaEnd += 2;
+    return `  ${line}`;
+  });
+  const nextValue = `${value.slice(0, lineStart)}${nextLines.join("\n")}${value.slice(selectionEnd)}`;
+  const nextStart = Math.max(lineStart, selectionStart + selectionDeltaStart);
+  const nextEnd = Math.max(nextStart, selectionEnd + selectionDeltaEnd);
+  return { value: nextValue, selectionStart: nextStart, selectionEnd: nextEnd };
 }
 
 function noticeTone(message: string): keyof typeof NOTICE_STYLE_BY_TONE {
@@ -2556,7 +2614,11 @@ export function BoardDocumentPage({
             height,
             text: defaultNodeText(type),
             table,
-            manualSize: type === "table",
+            codeLanguage: type === "code" ? "plain_text" : undefined,
+            codeWrap: type === "code" ? true : undefined,
+            codeCollapsed: type === "code" ? false : undefined,
+            codeHeight: type === "code" ? Math.max(120, height - CODE_NODE_HEADER_HEIGHT) : undefined,
+            manualSize: type === "table" || type === "code",
             style: { ...DEFAULT_NODE_STYLE, fill: type === "text" ? "transparent" : DEFAULT_NODE_STYLE.fill },
             zIndex: Math.max(0, ...current.nodes.map((node) => node.zIndex)) + 1,
           },
@@ -2737,6 +2799,32 @@ export function BoardDocumentPage({
         node.id === selectedNode.id ? { ...node, style: { ...node.style, ...patch } } : node,
       ),
     }));
+  };
+
+  const updateSelectedCodeNode = (patch: Pick<Partial<BoardNode>, "codeLanguage" | "codeWrap" | "codeCollapsed" | "codeHeight">) => {
+    if (!selectedNode || selectedNode.type !== "code") return;
+    commitBoard((current) => ({
+      ...current,
+      nodes: current.nodes.map((node) =>
+        node.id === selectedNode.id && node.type === "code"
+          ? {
+              ...node,
+              ...patch,
+              codeLanguage: patch.codeLanguage === undefined ? node.codeLanguage : sanitizeCodeLanguage(patch.codeLanguage),
+              codeHeight: patch.codeHeight === undefined ? node.codeHeight : sanitizeCodeHeight(patch.codeHeight),
+            }
+          : node,
+      ),
+    }));
+  };
+
+  const copyCodeNodeText = async (node: BoardNode) => {
+    try {
+      await navigator.clipboard.writeText(node.text || "");
+      setNotice("代码已复制");
+    } catch {
+      setNotice("当前浏览器不允许复制代码");
+    }
   };
 
   const updateSelectedConnector = (patch: Omit<Partial<BoardConnector>, "style"> & { style?: Partial<BoardConnector["style"]> }) => {
@@ -3435,7 +3523,7 @@ export function BoardDocumentPage({
       width,
       height,
       text: defaultNodeText(source.type),
-      manualSize: false,
+      manualSize: source.type === "code" || source.type === "table" ? true : false,
       style: { ...source.style },
       zIndex: source.zIndex + 1,
     };
@@ -3458,7 +3546,7 @@ export function BoardDocumentPage({
         width,
         height,
         text: defaultNodeText(currentSource.type),
-        manualSize: false,
+        manualSize: currentSource.type === "code" || currentSource.type === "table" ? true : false,
         style: { ...currentSource.style },
         zIndex: Math.max(0, ...current.nodes.map((node) => node.zIndex)) + 1,
       };
@@ -3922,6 +4010,7 @@ export function BoardDocumentPage({
 
   const startTextEditing = (node: BoardNode) => {
     if (!canEdit) return;
+    if (node.type === "table") return;
     if (editingNodeIdRef.current && editingNodeIdRef.current !== node.id) {
       finishTextEditing(editingNodeIdRef.current, editingTextRef.current);
     }
@@ -5130,6 +5219,22 @@ export function BoardDocumentPage({
     if (node.type === "table") {
       return renderTableNode(node, selected);
     }
+    if (node.type === "code") {
+      return (
+        <rect
+          x={node.x}
+          y={node.y}
+          width={node.width}
+          height={node.height}
+          rx={10}
+          fill={node.style.fill}
+          fillOpacity={node.style.fill === "transparent" ? 0 : 0.92}
+          stroke={selected ? "#5b8cff" : node.style.stroke}
+          strokeWidth={selected ? Math.max(2.4, node.style.strokeWidth) : node.style.strokeWidth}
+          strokeDasharray={node.style.strokeDasharray || undefined}
+        />
+      );
+    }
     const common = {
       fill: node.style.fill,
       fillOpacity: DEFAULT_NODE_FILL_OPACITY,
@@ -5185,8 +5290,127 @@ export function BoardDocumentPage({
     return <rect x={node.x} y={node.y} width={node.width} height={node.height} rx={node.type === "round_rectangle" ? 8 : 0} {...common} />;
   };
 
+  const renderCodeNode = (node: BoardNode) => {
+    if (node.type !== "code") return null;
+    const language = sanitizeCodeLanguage(node.codeLanguage);
+    const wrap = node.codeWrap ?? true;
+    const collapsed = node.codeCollapsed ?? false;
+    const codeText = editingNodeId === node.id ? editingText : node.text;
+    const lines = Math.max(1, codeText.split("\n").length);
+    const contentHeight = Math.max(42, node.height - CODE_NODE_HEADER_HEIGHT);
+    const lineHeight = 22;
+    const scrollContentHeight = Math.max(contentHeight, lines * lineHeight + 16);
+    return (
+      <foreignObject x={node.x + 1} y={node.y + 1} width={Math.max(1, node.width - 2)} height={Math.max(1, node.height - 2)}>
+        <div
+          className="flex h-full w-full flex-col overflow-hidden rounded-[10px] border border-transparent bg-slate-50/95 text-slate-800"
+          onClick={(event) => {
+            event.stopPropagation();
+            handleNodeClick(node);
+          }}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            startTextEditing(node);
+          }}
+          onPointerDown={(event) => handleNodePointerDown(event as unknown as ReactPointerEvent<SVGElement>, node)}
+        >
+          <div className="flex h-[40px] shrink-0 items-center justify-between gap-2 border-b border-slate-200/90 bg-white/90 px-3 text-xs">
+            <button
+              type="button"
+              className="flex min-w-0 items-center gap-1.5 font-medium text-slate-600"
+              onClick={(event) => {
+                event.stopPropagation();
+                if (canEdit) updateSelectedCodeNode({ codeCollapsed: !collapsed });
+              }}
+            >
+              <span className={`text-[10px] text-slate-400 transition ${collapsed ? "-rotate-90" : ""}`}>▾</span>
+              <span>代码块</span>
+              <span className="max-w-[120px] truncate rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500">{codeLanguageLabel(language)}</span>
+            </button>
+            <button
+              type="button"
+              className="rounded px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+              onClick={(event) => {
+                event.stopPropagation();
+                void copyCodeNodeText(node);
+              }}
+            >
+              复制
+            </button>
+          </div>
+          {!collapsed ? (
+            <div
+              className={`grid min-h-0 flex-1 grid-cols-[44px_minmax(0,1fr)] overflow-auto ${wrap ? "" : "overflow-x-auto"}`}
+              onWheel={(event) => event.stopPropagation()}
+            >
+              <div
+                className="select-none border-r border-slate-200/80 bg-white/50 px-2 py-2 text-right font-mono text-[12px] leading-[22px] text-slate-400"
+                style={{ minHeight: scrollContentHeight }}
+              >
+                {Array.from({ length: lines }, (_, index) => (
+                  <div key={`${node.id}-line-${index}`}>{index + 1}</div>
+                ))}
+              </div>
+              {editingNodeId === node.id ? (
+                <textarea
+                  ref={textAreaRef}
+                  value={editingText}
+                  spellCheck={false}
+                  wrap={wrap ? "soft" : "off"}
+                  className={`w-full resize-none border-0 bg-transparent px-3 py-2 font-mono text-[13px] leading-[22px] text-slate-800 outline-none placeholder:text-slate-400 ${
+                    wrap ? "whitespace-pre-wrap break-words" : "min-w-[720px] whitespace-pre"
+                  }`}
+                  style={{ height: scrollContentHeight }}
+                  placeholder="在这里输入代码"
+                  onClick={(event) => event.stopPropagation()}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    editingTextRef.current = event.target.value;
+                    setEditingText(event.target.value);
+                  }}
+                  onBlur={() => finishTextEditing(node.id, editingTextRef.current)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Tab") {
+                      event.preventDefault();
+                      const result = indentCodeText(event.currentTarget, event.shiftKey);
+                      editingTextRef.current = result.value;
+                      setEditingText(result.value);
+                      window.setTimeout(() => {
+                        const textarea = textAreaRef.current;
+                        if (!textarea) return;
+                        textarea.selectionStart = result.selectionStart;
+                        textarea.selectionEnd = result.selectionEnd;
+                      }, 0);
+                      return;
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      finishTextEditing(node.id, editingTextRef.current);
+                    }
+                    event.stopPropagation();
+                  }}
+                />
+              ) : (
+                <pre
+                  className={`m-0 min-h-full px-3 py-2 font-mono text-[13px] leading-[22px] text-slate-800 ${
+                    wrap ? "whitespace-pre-wrap break-words" : "min-w-[720px] whitespace-pre"
+                  }`}
+                  style={{ minHeight: scrollContentHeight }}
+                >{codeText || " "}</pre>
+              )}
+            </div>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-hidden px-3 py-2 font-mono text-xs text-slate-500">
+              {(codeText.split("\n").find((line) => line.trim()) || "空代码块").slice(0, 160)}
+            </div>
+          )}
+        </div>
+      </foreignObject>
+    );
+  };
+
   const renderNodeText = (node: BoardNode) => {
-    if (node.type === "table") return null;
+    if (node.type === "table" || node.type === "code") return null;
     const textBounds = nodeTextLayout(node);
     const lineHeight = node.style.fontSize * 1.25;
     if (editingNodeId === node.id) {
@@ -5753,6 +5977,7 @@ export function BoardDocumentPage({
                     className={canEdit ? "cursor-move" : "cursor-default"}
                   >
                     {renderNodeShape(renderNode, selected)}
+                    {renderCodeNode(renderNode)}
                     {renderNodeText(renderNode)}
                     {showResizeHandles || showAnchors ? (
                       <>
@@ -6051,18 +6276,36 @@ export function BoardDocumentPage({
                   <button type="button" className="grid h-10 w-11 place-items-center rounded-l-[12px] border-r border-[#eef1f6] text-[#1f2329] hover:bg-[#f5f7fb]" title={nodeLabel(selectedNode.type)} onMouseEnter={(event) => openToolbarPanel("shape", event.currentTarget)} onClick={(event) => toggleToolbarPanel("shape", event.currentTarget)}><ShapeIcon type={selectedNode.type} className="h-[18px] w-[18px]" /></button>
                   <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] hover:bg-[#f5f7fb]" onMouseEnter={(event) => openToolbarPanel("fill", event.currentTarget)} onClick={(event) => toggleToolbarPanel("fill", event.currentTarget)} title="填充色"><span className="h-4 w-4 rounded-full border border-[#c9d0dc]" style={{ background: selectedNode.style.fill === "transparent" ? "repeating-linear-gradient(45deg,#fff,#fff 3px,#e5e7eb 3px,#e5e7eb 6px)" : selectedNode.style.fill }} /></button>
                   <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] hover:bg-[#f5f7fb]" onMouseEnter={(event) => openToolbarPanel("stroke", event.currentTarget)} onClick={(event) => toggleToolbarPanel("stroke", event.currentTarget)} title="边框色"><span className="h-4 w-4 rounded-full border-[3px]" style={{ borderColor: selectedNode.style.stroke }} /></button>
-                  <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] font-semibold hover:bg-[#f5f7fb]" style={{ color: selectedNode.style.color }} onMouseEnter={(event) => openToolbarPanel("text", event.currentTarget)} onClick={(event) => toggleToolbarPanel("text", event.currentTarget)} title="文字颜色">A</button>
-                  <select value={selectedNode.style.fontSize} onChange={(event) => {
-                    const fontSize = Number(event.target.value);
-                    if (selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title") {
-                      updateSelectedTableCellStyle({ fontSize });
-                    } else {
-                      updateSelectedStyle({ fontSize });
-                    }
-                  }} className="h-10 border-0 border-r border-[#eef1f6] bg-white px-2 text-[#1f2329] outline-none">
-                    {[12, 14, 16, 18, 20, 24, 28].map((size) => <option key={size} value={size}>{size}</option>)}
-                  </select>
-                  <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] text-[#1f2329] hover:bg-[#f5f7fb]" onMouseEnter={(event) => openToolbarPanel("textStyle", event.currentTarget)} onClick={(event) => toggleToolbarPanel("textStyle", event.currentTarget)} title="文本样式"><TextStyleIcon name="alignLeft" className="h-[18px] w-[18px]" /></button>
+                  {selectedNode.type === "code" ? (
+                    <>
+                      <select
+                        value={sanitizeCodeLanguage(selectedNode.codeLanguage)}
+                        onChange={(event) => updateSelectedCodeNode({ codeLanguage: event.target.value })}
+                        className="h-10 max-w-[132px] border-0 border-r border-[#eef1f6] bg-white px-2 text-[#1f2329] outline-none"
+                        title="代码语言"
+                      >
+                        {CODE_LANGUAGE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                      </select>
+                      <button type="button" className={`h-10 border-r border-[#eef1f6] px-3 hover:bg-[#f5f7fb] ${selectedNode.codeWrap ?? true ? "text-[#1456f0]" : "text-[#1f2329]"}`} onClick={() => updateSelectedCodeNode({ codeWrap: !(selectedNode.codeWrap ?? true) })} title="自动换行">换行</button>
+                      <button type="button" className="h-10 border-r border-[#eef1f6] px-3 text-[#1f2329] hover:bg-[#f5f7fb]" onClick={() => void copyCodeNodeText(selectedNode)} title="复制代码">复制代码</button>
+                      <button type="button" className="h-10 border-r border-[#eef1f6] px-3 text-[#1f2329] hover:bg-[#f5f7fb]" onClick={() => updateSelectedCodeNode({ codeCollapsed: !(selectedNode.codeCollapsed ?? false) })} title="折叠或展开">{selectedNode.codeCollapsed ? "展开" : "折叠"}</button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] font-semibold hover:bg-[#f5f7fb]" style={{ color: selectedNode.style.color }} onMouseEnter={(event) => openToolbarPanel("text", event.currentTarget)} onClick={(event) => toggleToolbarPanel("text", event.currentTarget)} title="文字颜色">A</button>
+                      <select value={selectedNode.style.fontSize} onChange={(event) => {
+                        const fontSize = Number(event.target.value);
+                        if (selectedNode.type === "table" && tableSelection?.nodeId === selectedNode.id && tableSelection.kind !== "table" && tableSelection.kind !== "title") {
+                          updateSelectedTableCellStyle({ fontSize });
+                        } else {
+                          updateSelectedStyle({ fontSize });
+                        }
+                      }} className="h-10 border-0 border-r border-[#eef1f6] bg-white px-2 text-[#1f2329] outline-none">
+                        {[12, 14, 16, 18, 20, 24, 28].map((size) => <option key={size} value={size}>{size}</option>)}
+                      </select>
+                      <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] text-[#1f2329] hover:bg-[#f5f7fb]" onMouseEnter={(event) => openToolbarPanel("textStyle", event.currentTarget)} onClick={(event) => toggleToolbarPanel("textStyle", event.currentTarget)} title="文本样式"><TextStyleIcon name="alignLeft" className="h-[18px] w-[18px]" /></button>
+                    </>
+                  )}
                   <button type="button" className="grid h-10 w-10 place-items-center border-r border-[#eef1f6] hover:bg-[#f5f7fb]" onClick={() => setNotice("评论能力本轮仅保留占位，暂未接入画板对象评论")} title="评论"><BoardIcon name="comment" className="h-4 w-4" /></button>
                   <button type="button" className="grid h-10 w-10 place-items-center hover:bg-[#f5f7fb]" onMouseEnter={(event) => openToolbarPanel("more", event.currentTarget)} onClick={(event) => toggleToolbarPanel("more", event.currentTarget)} title="更多"><BoardIcon name="more" className="h-4 w-4" /></button>
                 </>
@@ -6113,7 +6356,24 @@ export function BoardDocumentPage({
                   {activePanel === "shape" && selectedNode ? (
                     <div className="grid grid-cols-5 gap-2">
                       {SHAPE_ITEMS.map((shape) => <button key={shape.type} type="button" title={shape.label} className={`grid h-8 w-8 place-items-center rounded-[8px] border transition-colors ${selectedNode.type === shape.type ? "border-[#d6e4ff] bg-[#eef3ff] text-[#1456f0]" : "border-transparent text-[#1f2329] hover:border-[#e6ebf5] hover:bg-[#f6f8fc] hover:text-[#1456f0]"}`} onClick={() => {
-                        commitBoard((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === selectedNode.id ? { ...node, type: shape.type } : node) }));
+                        commitBoard((current) => ({ ...current, nodes: current.nodes.map((node) => {
+                          if (node.id !== selectedNode.id) return node;
+                          if (shape.type === "code") {
+                            const size = defaultNodeSize("code");
+                            return {
+                              ...node,
+                              type: "code",
+                              width: Math.max(size.width, node.width),
+                              height: Math.max(size.height, node.height),
+                              codeLanguage: "plain_text",
+                              codeWrap: true,
+                              codeCollapsed: false,
+                              codeHeight: Math.max(120, Math.max(size.height, node.height) - CODE_NODE_HEADER_HEIGHT),
+                              manualSize: true,
+                            };
+                          }
+                          return { ...node, type: shape.type, table: shape.type === "table" ? node.table ?? createDefaultBoardTableData() : undefined, manualSize: shape.type === "table" ? true : node.manualSize };
+                        }) }));
                         setActivePanel(null);
                       }}><ShapeIcon type={shape.type} className="h-[17px] w-[17px]" /></button>)}
                     </div>

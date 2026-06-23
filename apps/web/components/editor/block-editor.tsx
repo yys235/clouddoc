@@ -102,7 +102,7 @@ const LINK_VIEW_OPTIONS: Array<{ value: LinkCardView; label: string }> = [
   { value: "preview", label: "预览视图" },
 ];
 
-const CODE_LANGUAGE_OPTIONS = [
+export const CODE_LANGUAGE_OPTIONS = [
   { value: "plain_text", label: "Plain Text" },
   { value: "http", label: "HTTP" },
   { value: "javascript", label: "JavaScript" },
@@ -320,7 +320,7 @@ export function sanitizeCodeLanguage(language: string | undefined) {
   return CODE_LANGUAGE_OPTIONS.some((option) => option.value === normalized) ? normalized : "plain_text";
 }
 
-function codeLanguageLabel(language: string | undefined) {
+export function codeLanguageLabel(language: string | undefined) {
   const value = sanitizeCodeLanguage(language);
   return CODE_LANGUAGE_OPTIONS.find((option) => option.value === value)?.label ?? "Plain Text";
 }

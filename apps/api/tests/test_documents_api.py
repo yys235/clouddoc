@@ -1309,6 +1309,64 @@ def test_create_and_update_board_document() -> None:
         assert update_response.json()["content"]["content_json"]["connectors"][0]["routingMode"] == "rounded-orthogonal"
         assert update_response.json()["content"]["content_json"]["connectors"][0]["waypoints"][1]["x"] == 280
 
+        code_node_content = {
+            **content_json,
+            "nodes": [
+                *content_json["nodes"],
+                {
+                    "id": "node-5",
+                    "type": "code",
+                    "x": 1120,
+                    "y": 120,
+                    "width": 520,
+                    "height": 280,
+                    "text": "SELECT *\nFROM documents;",
+                    "codeLanguage": "sql",
+                    "codeWrap": True,
+                    "codeCollapsed": False,
+                    "codeHeight": 238,
+                    "manualSize": True,
+                    "style": {
+                        "fill": "#ffffff",
+                        "stroke": "#5b7fd8",
+                        "strokeWidth": 1,
+                        "fontSize": 14,
+                        "color": "#1f2937",
+                    },
+                    "zIndex": 5,
+                },
+            ],
+            "connectors": [
+                *content_json["connectors"],
+                {
+                    "id": "connector-2",
+                    "from": {"nodeId": "node-5", "anchor": "left"},
+                    "to": {"nodeId": "node-1", "anchor": "right"},
+                    "routingMode": "straight",
+                    "waypoints": [],
+                    "style": {
+                        "stroke": "#5b7fd8",
+                        "strokeWidth": 1.5,
+                        "strokeDasharray": "",
+                        "startArrow": "none",
+                        "endArrow": "arrow",
+                        "cornerRadius": 0,
+                    },
+                    "zIndex": 0,
+                },
+            ],
+        }
+        code_node_response = client.put(
+            f"/api/documents/{document_id}/content",
+            json={
+                "content_json": code_node_content,
+                "plain_text": "pytest-board-code",
+            },
+        )
+        assert code_node_response.status_code == 200
+        assert code_node_response.json()["content"]["content_json"]["nodes"][4]["type"] == "code"
+        assert code_node_response.json()["content"]["content_json"]["connectors"][1]["from"]["nodeId"] == "node-5"
+
         invalid_response = client.put(
             f"/api/documents/{document_id}/content",
             json={

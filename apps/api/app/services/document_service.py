@@ -425,6 +425,7 @@ def is_valid_board_content(content_json: dict) -> bool:
         "parallelogram",
         "hexagon",
         "plus",
+        "code",
         "table",
     }
     for node in nodes:
