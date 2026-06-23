@@ -273,6 +273,7 @@ const NOTICE_STYLE_BY_TONE = {
   info: "border-sky-200 bg-sky-50/95 text-sky-700",
 };
 const NOTICE_AUTO_CLOSE_SECONDS = 5;
+const TEXT_EDIT_PERIODIC_COMMIT_MS = 2000;
 const RESIZE_HANDLES: Array<{ id: ResizeHandle; cursor: string; x: number; y: number }> = [
   { id: "nw", cursor: "nwse-resize", x: 0, y: 0 },
   { id: "n", cursor: "ns-resize", x: 0.5, y: 0 },
@@ -2182,6 +2183,8 @@ export function BoardDocumentPage({
   const [shapePaletteOpen, setShapePaletteOpen] = useState(false);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  const editingNodeIdRef = useRef<string | null>(null);
+  const editingTextRef = useRef("");
   const [editingConnectorLabel, setEditingConnectorLabel] = useState<{
     connectorId: string;
     position: BoardPoint;
@@ -2249,6 +2252,7 @@ export function BoardDocumentPage({
   const connectorLabelInputRef = useRef<HTMLInputElement | null>(null);
   const connectorClickRef = useRef<{ connectorId: string; at: number } | null>(null);
   const saveTimerRef = useRef<number | null>(null);
+  const textEditCommitTimerRef = useRef<number | null>(null);
   const shapeHoverTimerRef = useRef<number | null>(null);
   const panelHoverTimerRef = useRef<number | null>(null);
   const dragToolbarTimerRef = useRef<number | null>(null);
@@ -2355,6 +2359,14 @@ export function BoardDocumentPage({
   }, [board]);
 
   useEffect(() => {
+    editingNodeIdRef.current = editingNodeId;
+  }, [editingNodeId]);
+
+  useEffect(() => {
+    editingTextRef.current = editingText;
+  }, [editingText]);
+
+  useEffect(() => {
     if (!editingNodeId) return;
     window.setTimeout(() => textAreaRef.current?.focus(), 0);
   }, [editingNodeId]);
@@ -2393,6 +2405,7 @@ export function BoardDocumentPage({
 
   useEffect(() => () => {
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    if (textEditCommitTimerRef.current) window.clearInterval(textEditCommitTimerRef.current);
     if (shapeHoverTimerRef.current) window.clearTimeout(shapeHoverTimerRef.current);
     if (panelHoverTimerRef.current) window.clearTimeout(panelHoverTimerRef.current);
     if (dragToolbarTimerRef.current) window.clearTimeout(dragToolbarTimerRef.current);
@@ -2423,6 +2436,14 @@ export function BoardDocumentPage({
     };
   };
 
+  const boardWithTextEdit = (source: BoardState, nodeId: string | null, text: string) => {
+    if (!nodeId) return source;
+    return {
+      ...source,
+      nodes: source.nodes.map((node) => node.id === nodeId ? { ...node, text } : node),
+    };
+  };
+
   const boardSignature = useMemo(() => JSON.stringify(boardWithActiveTextEdit(board)), [board, editingNodeId, editingText]);
 
   useEffect(() => {
@@ -2443,7 +2464,9 @@ export function BoardDocumentPage({
     if (!canEdit) return true;
     setIsSaving(true);
     try {
-      const boardToSave = normalizeBoardAutoConnectors(boardWithActiveTextEdit(boardRef.current));
+      const boardToSave = normalizeBoardAutoConnectors(
+        boardWithTextEdit(boardRef.current, editingNodeIdRef.current, editingTextRef.current),
+      );
       const snapshotSignature = JSON.stringify(boardToSave);
       const nextDocument = await updateDocumentContent({
         docId: currentDocument.id,
@@ -2452,7 +2475,9 @@ export function BoardDocumentPage({
       });
       setCurrentDocument(nextDocument);
       clearOfflineDocumentDraft(currentDocument.id, snapshotSignature);
-      const liveBoard = normalizeBoardAutoConnectors(boardRef.current);
+      const liveBoard = normalizeBoardAutoConnectors(
+        boardWithTextEdit(boardRef.current, editingNodeIdRef.current, editingTextRef.current),
+      );
       const hasNewLocalChanges = JSON.stringify(liveBoard) !== snapshotSignature;
       if (!hasNewLocalChanges) {
         setBoard(boardToSave);
@@ -3835,10 +3860,7 @@ export function BoardDocumentPage({
     });
   };
 
-  const finishTextEditing = () => {
-    if (!editingNodeId) return;
-    const targetId = editingNodeId;
-    const text = editingText;
+  const commitTextEditToBoard = (targetId: string, text: string) => {
     commitBoard((current) => {
       const nodes = current.nodes.map((node) => {
         if (node.id !== targetId) return node;
@@ -3851,21 +3873,70 @@ export function BoardDocumentPage({
         connectors: adaptConnectorsForMovedNodes(current.connectors, nodes, [targetId]),
       };
     });
-    setEditingNodeId(null);
-    setEditingText("");
+  };
+
+  const commitActiveTextEditToBoardState = () => {
+    const targetId = editingNodeIdRef.current;
+    if (!targetId) return;
+    const text = editingTextRef.current;
+    setBoard((current) => {
+      const target = current.nodes.find((node) => node.id === targetId);
+      if (!target || target.text === text) return current;
+      const nodes = current.nodes.map((node) => {
+        if (node.id !== targetId) return node;
+        const nextNode = { ...node, text };
+        return node.manualSize ? nextNode : fitNodeHeightToText(nextNode, text);
+      });
+      setIsDirty(true);
+      return {
+        ...current,
+        nodes,
+        connectors: adaptConnectorsForMovedNodes(current.connectors, nodes, [targetId]),
+      };
+    });
+  };
+
+  useEffect(() => {
+    if (!canEdit || !editingNodeId) return;
+    textEditCommitTimerRef.current = window.setInterval(() => {
+      commitActiveTextEditToBoardState();
+    }, TEXT_EDIT_PERIODIC_COMMIT_MS);
+    return () => {
+      if (textEditCommitTimerRef.current) {
+        window.clearInterval(textEditCommitTimerRef.current);
+        textEditCommitTimerRef.current = null;
+      }
+    };
+  }, [canEdit, editingNodeId]);
+
+  const finishTextEditing = (targetId = editingNodeIdRef.current, text = editingTextRef.current) => {
+    if (!targetId) return;
+    commitTextEditToBoard(targetId, text);
+    if (editingNodeIdRef.current === targetId) {
+      editingNodeIdRef.current = null;
+      editingTextRef.current = "";
+      setEditingNodeId(null);
+      setEditingText("");
+    }
   };
 
   const startTextEditing = (node: BoardNode) => {
     if (!canEdit) return;
+    if (editingNodeIdRef.current && editingNodeIdRef.current !== node.id) {
+      finishTextEditing(editingNodeIdRef.current, editingTextRef.current);
+    }
+    const nextText = editableNodeText(node.text);
     selectSingleNode(node.id);
+    editingNodeIdRef.current = node.id;
+    editingTextRef.current = nextText;
     setEditingNodeId(node.id);
-    setEditingText(editableNodeText(node.text));
+    setEditingText(nextText);
     setActivePanel(null);
   };
 
   const handleNodeClick = (node: BoardNode) => {
-    if (editingNodeId && editingNodeId !== node.id) {
-      finishTextEditing();
+    if (editingNodeIdRef.current && editingNodeIdRef.current !== node.id) {
+      finishTextEditing(editingNodeIdRef.current, editingTextRef.current);
     }
     if (isMultiSelect && activeMultiSelectedNodes.some((item) => item.id === node.id)) {
       return;
@@ -5152,12 +5223,15 @@ export function BoardDocumentPage({
               ref={textAreaRef}
               value={editingText}
               placeholder={NODE_TEXT_PLACEHOLDER}
-              onChange={(event) => setEditingText(event.target.value)}
-              onBlur={finishTextEditing}
+              onChange={(event) => {
+                editingTextRef.current = event.target.value;
+                setEditingText(event.target.value);
+              }}
+              onBlur={() => finishTextEditing(node.id, editingTextRef.current)}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   event.preventDefault();
-                  finishTextEditing();
+                  finishTextEditing(node.id, editingTextRef.current);
                 }
                 event.stopPropagation();
               }}
