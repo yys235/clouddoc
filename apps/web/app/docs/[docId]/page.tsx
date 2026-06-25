@@ -1,10 +1,29 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { DocumentPage, OfflineDocumentDraftFallback } from "@/components/editor/document-page";
 import { fetchCurrentOrganization, fetchDocument, fetchDocumentAncestors, fetchOrganizationMembers, fetchSpaces } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
+
+function documentTitle(title?: string | null) {
+  const normalizedTitle = title?.trim();
+  return normalizedTitle ? `${normalizedTitle} - CloudDoc` : "CloudDoc";
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ docId: string }>;
+}): Promise<Metadata> {
+  const { docId } = await params;
+  const { data: document } = await fetchDocument(docId);
+
+  return {
+    title: documentTitle(document?.title),
+  };
+}
 
 export default async function DocumentDetailPage({
   params,

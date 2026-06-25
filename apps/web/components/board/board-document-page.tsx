@@ -4077,6 +4077,7 @@ export function BoardDocumentPage({
       return;
     }
     if (event.button !== 0) return;
+    event.preventDefault();
     event.stopPropagation();
     const point = screenToBoard(event);
     beginContinuousInteraction();
@@ -5290,7 +5291,7 @@ export function BoardDocumentPage({
     return <rect x={node.x} y={node.y} width={node.width} height={node.height} rx={node.type === "round_rectangle" ? 8 : 0} {...common} />;
   };
 
-  const renderCodeNode = (node: BoardNode) => {
+  const renderCodeNode = (node: BoardNode, selected: boolean) => {
     if (node.type !== "code") return null;
     const language = sanitizeCodeLanguage(node.codeLanguage);
     const wrap = node.codeWrap ?? true;
@@ -5301,9 +5302,11 @@ export function BoardDocumentPage({
     const lineHeight = 22;
     const scrollContentHeight = Math.max(contentHeight, lines * lineHeight + 16);
     return (
-      <foreignObject x={node.x + 1} y={node.y + 1} width={Math.max(1, node.width - 2)} height={Math.max(1, node.height - 2)}>
+      <foreignObject x={node.x} y={node.y} width={Math.max(1, node.width)} height={Math.max(1, node.height)}>
         <div
-          className="flex h-full w-full flex-col overflow-hidden rounded-[10px] border border-transparent bg-slate-50/95 text-slate-800"
+          className={`flex h-full w-full flex-col overflow-hidden rounded-[10px] border bg-slate-50/95 text-slate-800 ${
+            selected ? "border-[#5b8cff] shadow-[0_0_0_1px_rgba(91,140,255,0.28)]" : "border-slate-300/90"
+          }`}
           onClick={(event) => {
             event.stopPropagation();
             handleNodeClick(node);
@@ -5357,7 +5360,7 @@ export function BoardDocumentPage({
                   value={editingText}
                   spellCheck={false}
                   wrap={wrap ? "soft" : "off"}
-                  className={`w-full resize-none border-0 bg-transparent px-3 py-2 font-mono text-[13px] leading-[22px] text-slate-800 outline-none placeholder:text-slate-400 ${
+                  className={`w-full resize-none overflow-hidden border-0 bg-transparent px-3 py-2 font-mono text-[13px] leading-[22px] text-slate-800 outline-none placeholder:text-slate-400 ${
                     wrap ? "whitespace-pre-wrap break-words" : "min-w-[720px] whitespace-pre"
                   }`}
                   style={{ height: scrollContentHeight }}
@@ -5606,8 +5609,26 @@ export function BoardDocumentPage({
     );
   };
 
+  const isPointerInteractionActive = Boolean(
+    panState
+      || dragState
+      || resizeState
+      || tableResizeState
+      || connectorHandleDrag
+      || connectorPointDrag
+      || connectorEndpointDrag
+      || connectorLabelDrag,
+  );
+
   return (
-    <div ref={boardRootRef} className="relative h-screen min-h-0 overflow-hidden bg-[#fbfbfa] text-slate-900" onKeyDown={handleKeyDown} onPaste={handlePaste} tabIndex={0}>
+    <div
+      ref={boardRootRef}
+      className="relative h-screen min-h-0 overflow-hidden bg-[#fbfbfa] text-slate-900"
+      style={{ userSelect: isPointerInteractionActive ? "none" : undefined }}
+      onKeyDown={handleKeyDown}
+      onPaste={handlePaste}
+      tabIndex={0}
+    >
       <div className="absolute left-4 top-4 z-40 flex h-9 items-center overflow-hidden border border-[#dee3ee] bg-white/95 text-[13px] shadow-[0_2px_10px_rgba(31,35,41,0.08)]">
         <Link href={fallbackUrl} className="grid h-9 w-9 place-items-center border-r border-[#eef1f6] text-lg leading-none text-[#1f2329] hover:bg-[#f5f7fb]" title="返回">‹</Link>
         <span className="grid h-9 w-9 place-items-center border-r border-[#eef1f6] text-[#3370ff]"><BoardIcon name="frame" className="h-4 w-4" /></span>
@@ -5976,8 +5997,8 @@ export function BoardDocumentPage({
                     onPointerDown={(event) => handleNodePointerDown(event, renderNode)}
                     className={canEdit ? "cursor-move" : "cursor-default"}
                   >
-                    {renderNodeShape(renderNode, selected)}
-                    {renderCodeNode(renderNode)}
+                    {renderNode.type === "code" ? null : renderNodeShape(renderNode, selected)}
+                    {renderCodeNode(renderNode, selected)}
                     {renderNodeText(renderNode)}
                     {showResizeHandles || showAnchors ? (
                       <>
