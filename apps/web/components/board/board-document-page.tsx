@@ -5367,6 +5367,16 @@ export function BoardDocumentPage({
                   placeholder="在这里输入代码"
                   onClick={(event) => event.stopPropagation()}
                   onPointerDown={(event) => event.stopPropagation()}
+                  onWheel={(event) => {
+                    const scrollContainer = event.currentTarget.parentElement;
+                    if (!scrollContainer) return;
+                    scrollContainer.scrollBy({
+                      left: event.deltaX,
+                      top: event.deltaY,
+                    });
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
                   onChange={(event) => {
                     editingTextRef.current = event.target.value;
                     setEditingText(event.target.value);
