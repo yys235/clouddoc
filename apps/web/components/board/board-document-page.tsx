@@ -2241,6 +2241,7 @@ export function BoardDocumentPage({
   const [shapePaletteOpen, setShapePaletteOpen] = useState(false);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  const [codeEditorMeasuredHeight, setCodeEditorMeasuredHeight] = useState<{ nodeId: string; height: number } | null>(null);
   const editingNodeIdRef = useRef<string | null>(null);
   const editingTextRef = useRef("");
   const [editingConnectorLabel, setEditingConnectorLabel] = useState<{
@@ -2428,6 +2429,28 @@ export function BoardDocumentPage({
     if (!editingNodeId) return;
     window.setTimeout(() => textAreaRef.current?.focus(), 0);
   }, [editingNodeId]);
+
+  useEffect(() => {
+    if (!editingNodeId) {
+      setCodeEditorMeasuredHeight(null);
+      return;
+    }
+    const editingNode = board.nodes.find((node) => node.id === editingNodeId);
+    if (editingNode?.type !== "code") {
+      setCodeEditorMeasuredHeight(null);
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const textarea = textAreaRef.current;
+      if (!textarea) return;
+      setCodeEditorMeasuredHeight((current) => {
+        const nextHeight = Math.ceil(textarea.scrollHeight);
+        if (current?.nodeId === editingNodeId && current.height === nextHeight) return current;
+        return { nodeId: editingNodeId, height: nextHeight };
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [board.nodes, editingNodeId, editingText]);
 
   useEffect(() => {
     if (!notice) return;
@@ -5300,7 +5323,9 @@ export function BoardDocumentPage({
     const lines = Math.max(1, codeText.split("\n").length);
     const contentHeight = Math.max(42, node.height - CODE_NODE_HEADER_HEIGHT);
     const lineHeight = 22;
-    const scrollContentHeight = Math.max(contentHeight, lines * lineHeight + 16);
+    const estimatedContentHeight = Math.max(contentHeight, lines * lineHeight + 16);
+    const measuredContentHeight = codeEditorMeasuredHeight?.nodeId === node.id ? codeEditorMeasuredHeight.height : 0;
+    const scrollContentHeight = Math.max(estimatedContentHeight, measuredContentHeight);
     return (
       <foreignObject x={node.x} y={node.y} width={Math.max(1, node.width)} height={Math.max(1, node.height)}>
         <div
@@ -5363,7 +5388,7 @@ export function BoardDocumentPage({
                   className={`w-full resize-none overflow-hidden border-0 bg-transparent px-3 py-2 font-mono text-[13px] leading-[22px] text-slate-800 outline-none placeholder:text-slate-400 ${
                     wrap ? "whitespace-pre-wrap break-words" : "min-w-[720px] whitespace-pre"
                   }`}
-                  style={{ height: scrollContentHeight }}
+                  style={{ boxSizing: "border-box", height: scrollContentHeight }}
                   placeholder="在这里输入代码"
                   onClick={(event) => event.stopPropagation()}
                   onPointerDown={(event) => event.stopPropagation()}
