@@ -1320,11 +1320,24 @@ function simplifyWaypoints(points: BoardPoint[]) {
   for (const point of compacted) {
     const previous = simplified.at(-1);
     const beforePrevious = simplified.at(-2);
+    const continuesVertically = Boolean(
+      previous
+      && beforePrevious
+      && beforePrevious.x === previous.x
+      && previous.x === point.x
+      && (previous.y - beforePrevious.y) * (point.y - previous.y) >= 0,
+    );
+    const continuesHorizontally = Boolean(
+      previous
+      && beforePrevious
+      && beforePrevious.y === previous.y
+      && previous.y === point.y
+      && (previous.x - beforePrevious.x) * (point.x - previous.x) >= 0,
+    );
     if (
       previous &&
       beforePrevious &&
-      ((beforePrevious.x === previous.x && previous.x === point.x) ||
-        (beforePrevious.y === previous.y && previous.y === point.y))
+      (continuesVertically || continuesHorizontally)
     ) {
       simplified[simplified.length - 1] = point;
     } else {
@@ -1876,6 +1889,27 @@ function rerouteConnectorForNodes(connector: BoardConnector, nodes: BoardNode[])
   };
 }
 
+function connectorWaypointsForMove(connector: BoardConnector, nodes: BoardNode[]) {
+  if (connector.routingMode === "straight" || connector.waypoints.length > 0) {
+    return connector.waypoints.map((point) => ({ ...point }));
+  }
+  const fromNode = nodes.find((node) => node.id === connector.from.nodeId);
+  const toNode = nodes.find((node) => node.id === connector.to.nodeId);
+  if (!fromNode || !toNode) return [];
+  const resolvedWaypoints = defaultConnectorWaypointsForNodes(connector, fromNode, toNode);
+  if (resolvedWaypoints.length > 0) return resolvedWaypoints;
+
+  const start = anchorPoint(fromNode, connector.from.anchor);
+  const end = anchorPoint(toNode, connector.to.anchor);
+  const startOut = outwardPoint(start, connector.from.anchor, CONNECTOR_ENDPOINT_STUB);
+  const endOut = outwardPoint(end, connector.to.anchor, CONNECTOR_ENDPOINT_STUB);
+  return [
+    startOut,
+    ...defaultConnectorWaypoints(startOut, endOut, connector.from.anchor, connector.to.anchor, connector.routingMode),
+    endOut,
+  ];
+}
+
 function translateConnectorWaypoints(waypoints: BoardWaypoint[], dx: number, dy: number) {
   return waypoints.map((point) => ({ x: point.x + dx, y: point.y + dy }));
 }
@@ -1958,6 +1992,7 @@ function adaptConnectorsForMovedNodes(
   movedNodeIds: string[],
   baseConnectorWaypoints: Record<string, BoardWaypoint[]> = {},
   delta: BoardPoint = { x: 0, y: 0 },
+  preserveRoute = false,
 ) {
   const moved = new Set(movedNodeIds);
   return connectors.map((connector) => {
@@ -1967,6 +2002,7 @@ function adaptConnectorsForMovedNodes(
     const toMoved = moved.has(connector.to.nodeId);
     if (baseWaypoints && fromMoved && toMoved) {
       const nextWaypoints = translateConnectorWaypoints(baseWaypoints, delta.x, delta.y);
+      if (preserveRoute) return { ...connector, waypoints: nextWaypoints };
       return { ...connector, waypoints: chooseSimplerMovedConnectorWaypoints(connector, nodes, nextWaypoints) };
     }
     if (hasBaseWaypoints && !fromMoved && !toMoved) {
@@ -1974,14 +2010,33 @@ function adaptConnectorsForMovedNodes(
     }
     if (fromMoved && !toMoved && baseWaypoints.length > 0) {
       const nextWaypoints = moveEndpointAdjacentWaypoints(connector, baseWaypoints, "from", delta.x, delta.y);
+      if (preserveRoute) return { ...connector, waypoints: nextWaypoints };
       return { ...connector, waypoints: chooseSimplerMovedConnectorWaypoints(connector, nodes, nextWaypoints) };
     }
     if (toMoved && !fromMoved && baseWaypoints.length > 0) {
       const nextWaypoints = moveEndpointAdjacentWaypoints(connector, baseWaypoints, "to", delta.x, delta.y);
+      if (preserveRoute) return { ...connector, waypoints: nextWaypoints };
       return { ...connector, waypoints: chooseSimplerMovedConnectorWaypoints(connector, nodes, nextWaypoints) };
     }
     if (fromMoved || toMoved) return rerouteConnectorForNodes(connector, nodes);
     return connector;
+  });
+}
+
+function settleConnectorsAfterNodeMove(connectors: BoardConnector[], nodes: BoardNode[], movedNodeIds: string[]) {
+  const moved = new Set(movedNodeIds);
+  return connectors.map((connector) => {
+    if (!moved.has(connector.from.nodeId) && !moved.has(connector.to.nodeId)) return connector;
+    if (connector.routingMode === "straight") return connector;
+    const fromNode = nodes.find((node) => node.id === connector.from.nodeId);
+    const toNode = nodes.find((node) => node.id === connector.to.nodeId);
+    if (!fromNode || !toNode) return connector;
+    const currentPath = connectorFullPath(connector, fromNode, toNode, connector.waypoints);
+    if (!connectorPathCrossesNodeInterior(currentPath, [fromNode, toNode], 2)) return connector;
+    const autoWaypoints = defaultConnectorWaypointsForNodes(connector, fromNode, toNode);
+    const autoPath = connectorFullPath(connector, fromNode, toNode, autoWaypoints);
+    if (connectorPathCrossesNodeInterior(autoPath, [fromNode, toNode], 2)) return connector;
+    return { ...connector, waypoints: autoWaypoints };
   });
 }
 
@@ -4114,7 +4169,7 @@ export function BoardDocumentPage({
       startX: point.x,
       startY: point.y,
       nodePositions: Object.fromEntries(board.nodes.filter((item) => dragNodeIds.includes(item.id)).map((item) => [item.id, { x: item.x, y: item.y }])),
-      connectorWaypoints: Object.fromEntries(board.connectors.filter((item) => dragConnectorIds.includes(item.id) || dragNodeIds.includes(item.from.nodeId) || dragNodeIds.includes(item.to.nodeId)).map((item) => [item.id, item.waypoints.map((point) => ({ ...point }))])),
+      connectorWaypoints: Object.fromEntries(board.connectors.filter((item) => dragConnectorIds.includes(item.id) || dragNodeIds.includes(item.from.nodeId) || dragNodeIds.includes(item.to.nodeId)).map((item) => [item.id, connectorWaypointsForMove(item, board.nodes)])),
     });
     if (!isActiveMultiNode) {
       if (node.type === "table") {
@@ -4460,6 +4515,7 @@ export function BoardDocumentPage({
         dragState.nodeIds,
         dragState.connectorWaypoints,
         { x: dx, y: dy },
+        true,
       ),
     }));
     setIsDirty(true);
@@ -4514,6 +4570,12 @@ export function BoardDocumentPage({
       setFloatingToolbarDomHidden(false);
       setIsTransientToolbarHidden(false);
       return;
+    }
+    if (dragState) {
+      setBoard((current) => ({
+        ...current,
+        connectors: settleConnectorsAfterNodeMove(current.connectors, current.nodes, dragState.nodeIds),
+      }));
     }
     if (panState || dragState || resizeState || tableResizeState || connectorHandleDrag || connectorPointDrag || connectorLabelDrag) {
       const startSnapshot = interactionStartSnapshotRef.current;
@@ -5801,7 +5863,7 @@ export function BoardDocumentPage({
             onClick={handleCanvasClick}
           >
             <defs>
-              <marker id="board-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse" markerUnits="strokeWidth">
+              <marker id="board-arrow" markerWidth="9" markerHeight="9" refX="9" refY="4.5" orient="auto-start-reverse" markerUnits="strokeWidth">
                 <path d="M0,0 L9,4.5 L0,9 Z" fill="context-stroke" />
               </marker>
             </defs>
