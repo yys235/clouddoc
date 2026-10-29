@@ -1910,6 +1910,15 @@ function connectorWaypointsForMove(connector: BoardConnector, nodes: BoardNode[]
   ];
 }
 
+function captureConnectorDragWaypoints(board: BoardState, nodeIds: string[], connectorIds: string[]) {
+  const moved = new Set(nodeIds);
+  const selected = new Set(connectorIds);
+  // Include external connections so total drag displacement is never applied to a previous frame.
+  return Object.fromEntries(board.connectors
+    .filter((connector) => selected.has(connector.id) || moved.has(connector.from.nodeId) || moved.has(connector.to.nodeId))
+    .map((connector) => [connector.id, connectorWaypointsForMove(connector, board.nodes)]));
+}
+
 function translateConnectorWaypoints(waypoints: BoardWaypoint[], dx: number, dy: number) {
   return waypoints.map((point) => ({ x: point.x + dx, y: point.y + dy }));
 }
@@ -4169,7 +4178,7 @@ export function BoardDocumentPage({
       startX: point.x,
       startY: point.y,
       nodePositions: Object.fromEntries(board.nodes.filter((item) => dragNodeIds.includes(item.id)).map((item) => [item.id, { x: item.x, y: item.y }])),
-      connectorWaypoints: Object.fromEntries(board.connectors.filter((item) => dragConnectorIds.includes(item.id) || dragNodeIds.includes(item.from.nodeId) || dragNodeIds.includes(item.to.nodeId)).map((item) => [item.id, connectorWaypointsForMove(item, board.nodes)])),
+      connectorWaypoints: captureConnectorDragWaypoints(board, dragNodeIds, dragConnectorIds),
     });
     if (!isActiveMultiNode) {
       if (node.type === "table") {
@@ -6345,7 +6354,7 @@ export function BoardDocumentPage({
                           startX: point.x,
                           startY: point.y,
                           nodePositions: Object.fromEntries(board.nodes.filter((item) => activeMultiSelectedNodes.some((selectedNode) => selectedNode.id === item.id)).map((item) => [item.id, { x: item.x, y: item.y }])),
-                          connectorWaypoints: Object.fromEntries(board.connectors.filter((item) => activeMultiSelectedConnectors.some((selectedConnector) => selectedConnector.id === item.id) || (activeMultiSelectedNodes.some((selectedNode) => selectedNode.id === item.from.nodeId) && activeMultiSelectedNodes.some((selectedNode) => selectedNode.id === item.to.nodeId))).map((item) => [item.id, item.waypoints.map((point) => ({ ...point }))])),
+                          connectorWaypoints: captureConnectorDragWaypoints(board, activeMultiSelectedNodes.map((item) => item.id), activeMultiSelectedConnectors.map((item) => item.id)),
                         });
                       }}
                     />
